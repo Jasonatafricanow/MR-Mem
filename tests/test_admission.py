@@ -9,7 +9,6 @@ from mr_mem.memory.extraction import DeterministicExtractor
 from mr_mem.memory.source import AdmissionDisposition, MemoryAdmissionResult
 from mr_mem.memory.store import CanonicalMemoryStore
 
-
 NOW = datetime(2026, 9, 29, 9, 30, tzinfo=UTC)
 
 
