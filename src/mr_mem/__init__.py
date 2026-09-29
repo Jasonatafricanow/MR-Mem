@@ -1,37 +1,57 @@
-"""MR-Mem: standalone canonical Memory runtime extracted from Mind Runtime."""
+"""MR-Mem: standalone Memory runtime extracted from Mind Runtime."""
 
 from mr_mem.contracts import Scope, ScopeDomain, SyncFields
 from mr_mem.memory import (
+    AdmissionDisposition,
     CanonicalMemoryStore,
+    Clock,
     CommittedMemory,
+    DeterministicExtractor,
+    DurableFactReader,
+    MemoryAdmissionResult,
+    MemoryAdmissionService,
     MemoryAttention,
     MemoryCandidate,
     MemoryConflict,
     MemoryCore,
     MemoryCoreSelectionError,
+    MemoryExtractor,
     MemoryLifecycle,
     MemoryProductStore,
     MemoryProvenance,
     MemoryThread,
+    SourceEvidence,
+    SourceObservation,
     ThreadStatus,
+    memory_identity,
 )
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "AdmissionDisposition",
     "CanonicalMemoryStore",
+    "Clock",
     "CommittedMemory",
+    "DeterministicExtractor",
+    "DurableFactReader",
+    "MemoryAdmissionResult",
+    "MemoryAdmissionService",
     "MemoryAttention",
     "MemoryCandidate",
     "MemoryConflict",
     "MemoryCore",
     "MemoryCoreSelectionError",
+    "MemoryExtractor",
     "MemoryLifecycle",
     "MemoryProductStore",
     "MemoryProvenance",
     "MemoryThread",
     "Scope",
     "ScopeDomain",
+    "SourceEvidence",
+    "SourceObservation",
     "SyncFields",
     "ThreadStatus",
+    "memory_identity",
 ]
