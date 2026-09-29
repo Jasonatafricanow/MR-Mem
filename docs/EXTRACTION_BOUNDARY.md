@@ -2,75 +2,89 @@
 
 MR-Mem is the standalone product boundary for the memory side of Mind Runtime.
 
-## Canonical authority
+## MR-Mem owns
 
-`CanonicalMemoryStore` is the durable factual Memory authority. `MemoryCore`
-owns connection lifetime and exact bounded selection; it does not create a
-second write path.
-
-The standalone package owns:
+### Admission and canonical authority
 
 - structured `Scope`
 - `SyncFields` identity and idempotency metadata
-- provider-neutral source/admission contracts
-- durable Evidence/Observation pair verification through `DurableFactReader`
-- NEW / REPAIRED / REPLAY eligibility semantics
+- provider-neutral `SourceEvidence` / `SourceObservation`
+- read-only `DurableFactReader` proof boundary
+- NEW / REPAIRED / REPLAY Memory eligibility
 - bounded extraction and provenance enforcement
 - immutable `CommittedMemory`
 - canonical SQLite persistence
-- projection outbox state
-- derived attention state
-- bounded medium-term `MemoryThread`
-- `MemoryCore` ownership and exact selection
+- rebuildable projection outbox
 
-## Admission ownership
+Admission is Memory governance. A host may use MR's existing factual plane or a
+different source store; MR-Mem depends only on the narrow structural contracts.
 
-Admission is Memory governance, not affect-runtime behavior.
+### Read and working plane
 
-MR-Mem decides when a durably admitted source pair may become canonical Memory,
-prevents historical backfill on repaired/replayed facts, constrains extractor
-provenance to admitted source authority, and preserves stable Memory identity.
+- canonical retrieval authority revalidation
+- BM25 lexical retrieval
+- RRF hybrid fusion
+- optional HyDE sparse-recall fallback
+- provider-neutral semantic reranking seam
+- embedding identity and vector validation
+- optional FastEmbed / Qdrant derived indexes
+- attention state
+- non-durable Pending overlay
+- bounded medium-term Thread
+- automatic Thread maintenance from accepted semantic events
 
-The package does not require Mind Runtime's concrete `FactBackend`. Hosts expose
-only a read-only proof surface:
+Thread consumes the structural `ThreadSemanticEvent` protocol instead of
+Mind Runtime's concrete semantic-event type. It does not call a model.
 
-```
-SourceEvidence
-SourceObservation
-DurableFactReader
-Clock
-```
+## Canonical vs derived state
 
-Mind Runtime may adapt its existing Evidence / Observation / FactBackend types
-to that surface. Other hosts may use different source stores.
+`CanonicalMemoryStore` is the durable factual Memory authority.
 
-## Derived state
+Attention, Pending, retrieval indexes, Thread, and future LCE state are derived
+or working state. They cannot create factual authority merely by existing.
 
-Attention and Thread rows are projections over canonical Memory. They may be
-rebuilt, suppressed, resolved, or retired without changing factual authority.
+A mature Thread may be retired after an accepted higher longitudinal projection;
+canonical Memory IDs retain the factual support chain.
 
-Future LCE integration must follow the same rule: LCE consumes canonical
-MR-Mem state plus externally supplied semantic authority and owns only derived
-longitudinal cognition.
+## Host responsibilities
 
-## Outside this package boundary
-
-These concerns remain host/integration responsibilities:
+These do not belong to MR-Mem:
 
 - Mind Runtime interaction lifecycle
-- RuntimeBinding and host storage composition
+- RuntimeBinding and host storage layout
+- affect, appraisal, intent, policy, StateBar
 - Body/Host online inference
-- affect/state/intent/policy logic
-- host-specific historical-context adapters
-- semantic authority implementation used by LCE
+- host-specific historical-context assembly
 
-Retrieval providers, Thread auto-update, LCE integration, and AML benchmarks are
-Memory-owned or Memory-adjacent work and can be extracted without moving MR host
-behavior into this package.
+MR should be able to run its affect side against MR-Mem, another memory backend,
+or no persistent memory backend through a thin historical-context port.
+
+## Deferred semantic authority boundary
+
+LCE requires semantic authority, but the authority implementation does not
+belong inside the memory engine.
+
+The intended next boundary is a provider-neutral Semantic Authority port:
+
+```text
+Body LLM / host model / offline annotator
+                |
+        Semantic Authority
+                |
+             MR-Mem
+                |
+          Thread -> LCE
+```
+
+MR-Mem/LCE consume structured semantic output. They do not require Mind
+Runtime's Body and do not secretly introduce a second default semantic model.
 
 ## Source snapshot
 
-Initial source material:
+The extraction started from:
 
 - `Jasonatafricanow/Mind-Runtime@18d9275175ed6781962164e530efe4433e29ac7f`
 - `refactor/independent-memory-core@5071955449aff079f11fb958948fbabb28050acb`
+
+Historical `mr-memory-v1`, Thread, and projection identities are retained where
+identity continuity matters.
