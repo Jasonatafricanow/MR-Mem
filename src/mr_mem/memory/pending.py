@@ -28,11 +28,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+
 from mr_mem.contracts.common import (
     require_aware_utc,
     require_non_empty,
 )
-from mr_mem.contracts.scope import Scope, ScopeDomain
+from mr_mem.contracts.scope import Scope
 
 class PendingStatus(StrEnum):
     """Lifecycle status of a PendingWorkingEvidence entry."""
@@ -98,7 +99,7 @@ class PendingWorkingEvidence:
             require_non_empty(key, "semantic_payload keys")
             require_non_empty(value, "semantic_payload values")
 
-    def with_status(self, new_status: PendingStatus) -> "PendingWorkingEvidence":
+    def with_status(self, new_status: PendingStatus) -> PendingWorkingEvidence:
         """Return a new PendingWorkingEvidence with the given status."""
         if not isinstance(new_status, PendingStatus):
             raise ValueError("new_status must be a PendingStatus")
