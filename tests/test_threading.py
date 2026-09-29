@@ -55,7 +55,9 @@ def test_thread_accepts_structural_semantic_events_and_matures_cross_turn(tmp_pa
 
     matured = service.apply(
         scope=first.scope,
-        accepted_events=(event(first.scope, "evidence-m2", "Performance pressure keeps it active."),),
+        accepted_events=(
+            event(first.scope, "evidence-m2", "Performance pressure keeps it active."),
+        ),
         at=NOW,
     )[0]
     assert matured.thread_id == opened.thread_id
