@@ -7,15 +7,23 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from mr_mem.memory.contracts import CommittedMemory
-from mr_mem.memory.embedding import EmbeddingProvider, projection_target, validate_vector
+from mr_mem.memory.embedding import (
+    EmbeddingProvider,
+    projection_target,
+    validate_vector,
+)
 from mr_mem.memory.projection import ProjectionIntent, ProjectionQueue
-from mr_mem.memory.providers.errors import ProviderPackageMissing, ProviderStorageUnavailable
+from mr_mem.memory.providers.errors import (
+    ProviderPackageMissing,
+    ProviderStorageUnavailable,
+)
 from mr_mem.memory.retrieval import (
     MemoryRetrievalQuery,
     RetrievalProviderUnavailable,
     RetrievedMemoryCandidate,
 )
 from mr_mem.memory.store import CanonicalMemoryStore, scope_json
+
 
 class QdrantIndex:
     """One explicitly opened client, shared by separate read/write capabilities."""
