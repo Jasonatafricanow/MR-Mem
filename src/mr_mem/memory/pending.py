@@ -35,6 +35,7 @@ from mr_mem.contracts.common import (
 )
 from mr_mem.contracts.scope import Scope
 
+
 class PendingStatus(StrEnum):
     """Lifecycle status of a PendingWorkingEvidence entry."""
 
