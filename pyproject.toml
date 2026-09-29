@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "Standalone canonical Memory core extracted from Mind Runtime"
 readme = "README.md"
 requires-python = ">=3.12"
-license = {text = "MIT"}
 authors = [{name = "Jasonatafricanow"}]
 dependencies = []
 
