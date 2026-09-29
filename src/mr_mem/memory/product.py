@@ -1,4 +1,4 @@
-"""Product-level memory governance over canonical MR Memory.
+"""Product-level memory governance over canonical MR-Mem.
 
 Canonical Memory remains factual authority. This module stores only derived
 attention state and short-lived logical projections in the same memory.sqlite.
