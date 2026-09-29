@@ -1,4 +1,4 @@
-"""Runtime-independent Memory core over one canonical MR Memory database.
+"""Runtime-independent Memory core over one canonical MR-Mem database.
 
 This module is the reusable ownership boundary for tools that need canonical
 Memory plus its local derived product projections without importing RuntimeBinding,
@@ -24,7 +24,7 @@ class MemoryCoreSelectionError(ValueError):
 
 
 class MemoryCore:
-    """Reusable MR Memory core addressed by its canonical database path.
+    """Reusable MR-Mem core addressed by its canonical database path.
 
     MemoryCore owns connection lifetime only. It deliberately knows nothing
     about RuntimeBinding, storage namespaces, LCE, AML, model providers, or host
