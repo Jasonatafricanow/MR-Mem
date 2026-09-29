@@ -4,14 +4,18 @@ MR-Mem is the standalone product boundary for the memory side of Mind Runtime.
 
 ## Canonical authority
 
-`CanonicalMemoryStore` is the durable factual authority. `MemoryCore` owns
-connection lifetime and exact bounded selection; it does not create a second
-write path.
+`CanonicalMemoryStore` is the durable factual Memory authority. `MemoryCore`
+owns connection lifetime and exact bounded selection; it does not create a
+second write path.
 
-The first extraction preserves:
+The standalone package owns:
 
 - structured `Scope`
 - `SyncFields` identity and idempotency metadata
+- provider-neutral source/admission contracts
+- durable Evidence/Observation pair verification through `DurableFactReader`
+- NEW / REPAIRED / REPLAY eligibility semantics
+- bounded extraction and provenance enforcement
 - immutable `CommittedMemory`
 - canonical SQLite persistence
 - projection outbox state
@@ -19,28 +23,50 @@ The first extraction preserves:
 - bounded medium-term `MemoryThread`
 - `MemoryCore` ownership and exact selection
 
+## Admission ownership
+
+Admission is Memory governance, not affect-runtime behavior.
+
+MR-Mem decides when a durably admitted source pair may become canonical Memory,
+prevents historical backfill on repaired/replayed facts, constrains extractor
+provenance to admitted source authority, and preserves stable Memory identity.
+
+The package does not require Mind Runtime's concrete `FactBackend`. Hosts expose
+only a read-only proof surface:
+
+```
+SourceEvidence
+SourceObservation
+DurableFactReader
+Clock
+```
+
+Mind Runtime may adapt its existing Evidence / Observation / FactBackend types
+to that surface. Other hosts may use different source stores.
+
 ## Derived state
 
 Attention and Thread rows are projections over canonical Memory. They may be
 rebuilt, suppressed, resolved, or retired without changing factual authority.
 
-Future LCE integration must follow the same rule: LCE reads canonical MR-Mem
-source state and owns only derived longitudinal projection state.
+Future LCE integration must follow the same rule: LCE consumes canonical
+MR-Mem state plus externally supplied semantic authority and owns only derived
+longitudinal cognition.
 
-## Not part of the first core extraction
+## Outside this package boundary
 
-The following remain outside the package for now:
+These concerns remain host/integration responsibilities:
 
-- evidence/observation admission
-- Body/Host online semantic parsing
-- retrieval providers and Decision Plane
-- Thread auto-update policy
-- LCE engine implementation
-- AML/benchmark protocol
-- Mind Runtime affect/state/intent logic
+- Mind Runtime interaction lifecycle
+- RuntimeBinding and host storage composition
+- Body/Host online inference
+- affect/state/intent/policy logic
+- host-specific historical-context adapters
+- semantic authority implementation used by LCE
 
-Those should attach through explicit adapters rather than becoming dependencies
-of the canonical core.
+Retrieval providers, Thread auto-update, LCE integration, and AML benchmarks are
+Memory-owned or Memory-adjacent work and can be extracted without moving MR host
+behavior into this package.
 
 ## Source snapshot
 
