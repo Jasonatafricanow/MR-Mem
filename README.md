@@ -1,24 +1,75 @@
 # MR-Mem
 
-Standalone memory runtime extracted from Mind Runtime.
+Standalone Memory runtime extracted from Mind Runtime.
 
-MR-Mem owns a single canonical Memory substrate plus local derived product
-projections. Canonical Memory remains factual authority; Thread/attention/LCE
-integration are projections over that authority rather than second truth stores.
+MR-Mem owns the reusable memory-side pipeline: admission governance, canonical
+Memory authority, retrieval, derived attention/Thread state, and optional
+vector projections. Mind Runtime can consume it as a memory backend instead of
+owning those subsystems.
 
-Initial extraction boundary:
+## Current boundary
+
+MR-Mem now owns:
 
 - structured Scope + sync identity
-- canonical Memory contracts
-- SQLite canonical Memory store
+- provider-neutral source/admission contracts
+- durable-pair admission governance
+- bounded deterministic extraction
+- canonical Memory contracts and SQLite store
 - rebuildable projection outbox
-- product state (attention + bounded Thread)
+- attention + bounded Thread product state
+- non-durable Pending working overlay
+- canonical retrieval authority revalidation
+- BM25 lexical retrieval
+- RRF hybrid retrieval
+- HyDE as an optional sparse-recall fallback
+- provider-neutral semantic reranking seam
+- embedding identity/contracts
+- optional FastEmbed and Qdrant providers
+- Thread auto-update behind a provider-neutral semantic-event protocol
 - runtime-independent `MemoryCore`
 
-LCE, retrieval providers, admission, benchmark adapters, and Mind Runtime host
-composition remain outside this first core extraction and will attach through
-explicit interfaces.
+The package has no dependency on Mind Runtime's `RuntimeBinding`, affect
+runtime, host composition, or concrete FactBackend.
 
+## Admission
+
+Admission is owned by Memory governance. Any host can provide:
+
+```text
+SourceEvidence
+SourceObservation
+DurableFactReader
+Clock
+```
+
+MR-Mem then enforces durable source pairing, NEW/REPAIRED/REPLAY eligibility,
+provenance bounds, idempotency, and stable canonical Memory identity.
+
+## Semantic boundary
+
+Thread maintenance consumes only the structural `ThreadSemanticEvent` protocol:
+`scope + attributes + evidence_refs`. MR-Mem does not own or invoke the model
+that produced those semantics.
+
+The same principle will be used for LCE: a later Semantic Authority port will
+accept structured semantic output from a Body LLM, another host model, or an
+offline annotator without making MR-Mem depend on Mind Runtime's Body.
+
+## Retrieval
+
+BM25 and hybrid RRF are local ranking mechanisms over stable Memory IDs.
+HyDE is available as a fallback when primary recall is sparse; it is not the
+default path. Optional semantic reranking is injected through `MemoryReranker`.
+
+Vector support is optional:
+
+```bash
+pip install "mr-mem[vector]"
+```
+
+Qdrant is opened with explicit `index_root`, `canonical_path`, and
+`namespace`; there is no RuntimeBinding dependency.
 
 ## Quick start
 
@@ -31,15 +82,22 @@ with MemoryCore(Path("memory.sqlite"), read_only=True) as memory:
     rows = memory.load_all()
 ```
 
-`MemoryCore` deliberately does not expose a new public canonical write authority.
-Canonical writes are expected to arrive through an admission layer; this first
-extraction preserves the same authority boundary as Mind Runtime.
+`MemoryCore` deliberately does not expose a second public canonical write
+authority. Canonical writes flow through Memory admission governance.
+
+## Still outside MR-Mem
+
+These remain host or later integration concerns:
+
+- Mind Runtime interaction lifecycle
+- RuntimeBinding / host storage layout
+- affect, appraisal, intent, policy, StateBar
+- host-specific historical-context adapters
+- LCE engine binding and Semantic Authority implementation
+- AML benchmark protocol
 
 ## Extraction provenance
 
-The initial standalone core was extracted from:
-
-- Mind Runtime `main`: `18d9275175ed6781962164e530efe4433e29ac7f`
-- independent MemoryCore branch: `5071955449aff079f11fb958948fbabb28050acb`
-
-See `docs/EXTRACTION_BOUNDARY.md` for the ownership boundary.
+The standalone subsystem originated from Mind Runtime
+`main@18d9275175ed6781962164e530efe4433e29ac7f`. Stable historical identity
+prefixes are intentionally preserved during package extraction.
