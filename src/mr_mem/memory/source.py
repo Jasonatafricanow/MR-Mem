@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
@@ -73,4 +74,4 @@ class DurableFactReader(Protocol):
 class Clock(Protocol):
     """Provider-neutral wall clock used to timestamp admission eligibility."""
 
-    def now(self): ...
+    def now(self) -> datetime: ...
