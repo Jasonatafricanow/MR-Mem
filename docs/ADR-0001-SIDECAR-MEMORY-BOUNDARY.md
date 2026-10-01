@@ -78,21 +78,39 @@ Source integration is split into capabilities rather than one database assumptio
 
 Host-specific schemas stay behind adapters.
 
-## 3. Semantic compilation boundary
+## 3. Hot-start cleaning and semantic compilation boundary
 
 Raw history is not canonical MR memory.
 
-The host's Semantic Authority compiles source material into structured semantic output. MR-Mem does not silently create a second default online LLM.
+Historical hot start is an **information-reduction pipeline**, not a transcript import.
+
+The required order is:
 
 ```text
-Source span(s)
+native history
+   -> structural hard filter
+   -> semantic classify: DROP / KEEP / DEFER
+   -> semantic compile KEEP content
+   -> SemanticBlock / canonical semantic memory
+```
+
+The structural hard filter may remove only machine-obvious noise such as raw tool output, repeated stdout/test logs, generated traces, and other records whose role/shape proves they are not user memory. It MUST NOT drop mixed natural-language turns by keyword.
+
+The semantic cleaner/compiler may split a mixed source turn. Example: transient coding progress may be DROP while a durable preference or constraint from the same message is KEEP.
+
+Classification and semantic understanding are logically separate decisions but SHOULD be produced in the **same model pass** when possible. If that pass already produced an accepted semantic interpretation for a KEEP fragment, downstream admission, Thread and LCE MUST reuse it rather than invoking another model to reinterpret the same content.
+
+DEFER means the current source window is insufficient; the system may request bounded surrounding context and retry. DROP never enters SemanticBlock, Thread, LCE or Baseline.
+
+The host's Semantic Authority compiles accepted KEEP material into structured semantic output. MR-Mem does not silently create a second default online LLM.
+
+```text
+KEEP source span(s)
    -> Semantic Authority
    -> SemanticBlock / canonical semantic memory
 ```
 
-Compilation may classify, split, merge, bind subjects/scopes, extract propositions, preserve time, and attach source refs in one pass.
-
-Excluded/noisy source text may remain only in the host-native store.
+Compilation may split, merge, bind subjects/scopes, extract propositions/relations, preserve time, and attach source refs. Excluded/noisy source text remains only in the host-native store.
 
 ## 4. SemanticBlock is the common substrate
 
@@ -124,9 +142,25 @@ Thread represents active medium-term lines: unresolved topics, ongoing work, cha
 
 LCE represents longitudinal structure: point-cloud relations, trajectories, persistent Line DAG identity, support evolution, rejection/contradiction, maturity, Worktree/branch and Baseline transitions.
 
+Both consume the same accepted SemanticBlock substrate. Thread does not own a second semantic summary authority, and LCE does not reinterpret raw chat as its normal input.
+
+LCE has two legitimate structural paths:
+
+```text
+Path A:
+SemanticBlock -> active Thread -> mature Thread handoff -> LCE
+
+Path B:
+SemanticBlock -> Point Cloud -> trajectory/Line discovery -> LCE
+```
+
+Path A handoff SHOULD preserve semantic block IDs, support, relation and temporal state; a newly generated free-text Thread summary is not a substitute for the evidence structure.
+
+Path B is independent of Thread and exists so repeated/cross-context semantic structure can mature even when no single active Thread is the sole carrier.
+
 They are not independent memory databases and they are not disposable caches. Their structure is derived from canonical semantic memory, while their **evolution state** may itself need durable persistence.
 
-A mature Thread may retire after an accepted higher longitudinal projection covers the same logical line.
+A mature Thread may retire after an accepted higher longitudinal projection covers the same logical line. LCE maturity must not be inferred merely from lexical/vector similarity or from repeated copies of the same source event.
 
 ## 6. Retrieval: three lanes, one fusion surface
 
@@ -169,17 +203,32 @@ Source revision or deletion invalidates only affected semantic support and proje
 
 Hot/warm start MUST NOT re-import the host's complete transcript into another canonical raw store.
 
+For historical backfill, the dominant workload is **cleaning and classification before semantic admission**. Coding-heavy/tool-heavy history is expected to shrink sharply before SemanticBlock creation. The system should expose this funnel explicitly:
+
+```text
+raw source records
+ -> structural drops
+ -> semantic DROP / KEEP / DEFER
+ -> accepted SemanticBlocks
+ -> Threads
+ -> LCE Lines/trajectories
+ -> Baselines
+```
+
 Recovery should use:
 
 - source cursor/checkpoint
 - SourceRef revision/fingerprint
-- compile/version receipt
-- semantic-memory identity
-- projection receipt/state
+- cleaner/compiler version receipt
+- accepted semantic-memory identity
+- Thread projection receipt/state
+- LCE projection receipt/state
+
+A restart retries only missing, stale or changed stages. A previously accepted semantic compilation is reused; recovery MUST NOT repeat semantic inference solely because a downstream Thread/LCE projection failed.
 
 Normal newly committed source material should become semantically searchable and update required Thread/LCE projections in the same processing lifecycle expected by the integration.
 
-Restart reconciliation processes only missing, stale or changed work.
+Full-history rollout should occur only after representative real-history samples prove that DROP/KEEP/DEFER behavior and Thread/LCE structure are sane.
 
 ## 9. Hosts without native persistence
 
