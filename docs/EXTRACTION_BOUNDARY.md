@@ -1,83 +1,113 @@
 # Extraction boundary
 
-MR-Mem is the standalone product boundary for the memory side of Mind Runtime.
+MR-Mem is the reusable **semantic-memory sidecar** boundary for Mind Runtime and
+other Agents.
 
-## MR-Mem owns
+The frozen authority decision is defined by
+[ADR-0001](ADR-0001-SIDECAR-MEMORY-BOUNDARY.md).
 
-### Admission and canonical authority
+## Host-native source owns raw history
 
-- structured `Scope`
-- `SyncFields` identity and idempotency metadata
-- provider-neutral `SourceEvidence` / `SourceObservation`
-- read-only `DurableFactReader` proof boundary
-- NEW / REPAIRED / REPLAY Memory eligibility
-- bounded extraction and provenance enforcement
-- immutable `CommittedMemory`
-- canonical SQLite persistence
-- rebuildable projection outbox
+When a host already persists sessions/messages/tool records, that database is
+the raw authority.
 
-Admission is Memory governance. A host may use MR's existing factual plane or a
-different source store; MR-Mem depends only on the narrow structural contracts.
+MR-Mem does not own another complete transcript and does not require full raw
+history to be copied into canonical Memory before semantic processing.
 
-### Read and working plane
+Host source access is provider-neutral and should be expressed through stable
+references plus adapter capabilities for delta discovery, resolution, optional
+raw retrieval, and revision/deletion visibility.
 
-- canonical retrieval authority revalidation
-- BM25 lexical retrieval
-- RRF hybrid fusion
-- optional HyDE sparse-recall fallback
-- provider-neutral semantic reranking seam
-- embedding identity and vector validation
-- optional FastEmbed / Qdrant derived indexes
-- attention state
-- non-durable Pending overlay
-- bounded medium-term Thread
-- automatic Thread maintenance from accepted semantic events
+## MR-Mem owns canonical semantic memory
 
-Thread consumes the structural `ThreadSemanticEvent` protocol instead of
-Mind Runtime's concrete semantic-event type. It does not call a model.
+MR-Mem owns the durable interpretation layer:
 
-## Canonical vs derived state
+- canonical semantic identity
+- semantic content/structure
+- scope and subject boundaries
+- SourceRef provenance
+- occurred-at / known-at semantics
+- support / contradiction / supersession state
+- semantic retrieval indexes
+- Thread product state
+- LCE projection state and longitudinal identities
+- accepted higher-order/Baseline products
+- cursors, receipts and versions needed for idempotent recovery
 
-`CanonicalMemoryStore` is the durable factual Memory authority.
+Existing `CommittedMemory` / `CanonicalMemoryStore` names are implementation
+history. They must not be interpreted as authority over the host's raw
+conversation database.
 
-Attention, Pending, retrieval indexes, Thread, and future LCE state are derived
-or working state. They cannot create factual authority merely by existing.
+## Semantic Authority
 
-A mature Thread may be retired after an accepted higher longitudinal projection;
-canonical Memory IDs retain the factual support chain.
-
-## Host responsibilities
-
-These do not belong to MR-Mem:
-
-- Mind Runtime interaction lifecycle
-- RuntimeBinding and host storage layout
-- affect, appraisal, intent, policy, StateBar
-- Body/Host online inference
-- host-specific historical-context assembly
-
-MR should be able to run its affect side against MR-Mem, another memory backend,
-or no persistent memory backend through a thin historical-context port.
-
-## Deferred semantic authority boundary
-
-LCE requires semantic authority, but the authority implementation does not
-belong inside the memory engine.
-
-The intended next boundary is a provider-neutral Semantic Authority port:
+MR-Mem consumes accepted structured semantics. It does not require Mind
+Runtime's Body and does not construct a hidden replacement model.
 
 ```text
-Body LLM / host model / offline annotator
+Body LLM / host model / offline compiler
                 |
         Semantic Authority
                 |
-             MR-Mem
+       canonical semantic memory
                 |
-          Thread -> LCE
+        Thread      LCE
 ```
 
-MR-Mem/LCE consume structured semantic output. They do not require Mind
-Runtime's Body and do not secretly introduce a second default semantic model.
+The Body semantic protocol is therefore an integration seam, not an internal
+small-LLM ownership boundary.
+
+## Thread / LCE
+
+Thread and LCE are projections over the same canonical semantic substrate.
+
+Thread is medium-term active cognition. LCE is longitudinal structural
+cognition. Both retain semantic support IDs; raw audit follows those IDs through
+SourceRefs to the native host store.
+
+They may persist stateful evolution, but neither may become a second semantic
+authority or raw transcript store.
+
+## Retrieval
+
+The reusable retrieval model is three-lane:
+
+```text
+raw/source lane
++ semantic-memory lane
++ Thread/LCE structural lane
+        -> fusion/rerank
+        -> selective source hydration
+        -> context assembly
+```
+
+Raw/source retrieval may use a rebuildable index, but the raw body remains
+host-owned whenever possible.
+
+## Recovery
+
+Hot/warm start reconciles cursors, source revisions, semantic compile receipts
+and projection state. It does not duplicate the entire native history as a
+second canonical database.
+
+Only missing, stale or changed work should be recomputed.
+
+## Host without persistence
+
+An optional RawSource adapter may provide durable source storage when the host
+has none. This is also how benchmark-only runtimes such as AML may stage source
+input.
+
+This optional source implementation does not change MemoryCore's authority.
+
+## Still outside MR-Mem
+
+- host interaction lifecycle
+- host-native storage schema
+- affect/appraisal/intent/policy/StateBar
+- concrete Body/Host inference
+- concrete SourceAdapter implementations
+- host-specific context composition
+- AML protocol and HTTP surface
 
 ## Source snapshot
 
@@ -86,5 +116,5 @@ The extraction started from:
 - `Jasonatafricanow/Mind-Runtime@18d9275175ed6781962164e530efe4433e29ac7f`
 - `refactor/independent-memory-core@5071955449aff079f11fb958948fbabb28050acb`
 
-Historical `mr-memory-v1`, Thread, and projection identities are retained where
-identity continuity matters.
+Historical identifiers are retained only where they remain correct under the
+sidecar semantic-memory authority boundary.
