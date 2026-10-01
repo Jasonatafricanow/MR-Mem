@@ -249,17 +249,20 @@ class ThreadAutoUpdateService:
         signal: ThreadSignal,
         support: tuple[CommittedMemory, ...],
         at: datetime,
-    ) -> MemoryThread:
+    ) -> MemoryThread | None:
         assert signal.open_question is not None
+        support_ids = tuple(memory.memory_id for memory in support)
+        thread_id = _thread_identity(scope, signal.open_question)
+        if self._product.is_compiled_support(thread_id, support_ids):
+            return None
         existing = self._best_match(
             scope,
             question=signal.open_question,
             summary=signal.summary,
         )
-        support_ids = tuple(memory.memory_id for memory in support)
         if existing is None:
             return self._product.open_thread(
-                thread_id=_thread_identity(scope, signal.open_question),
+                thread_id=thread_id,
                 scope=scope,
                 open_question=signal.open_question,
                 supporting_memory_ids=support_ids,

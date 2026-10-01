@@ -117,3 +117,27 @@ def test_accepted_higher_projection_retires_temporary_thread(tmp_path):
     assert compiler.calls[0].mature
     assert product.get_thread(opened.thread_id) is None
     service.close()
+
+    canonical = CanonicalMemoryStore(path)
+    product = MemoryProductStore(path, canonical)
+    service = ThreadAutoUpdateService(
+        canonical=canonical, product=product, projection_compiler=compiler,
+    )
+    service.apply(
+        scope=first.scope,
+        accepted_events=(event(first.scope, "evidence-m1", "Replacement is under consideration."),),
+        at=NOW,
+    )
+    assert product.get_thread(opened.thread_id) is None
+    assert len(compiler.calls) == 1
+    third = memory("m3", content="A new reason to revisit it.", interaction_id="turn-3")
+    canonical._commit((third,))
+    service.apply(
+        scope=third.scope,
+        accepted_events=(
+            event(third.scope, "evidence-m3", "New support can reopen the working set."),
+        ),
+        at=NOW,
+    )
+    assert product.get_thread(opened.thread_id) is not None
+    service.close()

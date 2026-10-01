@@ -222,6 +222,12 @@ class MemoryProductStore:
                     thread_id TEXT PRIMARY KEY,
                     payload TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS memory_thread_handoffs (
+                    thread_id TEXT NOT NULL,
+                    baseline_id TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    PRIMARY KEY(thread_id, baseline_id)
+                );
                 """
             )
 
@@ -523,10 +529,27 @@ class MemoryProductStore:
             raise ValueError("Thread maturity lacks independent interaction support")
         with self._conn:
             self._conn.execute(
+                "INSERT OR IGNORE INTO memory_thread_handoffs VALUES(?,?,?)",
+                (thread_id, baseline_id, _encode_thread(thread)),
+            )
+            self._conn.execute(
                 "DELETE FROM memory_threads WHERE thread_id=?",
                 (thread_id,),
             )
         return True
+
+    def is_compiled_support(self, thread_id: str, memory_ids: tuple[str, ...]) -> bool:
+        """A retired support event must not recreate its temporary Thread on retry."""
+        if not memory_ids or not self._table_exists("memory_thread_handoffs"):
+            return False
+        compiled = {
+            memory_id
+            for (payload,) in self._conn.execute(
+                "SELECT payload FROM memory_thread_handoffs WHERE thread_id=?", (thread_id,),
+            )
+            for memory_id in _decode_thread(payload).handoff_memory_ids
+        }
+        return set(memory_ids) <= compiled
 
     def abandon_thread(self, thread_id: str, *, at: datetime) -> MemoryThread:
         self._writable()
