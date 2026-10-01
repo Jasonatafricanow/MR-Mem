@@ -234,7 +234,8 @@ class ThreadAutoUpdateService:
                 memory.scope == scope
                 and memory.lifecycle is MemoryLifecycle.ACTIVE
                 and (
-                    memory.provenance.observation_id in allowed
+                    memory.memory_id in allowed
+                    or memory.provenance.observation_id in allowed
                     or bool(set(memory.provenance.evidence_refs) & allowed)
                 )
             )
