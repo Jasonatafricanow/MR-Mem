@@ -6,6 +6,7 @@ from mr_mem.memory.contracts import (
     MemoryCandidate,
     MemoryLifecycle,
     MemoryProvenance,
+    SemanticMemoryCandidate,
 )
 from mr_mem.memory.core import MemoryCore, MemoryCoreSelectionError
 from mr_mem.memory.embedding import (
@@ -40,6 +41,7 @@ from mr_mem.memory.retrieval import (
     RetrievalProviderUnavailable,
     RetrievedMemoryCandidate,
 )
+from mr_mem.memory.semantic_admission import SemanticAdmissionService
 from mr_mem.memory.source import (
     AdmissionDisposition,
     Clock,
@@ -47,6 +49,8 @@ from mr_mem.memory.source import (
     MemoryAdmissionResult,
     SourceEvidence,
     SourceObservation,
+    SourceRef,
+    SourceRefReader,
 )
 from mr_mem.memory.store import CanonicalMemoryStore, MemoryConflict
 from mr_mem.memory.threading import (
@@ -93,6 +97,10 @@ __all__ = [
     "RetrievedMemoryCandidate",
     "SourceEvidence",
     "SourceObservation",
+    "SourceRef",
+    "SourceRefReader",
+    "SemanticMemoryCandidate",
+    "SemanticAdmissionService",
     "ThreadAutoUpdateService",
     "ThreadProjectionCompiler",
     "ThreadSemanticEvent",

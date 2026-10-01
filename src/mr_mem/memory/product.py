@@ -1,6 +1,6 @@
 """Product-level memory governance over canonical MR-Mem.
 
-Canonical Memory remains factual authority. This module stores only derived
+Canonical Memory remains semantic authority. This module stores only derived
 attention state and short-lived logical projections in the same memory.sqlite.
 Neither attention nor threads can create Evidence, Observation, or Memory.
 """
@@ -589,14 +589,14 @@ class MemoryProductStore:
         return tuple(item[3] for item in candidates[:limit])
 
     def _has_independent_support(self, memory_ids: tuple[str, ...]) -> bool:
-        interaction_ids = {
-            memory.provenance.interaction_id
+        event_ids = {
+            event_id
             for memory_id in memory_ids
             if (memory := self._canonical.get(memory_id)) is not None
             and memory.lifecycle is MemoryLifecycle.ACTIVE
-            and memory.provenance.interaction_id is not None
+            for event_id in memory.provenance.support_event_ids
         }
-        return len(interaction_ids) >= 2
+        return len(event_ids) >= 2
 
     def _thread_support_is_current(self, thread: MemoryThread) -> bool:
         for memory_id in thread.handoff_memory_ids:

@@ -48,7 +48,7 @@ class MemoryCore:
 
     @property
     def canonical(self) -> CanonicalMemoryStore:
-        """Canonical factual store; private commit seams remain unchanged."""
+        """Canonical semantic store; raw source remains host-owned."""
         return self._canonical
 
     @property
