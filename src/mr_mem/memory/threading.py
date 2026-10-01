@@ -24,7 +24,6 @@ from mr_mem.memory.product import (
     MemoryThread,
     ThreadStatus,
 )
-from mr_mem.memory.providers.bm25 import lexical_tokens
 from mr_mem.memory.store import CanonicalMemoryStore, scope_json
 
 
@@ -354,34 +353,17 @@ class ThreadAutoUpdateService:
         )
         if not threads:
             return None
-        query_text = " ".join(value for value in (question, summary) if value)
-        normalized_question = _normalized(question) if question else None
-        query_tokens = set(lexical_tokens(query_text))
+        if question is None:
+            return None
+        normalized_question = _normalized(question)
         ranked: list[tuple[float, datetime, str, MemoryThread]] = []
         for thread in threads:
             if normalized_question == _normalized(thread.open_question):
                 score = 1.0
             else:
-                supporting_text = " ".join(
-                    memory.content
-                    for memory_id in thread.current_support_ids
-                    if (memory := self._canonical.get(memory_id)) is not None
-                )
-                candidate_text = " ".join(
-                    value
-                    for value in (
-                        thread.open_question,
-                        thread.working_summary,
-                        supporting_text,
-                    )
-                    if value
-                )
-                candidate_tokens = set(lexical_tokens(candidate_text))
-                smallest = min(len(query_tokens), len(candidate_tokens))
-                if smallest < 2:
-                    score = 0.0
-                else:
-                    score = len(query_tokens & candidate_tokens) / smallest
+                # Canonical question identity comes from accepted semantics.
+                # Lexical overlap is retrieval proximity, never Thread identity.
+                continue
             if score >= self._minimum_match:
                 ranked.append((score, thread.updated_at, thread.thread_id, thread))
         if not ranked:
