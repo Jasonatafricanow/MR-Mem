@@ -24,7 +24,6 @@ from mr_mem.memory.product import (
     MemoryThread,
     ThreadStatus,
 )
-from mr_mem.memory.providers.bm25 import lexical_tokens
 from mr_mem.memory.store import CanonicalMemoryStore, scope_json
 
 
@@ -234,7 +233,8 @@ class ThreadAutoUpdateService:
                 memory.scope == scope
                 and memory.lifecycle is MemoryLifecycle.ACTIVE
                 and (
-                    memory.provenance.observation_id in allowed
+                    memory.memory_id in allowed
+                    or memory.provenance.observation_id in allowed
                     or bool(set(memory.provenance.evidence_refs) & allowed)
                 )
             )
@@ -248,17 +248,20 @@ class ThreadAutoUpdateService:
         signal: ThreadSignal,
         support: tuple[CommittedMemory, ...],
         at: datetime,
-    ) -> MemoryThread:
+    ) -> MemoryThread | None:
         assert signal.open_question is not None
+        support_ids = tuple(memory.memory_id for memory in support)
+        thread_id = _thread_identity(scope, signal.open_question)
+        if self._product.is_compiled_support(thread_id, support_ids):
+            return None
         existing = self._best_match(
             scope,
             question=signal.open_question,
             summary=signal.summary,
         )
-        support_ids = tuple(memory.memory_id for memory in support)
         if existing is None:
             return self._product.open_thread(
-                thread_id=_thread_identity(scope, signal.open_question),
+                thread_id=thread_id,
                 scope=scope,
                 open_question=signal.open_question,
                 supporting_memory_ids=support_ids,
@@ -350,34 +353,17 @@ class ThreadAutoUpdateService:
         )
         if not threads:
             return None
-        query_text = " ".join(value for value in (question, summary) if value)
-        normalized_question = _normalized(question) if question else None
-        query_tokens = set(lexical_tokens(query_text))
+        if question is None:
+            return None
+        normalized_question = _normalized(question)
         ranked: list[tuple[float, datetime, str, MemoryThread]] = []
         for thread in threads:
             if normalized_question == _normalized(thread.open_question):
                 score = 1.0
             else:
-                supporting_text = " ".join(
-                    memory.content
-                    for memory_id in thread.current_support_ids
-                    if (memory := self._canonical.get(memory_id)) is not None
-                )
-                candidate_text = " ".join(
-                    value
-                    for value in (
-                        thread.open_question,
-                        thread.working_summary,
-                        supporting_text,
-                    )
-                    if value
-                )
-                candidate_tokens = set(lexical_tokens(candidate_text))
-                smallest = min(len(query_tokens), len(candidate_tokens))
-                if smallest < 2:
-                    score = 0.0
-                else:
-                    score = len(query_tokens & candidate_tokens) / smallest
+                # Canonical question identity comes from accepted semantics.
+                # Lexical overlap is retrieval proximity, never Thread identity.
+                continue
             if score >= self._minimum_match:
                 ranked.append((score, thread.updated_at, thread.thread_id, thread))
         if not ranked:

@@ -1,13 +1,53 @@
-"""Provider-neutral source records consumed by Memory admission."""
+"""Native source identity and legacy factual-admission compatibility contracts."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from mr_mem.contracts import Scope
+from mr_mem.contracts.common import require_aware_utc, require_non_empty
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRef:
+    """Metadata only. Source revisions share one independent support identity."""
+
+    source_namespace: str
+    session_id: str
+    record_id: str
+    occurred_at: datetime
+    revision: str | None = None
+    fingerprint: str | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("source_namespace", "session_id", "record_id"):
+            require_non_empty(getattr(self, name), name)
+        require_aware_utc(self.occurred_at, "occurred_at")
+        for name in ("revision", "fingerprint"):
+            if getattr(self, name) is not None:
+                require_non_empty(getattr(self, name), name)
+
+    @property
+    def source_key(self) -> str:
+        return json.dumps(
+            [self.source_namespace, self.session_id, self.record_id], ensure_ascii=False
+        )
+
+    @property
+    def version_key(self) -> str:
+        data = [self.source_key, self.occurred_at.isoformat(), self.revision, self.fingerprint]
+        return hashlib.sha256(json.dumps(data, ensure_ascii=False).encode()).hexdigest()
+
+
+class SourceRefReader(Protocol):
+    """Verify exact current metadata within scope without reading/copying raw."""
+
+    def current_ref(self, scope: Scope, ref: SourceRef) -> SourceRef | None: ...
 
 
 @runtime_checkable
@@ -59,7 +99,7 @@ class MemoryAdmissionResult:
 
 @runtime_checkable
 class DurableFactReader(Protocol):
-    """Read-only proof that source Evidence/Observation are durably admitted."""
+    """Legacy adapter, not a prerequisite for native semantic admission."""
 
     def find_evidence(
         self, scope: Scope, evidence_id: str

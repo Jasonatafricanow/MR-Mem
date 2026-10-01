@@ -18,10 +18,10 @@ from mr_mem.memory.store import CanonicalMemoryStore, scope_json
 
 
 class MemoryAdmissionService:
-    """Admit durable factual source material into canonical Memory.
+    """Legacy factual-pair compatibility adapter into canonical Memory.
 
     The service owns Memory eligibility and provenance constraints, but does
-    not own the upstream factual store. Any host can satisfy DurableFactReader.
+    not own the upstream factual store. Native hosts use SemanticAdmissionService.
     """
 
     def __init__(

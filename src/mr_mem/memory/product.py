@@ -1,6 +1,6 @@
 """Product-level memory governance over canonical MR-Mem.
 
-Canonical Memory remains factual authority. This module stores only derived
+Canonical Memory remains semantic authority. This module stores only derived
 attention state and short-lived logical projections in the same memory.sqlite.
 Neither attention nor threads can create Evidence, Observation, or Memory.
 """
@@ -221,6 +221,12 @@ class MemoryProductStore:
                 CREATE TABLE IF NOT EXISTS memory_threads (
                     thread_id TEXT PRIMARY KEY,
                     payload TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS memory_thread_handoffs (
+                    thread_id TEXT NOT NULL,
+                    baseline_id TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    PRIMARY KEY(thread_id, baseline_id)
                 );
                 """
             )
@@ -523,10 +529,27 @@ class MemoryProductStore:
             raise ValueError("Thread maturity lacks independent interaction support")
         with self._conn:
             self._conn.execute(
+                "INSERT OR IGNORE INTO memory_thread_handoffs VALUES(?,?,?)",
+                (thread_id, baseline_id, _encode_thread(thread)),
+            )
+            self._conn.execute(
                 "DELETE FROM memory_threads WHERE thread_id=?",
                 (thread_id,),
             )
         return True
+
+    def is_compiled_support(self, thread_id: str, memory_ids: tuple[str, ...]) -> bool:
+        """A retired support event must not recreate its temporary Thread on retry."""
+        if not memory_ids or not self._table_exists("memory_thread_handoffs"):
+            return False
+        compiled = {
+            memory_id
+            for (payload,) in self._conn.execute(
+                "SELECT payload FROM memory_thread_handoffs WHERE thread_id=?", (thread_id,),
+            )
+            for memory_id in _decode_thread(payload).handoff_memory_ids
+        }
+        return set(memory_ids) <= compiled
 
     def abandon_thread(self, thread_id: str, *, at: datetime) -> MemoryThread:
         self._writable()
@@ -589,14 +612,14 @@ class MemoryProductStore:
         return tuple(item[3] for item in candidates[:limit])
 
     def _has_independent_support(self, memory_ids: tuple[str, ...]) -> bool:
-        interaction_ids = {
-            memory.provenance.interaction_id
+        event_ids = {
+            event_id
             for memory_id in memory_ids
             if (memory := self._canonical.get(memory_id)) is not None
             and memory.lifecycle is MemoryLifecycle.ACTIVE
-            and memory.provenance.interaction_id is not None
+            for event_id in memory.provenance.support_event_ids
         }
-        return len(interaction_ids) >= 2
+        return len(event_ids) >= 2
 
     def _thread_support_is_current(self, thread: MemoryThread) -> bool:
         for memory_id in thread.handoff_memory_ids:

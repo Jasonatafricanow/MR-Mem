@@ -66,6 +66,31 @@ canonical semantic memory
 
 MR-Mem does not silently introduce a second default online semantic model.
 
+The native admission entry point is `SemanticAdmissionService.admit`. A host
+supplies an already accepted `SemanticMemoryCandidate` and a `SourceRefReader`
+that verifies exact current, scoped source metadata. Neither capability requires
+MR Evidence/Observation rows or transfers raw text. `MemoryAdmissionService`
+and `DurableFactReader` remain a legacy compatibility adapter only.
+
+`CommittedMemory.content` and `attributes` contain accepted semantic output.
+Its provenance carries native SourceRefs; `occurred_at` is the earliest supporting
+source event time, while `known_at` aliases the persisted semantic commit time.
+Compiler version and source versions participate in immutable semantic identity.
+Replaying a changed interpretation under the same identity fails closed.
+
+After receiving a native revision or deletion, the host calls
+`canonical.invalidate_source(scope, current_ref, deleted=...)`. An indexed
+SourceRef lookup invalidates only affected semantic records. Old support and
+contradiction/supersession links remain inspectable. Retrieval and Thread
+surfacing revalidate canonical lifecycle, and projection intents are requeued.
+Recompilation is host-owned; this API neither rescans nor reads raw history.
+Hosts must serialize source deltas against their current metadata and pass
+deletion tombstones explicitly.
+
+Thread consumes committed semantic records directly. Independent support is
+counted by native event identity (namespace/session/record), so revisions or
+multiple semantic fragments of one event cannot manufacture maturity.
+
 Thread and LCE consume the same semantic substrate and retain traceability
 through semantic IDs to SourceRefs.
 

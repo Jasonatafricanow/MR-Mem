@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from mr_mem.memory.product import MemoryProductStore
@@ -116,4 +116,51 @@ def test_accepted_higher_projection_retires_temporary_thread(tmp_path):
     assert len(compiler.calls) == 1
     assert compiler.calls[0].mature
     assert product.get_thread(opened.thread_id) is None
+    service.close()
+    canonical = CanonicalMemoryStore(path)
+    product = MemoryProductStore(path, canonical)
+    service = ThreadAutoUpdateService(
+        canonical=canonical, product=product, projection_compiler=compiler,
+    )
+    service.apply(
+        scope=first.scope,
+        accepted_events=(event(first.scope, "evidence-m1", "Replacement is under consideration."),),
+        at=NOW,
+    )
+    assert product.get_thread(opened.thread_id) is None
+    assert len(compiler.calls) == 1
+    third = memory("m3", content="A new reason to revisit it.", interaction_id="turn-3")
+    canonical._commit((third,))
+    service.apply(
+        scope=third.scope,
+        accepted_events=(
+            event(third.scope, "evidence-m3", "New support can reopen the working set."),
+        ),
+        at=NOW,
+    )
+    assert product.get_thread(opened.thread_id) is not None
+    service.close()
+
+
+def test_lexically_similar_distinct_questions_do_not_merge_or_mature(tmp_path):
+    path = tmp_path / "memory.sqlite"
+    canonical = CanonicalMemoryStore(path)
+    first = memory("m1", content="Replace laptop", interaction_id="turn-1")
+    second = memory("m2", content="Replace camera", interaction_id="turn-2")
+    canonical._commit((first, second))
+    product = MemoryProductStore(path, canonical)
+    service = ThreadAutoUpdateService(canonical=canonical, product=product)
+    service.apply(
+        scope=first.scope, accepted_events=(event(first.scope, "evidence-m1", "Laptop plan"),),
+        at=NOW,
+    )
+    other = event(second.scope, "evidence-m2", "Camera plan")
+    other = replace(other, attributes=tuple(
+        (key, "Will I replace my camera?" if key == "thread_question" else value)
+        for key, value in other.attributes
+    ))
+    service.apply(scope=first.scope, accepted_events=(other,), at=NOW)
+    threads = product.list_threads(first.scope)
+    assert len(threads) == 2
+    assert not any(thread.mature for thread in threads)
     service.close()
