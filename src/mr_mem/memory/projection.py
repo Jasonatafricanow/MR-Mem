@@ -22,6 +22,7 @@ class ProjectionIntent:
     attempts: int
     provider_ref: str | None
     last_error: str | None
+    generation: int = 0
 
 
 class ProjectionQueue:
@@ -59,6 +60,27 @@ class ProjectionQueue:
             )
         )
 
+    def register_projection_target(self, target: str) -> int:
+        """Atomically persist a consumer target and backfill existing canonical IDs.
+
+        Registration survives restart. Future canonical inserts enqueue every
+        registered target in their admission transaction. Re-registration does
+        not reset successful intents; rebuild(reset=True) explicitly does.
+        """
+        require_non_empty(target, "target")
+        self.__conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.__conn.execute("INSERT OR IGNORE INTO projection_targets VALUES (?)", (target,))
+            before = self.__conn.total_changes
+            for (memory_id,) in self.__conn.execute("SELECT memory_id FROM canonical_memory"):
+                self._enqueue(memory_id, target)
+            count = self.__conn.total_changes - before
+            self.__conn.commit()
+            return count
+        except BaseException:
+            self.__conn.rollback()
+            raise
+
     def get(self, memory_id: str) -> CommittedMemory | None:
         row = self.__conn.execute(
             "SELECT payload FROM canonical_memory WHERE memory_id=?", (memory_id,)
@@ -71,13 +93,16 @@ class ProjectionQueue:
                 "UPDATE projection_intents SET attempts=attempts+1 WHERE intent_id=?", (intent_id,)
             )
 
-    def succeed(self, intent_id: str, provider_ref: str) -> None:
+    def succeed(
+        self, intent_id: str, provider_ref: str, *, expected_generation: int | None = None,
+    ) -> None:
         require_non_empty(provider_ref, "provider_ref")
         with self.__conn:
             self.__conn.execute(
                 "UPDATE projection_intents SET status='succeeded', "
-                "provider_ref=?,last_error=NULL WHERE intent_id=?",
-                (provider_ref, intent_id),
+                "provider_ref=?,last_error=NULL WHERE intent_id=? "
+                "AND (? IS NULL OR generation=?)",
+                (provider_ref, intent_id, expected_generation, expected_generation),
             )
 
     def fail(self, intent_id: str, error: str) -> None:
@@ -148,7 +173,9 @@ class ProjectionWorker:
                 continue
             try:
                 ref = self._writer.upsert(memory, intent=intent)
-                self._queue.succeed(intent.intent_id, ref)
+                self._queue.succeed(
+                    intent.intent_id, ref, expected_generation=intent.generation,
+                )
             except Exception as exc:
                 self._queue.fail(intent.intent_id, f"{type(exc).__name__}: {exc}")
                 failed += 1

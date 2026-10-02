@@ -90,8 +90,16 @@ class CanonicalMemoryStore:
                 status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
                 provider_ref TEXT, last_error TEXT,
                 UNIQUE(memory_id, target));
+            CREATE TABLE IF NOT EXISTS projection_targets (
+                target TEXT PRIMARY KEY);
         """)
         self._conn.executescript(SEMANTIC_SCHEMA_SQL)
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(projection_intents)")}
+        if "generation" not in columns:
+            self._conn.execute(
+                "ALTER TABLE projection_intents ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
+            )
+            self._conn.commit()
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -131,6 +139,10 @@ class CanonicalMemoryStore:
             "INSERT INTO canonical_memory VALUES (?, ?)", (memory.memory_id, payload)
         )
         self.projection_queue()._enqueue(memory.memory_id, "unassigned")
+        for (target,) in self._conn.execute(
+            "SELECT target FROM projection_targets ORDER BY target"
+        ):
+            self.projection_queue()._enqueue(memory.memory_id, target)
         for ref in memory.provenance.source_refs:
             self._conn.execute(
                 "INSERT INTO semantic_sources VALUES (?,?,?,?)",
@@ -144,7 +156,8 @@ class CanonicalMemoryStore:
         )
         # Consumers must revalidate canonical lifecycle; stale derived text is never authority.
         self._conn.execute(
-            "UPDATE projection_intents SET status='pending',last_error=NULL WHERE memory_id=?",
+            "UPDATE projection_intents SET status='pending',last_error=NULL,"
+            "generation=generation+1 WHERE memory_id=?",
             (memory.memory_id,),
         )
 
@@ -305,6 +318,12 @@ class CanonicalMemoryStore:
             )
         for relation in accepted["relations"]:
             self._conn.execute("INSERT INTO semantic_relations VALUES (?,?,?,?,?,?)", relation)
+            # Both endpoint views change, even when the relation has no lifecycle effect.
+            self._conn.execute(
+                "UPDATE projection_intents SET status='pending',last_error=NULL,"
+                "generation=generation+1 "
+                "WHERE memory_id IN (?,?)", relation[:2],
+            )
         for mid in sorted({r[1] for r in accepted["relations"] if r[4] == "supersede"}):
             self._set_lifecycle(self.get(mid), MemoryLifecycle.SUPERSEDED)
         self._conn.execute(
