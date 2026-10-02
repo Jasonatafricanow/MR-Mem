@@ -59,6 +59,25 @@ class MemoryCore:
     def get(self, memory_id: str) -> CommittedMemory | None:
         return self._canonical.get(memory_id)
 
+    def get_semantic_metadata(self, memory_id: str):
+        return self._canonical.get_semantic_metadata(memory_id)
+
+    def semantic_relations(self, memory_id: str) -> tuple[tuple[str, ...], ...]:
+        return self._canonical.semantic_relations(memory_id)
+
+    def semantic_admission(self, *, sources, clock, origin_runtime_id: str):
+        """Provide the MR-Mem admission capability; Core itself never writes memories."""
+        from mr_mem.memory.semantic_admission import SemanticAdmissionService
+
+        if self.read_only:
+            raise ValueError("read-only MemoryCore cannot provide admission")
+        return SemanticAdmissionService(
+            store=self._canonical,
+            sources=sources,
+            clock=clock,
+            origin_runtime_id=origin_runtime_id,
+        )
+
     def load_all(self) -> tuple[CommittedMemory, ...]:
         return self._canonical.load_all()
 

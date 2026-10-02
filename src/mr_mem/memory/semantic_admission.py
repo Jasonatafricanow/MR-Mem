@@ -242,3 +242,28 @@ class SemanticAdmissionService:
             tuple(meta["memory_id"] for meta in accepted["metadata"]),
             "deferred" if not accepted["metadata"] and accepted["delta"]["points"] else "committed",
         )
+
+    def semantic_delta_receipt(self, binding: SemanticSourceBinding) -> SemanticDeltaReceipt | None:
+        self._validate_binding(binding)
+        key = self._delta_job_key(binding)
+        prior = self._store._semantic_compilation(key)
+        return self._delta_receipt(key) if prior is not None and prior[1] == "complete" else None
+
+    def resume_semantic_delta(self, binding: SemanticSourceBinding) -> SemanticDeltaReceipt | None:
+        """Finish the original accepted job, never parse/propose/recompile a new delta."""
+        self._validate_binding(binding)
+        key = self._delta_job_key(binding)
+        if self._store._semantic_compilation(key) is None:
+            return None
+        self._complete_delta_job(key, binding)
+        return self._delta_receipt(key)
+
+    def recover_semantic_deltas(self, *, limit: int = 32) -> tuple[SemanticDeltaReceipt, ...]:
+        from mr_mem.memory.semantic_store import read_binding
+
+        receipts = []
+        for key, accepted in self._store._pending_semantic_compilations(limit):
+            binding = read_binding(accepted["binding"])
+            if self._delta_job_key(binding) == key:
+                receipts.append(self.resume_semantic_delta(binding))
+        return tuple(receipts)
