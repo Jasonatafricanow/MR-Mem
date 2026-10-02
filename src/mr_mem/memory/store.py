@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from mr_mem.contracts import Scope, ScopeDomain, SyncFields
 from mr_mem.memory.contracts import CommittedMemory, MemoryLifecycle, MemoryProvenance
+from mr_mem.memory.semantic_store import SEMANTIC_SCHEMA_SQL, read_metadata
 from mr_mem.memory.source import SourceRef
 
 if TYPE_CHECKING:
@@ -90,6 +91,7 @@ class CanonicalMemoryStore:
                 provider_ref TEXT, last_error TEXT,
                 UNIQUE(memory_id, target));
         """)
+        self._conn.executescript(SEMANTIC_SCHEMA_SQL)
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -147,7 +149,11 @@ class CanonicalMemoryStore:
         )
 
     def invalidate_source(
-        self, scope: Scope, ref: SourceRef, *, deleted: bool = False,
+        self,
+        scope: Scope,
+        ref: SourceRef,
+        *,
+        deleted: bool = False,
     ) -> tuple[str, ...]:
         """Invalidate only support with this identity and stale revision, or a tombstone."""
         if type(deleted) is not bool:
@@ -205,7 +211,13 @@ class CanonicalMemoryStore:
         candidates = None if row[1] is None else tuple(_decode(p) for p in json.loads(row[1]))
         return datetime.fromisoformat(row[0]), candidates, bool(row[2])
 
-    def _freeze_job(self, source_key: str, memories: tuple[CommittedMemory, ...]) -> None:
+    def _freeze_job(
+        self,
+        source_key: str,
+        memories: tuple[CommittedMemory, ...],
+        *,
+        semantic_compilation: dict | None = None,
+    ) -> None:
         payload = json.dumps([_encode(m) for m in memories])
         with self._transaction():
             row = self._conn.execute(
@@ -213,6 +225,15 @@ class CanonicalMemoryStore:
             ).fetchone()
             if row is None or (row[0] is not None and row[0] != payload):
                 raise MemoryConflict("missing job or conflicting extraction replay")
+            if semantic_compilation is not None:
+                accepted = json.dumps(semantic_compilation, sort_keys=True, ensure_ascii=False)
+                prior = self._semantic_compilation(source_key)
+                if prior is not None and prior[0] != semantic_compilation:
+                    raise MemoryConflict("conflicting accepted semantic compilation")
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO semantic_compilations(source_key,accepted) VALUES (?,?)",
+                    (source_key, accepted),
+                )
             self._conn.execute(
                 "UPDATE admission_jobs SET candidates=? WHERE source_key=?", (payload, source_key)
             )
@@ -226,7 +247,58 @@ class CanonicalMemoryStore:
                 return
             for memory in job[1]:
                 self._insert(memory)
+            compilation = self._semantic_compilation(source_key)
+            if compilation is not None:
+                self._complete_semantic_mutations(source_key, compilation[0])
             self._conn.execute("UPDATE admission_jobs SET done=1 WHERE source_key=?", (source_key,))
+
+    def _semantic_compilation(self, source_key: str) -> tuple[dict, str] | None:
+        row = self._conn.execute(
+            "SELECT accepted,status FROM semantic_compilations WHERE source_key=?",
+            (source_key,),
+        ).fetchone()
+        return None if row is None else (json.loads(row[0]), row[1])
+
+    def get_semantic_metadata(self, memory_id: str):
+        row = self._conn.execute(
+            "SELECT payload FROM semantic_block_metadata WHERE memory_id=?",
+            (memory_id,),
+        ).fetchone()
+        return None if row is None else read_metadata(row[0])
+
+    def semantic_relations(self, memory_id: str) -> tuple[tuple[str, ...], ...]:
+        return tuple(
+            self._conn.execute(
+                "SELECT * FROM semantic_relations WHERE from_memory_id=? "
+                "ORDER BY to_memory_id,relation,boundary_policy,lifecycle_effect,interaction_id",
+                (memory_id,),
+            )
+        )
+
+    def _complete_semantic_mutations(self, source_key: str, accepted: dict) -> None:
+        # Called inside _complete_job's transaction, after all new blocks are insertable.
+        scope = accepted["binding"]["scope"]
+        for mid in accepted["activated_memory_ids"]:
+            target = self.get(mid)
+            if (
+                target is None
+                or asdict(target.scope) != scope
+                or target.lifecycle is not MemoryLifecycle.ACTIVE
+            ):
+                raise MemoryConflict("activated canonical target changed before commit")
+        for metadata in accepted["metadata"]:
+            self._conn.execute(
+                "INSERT INTO semantic_block_metadata VALUES (?,?)",
+                (metadata["memory_id"], json.dumps(metadata, sort_keys=True, ensure_ascii=False)),
+            )
+        for relation in accepted["relations"]:
+            self._conn.execute("INSERT INTO semantic_relations VALUES (?,?,?,?,?,?)", relation)
+        for mid in sorted({r[1] for r in accepted["relations"] if r[4] == "supersede"}):
+            self._set_lifecycle(self.get(mid), MemoryLifecycle.SUPERSEDED)
+        self._conn.execute(
+            "UPDATE semantic_compilations SET status='complete' WHERE source_key=?",
+            (source_key,),
+        )
 
     def projection_queue(self) -> "ProjectionQueue":
         """A capability exposing only canonical reads and derived projection writes."""
