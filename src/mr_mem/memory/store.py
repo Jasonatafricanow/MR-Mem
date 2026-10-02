@@ -266,6 +266,18 @@ class CanonicalMemoryStore:
         ).fetchone()
         return None if row is None else read_metadata(row[0])
 
+    def _pending_semantic_compilations(self, limit: int) -> tuple[tuple[str, dict], ...]:
+        if type(limit) is not int or limit < 1:
+            raise ValueError("recovery limit must be a positive integer")
+        return tuple(
+            (key, json.loads(accepted))
+            for key, accepted in self._conn.execute(
+                "SELECT source_key,accepted FROM semantic_compilations "
+                "WHERE status='frozen' ORDER BY source_key LIMIT ?",
+                (limit,),
+            )
+        )
+
     def semantic_relations(self, memory_id: str) -> tuple[tuple[str, ...], ...]:
         return tuple(
             self._conn.execute(
