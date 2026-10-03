@@ -6,16 +6,17 @@ from hashlib import sha256
 from pathlib import Path
 
 from mr_mem.point_sidecar_v2 import (
-    PointSidecarError,
+    BodyResponseError,
     PointTarget,
     allocate_point_context,
     body_point_sidecar_instruction,
+    body_point_sidecar_tool,
     parse_body_turn_v2,
 )
 
 
 def run_probe(cases, body_infer, output: Path):
-    """body_infer(messages) returns (raw JSON Body content, provider usage).
+    """body_infer(messages, tool) returns (provider message, provider usage).
 
     No retries, repair passes, semantic-only calls, admission, or downstream consumers.
     The full local evidence includes raw turns; publish only a reviewed aggregate.
@@ -39,8 +40,24 @@ def run_probe(cases, body_infer, output: Path):
             )
             conversation.append({"role": "user", "content": user_text})
             instruction = body_point_sidecar_instruction(context)
+            aliases = {
+                target.target_id: alias for alias, target in context.target_aliases().items()
+            }
+            proposals = [
+                {
+                    "alias": aliases[p.point_id],
+                    "meaning": p.meaning,
+                    "status": p.status,
+                    "unresolved_refs": p.unresolved_refs,
+                    "context_links": [
+                        {"target": aliases[link.target_id], "relation": link.relation}
+                        for link in p.context_links
+                    ],
+                }
+                for p in prior_points
+            ]
             instruction += "\nPrevious Point proposals: " + json.dumps(
-                prior_points, ensure_ascii=False
+                proposals, ensure_ascii=False
             )
             messages = [
                 {"role": "system", "content": "Respond helpfully to the user in Chinese."},
@@ -52,20 +69,32 @@ def run_probe(cases, body_infer, output: Path):
                 "turn_index": index,
                 "raw_turn": user_text,
                 "model_call_count": 1,
-                "request_sha256": sha256(json.dumps(messages).encode()).hexdigest(),
+                "protocol": "body_point_sidecar_v2_1",
+                "request_sha256": sha256(
+                    json.dumps([messages, body_point_sidecar_tool(context)]).encode()
+                ).hexdigest(),
             }
             try:
-                raw, usage = body_infer(messages)
+                raw, usage = body_infer(messages, body_point_sidecar_tool(context))
                 record.update(raw_body_output=raw, provider_usage=usage)
-                if usage.get("finish_reason", "stop") != "stop":
-                    raise RuntimeError("Body output is incomplete")
-                result = parse_body_turn_v2(raw, context=context)
+                result = parse_body_turn_v2(
+                    raw, context=context, finish_reason=usage.get("finish_reason", "tool_calls")
+                )
                 record.update(measure_body_output_tokens(raw, usage))
                 record.update(response=result.response, points=[asdict(p) for p in result.points])
-                record["sidecar_utf8_bytes"] = len(
-                    json.dumps(json.loads(raw)["points"], ensure_ascii=False).encode()
+                record["sidecar_error"] = result.sidecar_error
+                record["sidecar_status"] = "REJECTED" if result.sidecar_error else "ACCEPTED"
+                record["sidecar_utf8_bytes"] = (
+                    None
+                    if result.sidecar_error
+                    else len(
+                        json.dumps(
+                            json.loads(raw["tool_calls"][0]["function"]["arguments"])["points"],
+                            ensure_ascii=False,
+                        ).encode()
+                    )
                 )
-            except (PointSidecarError, RuntimeError) as exc:
+            except (BodyResponseError, RuntimeError) as exc:
                 record["error"] = str(exc)
                 records.append(record)
                 output.write_text(
@@ -83,16 +112,16 @@ def run_probe(cases, body_infer, output: Path):
                 conversation.extend(native_replies[index])
             for point in result.points:
                 targets.append(PointTarget("POINT", point.point_id))
-                prior_points.append(asdict(point))
+                prior_points.append(point)
     return records
 
 
 def measure_body_output_tokens(raw, usage):
     """Attribute visible output using provider bytes; no substitute tokenizer or estimate.
 
-    Overhead includes the Point array and wire envelope. Tokens crossing the response
-    value's byte boundary give a lower/upper bound, not fabricated exact attribution.
-    Reasoning cost is separate and cannot be isolated without a matched control.
+    The provider must expose a complete byte-aligned trace of normal content and
+    report separate visible/reasoning counts. The difference includes tool framing.
+    Otherwise sidecar attribution stays unknown. Reasoning overhead is not isolated.
     """
     tokens = usage.get("output_token_trace") or []
     unknown = {"visible_output_tokens": None, "visible_overhead_tokens_range": None}
@@ -102,55 +131,21 @@ def measure_body_output_tokens(raw, usage):
         chunks = [bytes(token["bytes"]) for token in tokens]
     except (TypeError, ValueError):
         return unknown
-    raw_bytes = raw.encode("utf-8")
-    adjustment = 0
-    if b"".join(chunks) != raw_bytes:
-        visible = usage.get("completion_tokens", 0) - usage.get(
-            "completion_tokens_details", {}
-        ).get("reasoning_tokens", 0)
-        # Some JSON-mode traces repeat one prefill token. Require both independent
-        # byte equality and provider token accounting before excluding that duplicate.
-        if (
-            len(chunks) == visible
-            and chunks[0]
-            and raw_bytes.startswith(chunks[0])
-            and b"".join(chunks[1:]) == raw_bytes
-        ):
-            chunks = chunks[1:]
-            adjustment = 1
-        else:
-            return unknown
-    decoder = json.JSONDecoder()
-    cursor = raw.index("{") + 1
-    response_span = None
-    while cursor < len(raw):
-        while raw[cursor] in " \r\n\t,":
-            cursor += 1
-        if raw[cursor] == "}":
-            break
-        key, cursor = decoder.raw_decode(raw, cursor)
-        cursor = raw.index(":", cursor) + 1
-        while raw[cursor].isspace():
-            cursor += 1
-        _, end = decoder.raw_decode(raw, cursor)
-        if key == "response":
-            response_span = (len(raw[:cursor].encode()), len(raw[:end].encode()))
-        cursor = end
-    if response_span is None:
+    if not isinstance(raw, dict) or not isinstance(raw.get("content"), str):
         return unknown
-    start, end = response_span
-    offset = response_tokens = boundary_tokens = 0
-    for chunk in chunks:
-        stop = offset + len(chunk)
-        if offset < end and stop > start:
-            response_tokens += 1
-            boundary_tokens += int(offset < start or stop > end)
-        offset = stop
-    lower = len(chunks) - response_tokens
+    if b"".join(chunks) != raw["content"].encode("utf-8"):
+        return unknown
+    completion = usage.get("completion_tokens")
+    reasoning = usage.get("completion_tokens_details", {}).get("reasoning_tokens")
+    if type(completion) is not int or type(reasoning) is not int:
+        return unknown
+    visible = completion - reasoning
+    if reasoning < 0 or visible < len(chunks):
+        return unknown
+    overhead = visible - len(chunks)
     return {
-        "visible_output_tokens": len(chunks),
-        "visible_overhead_tokens_range": [lower, lower + boundary_tokens],
-        "token_trace_prefill_adjustment": adjustment,
-        "provider_reported_visible_tokens": usage.get("completion_tokens", 0)
-        - usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0),
+        "visible_output_tokens": visible,
+        "visible_response_trace_tokens": len(chunks),
+        "visible_overhead_tokens_range": [overhead, overhead],
+        "token_attribution_method": "provider_visible_minus_byte_aligned_content_trace",
     }

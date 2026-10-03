@@ -4,13 +4,18 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 
-SCHEMA_VERSION = "body_point_sidecar_v2"
+SCHEMA_VERSION = "body_point_sidecar_v2_1"
+SIDECAR_TOOL = "emit_point_sidecar"
 MAX_POINTS = 4
 MAX_SIDECAR_BYTES = 12_288
 
 
 class PointSidecarError(ValueError):
     """The complete sidecar is rejected without repair or model retry."""
+
+
+class BodyResponseError(ValueError):
+    """The provider supplied no usable normal response; a sidecar cannot replace it."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +62,16 @@ class PointSidecarContext:
         if len(set(self.activated_targets)) != len(self.activated_targets):
             raise PointSidecarError("duplicate activated targets")
 
+    def target_aliases(self) -> dict[str, PointTarget]:
+        """Request-local aliases; only the host sees the stable target identities."""
+        prefixes = {"POINT": "p", "BLOCK": "b", "MEMORY": "m"}
+        counts = dict.fromkeys(prefixes, 0)
+        aliases = {}
+        for target in self.activated_targets:
+            aliases[f"{prefixes[target.target_kind]}{counts[target.target_kind]}"] = target
+            counts[target.target_kind] += 1
+        return aliases
+
 
 @dataclass(frozen=True, slots=True)
 class SemanticPointV2:
@@ -67,16 +82,13 @@ class SemanticPointV2:
     status: str
     context_links: tuple[PointContextLink, ...]
     unresolved_refs: tuple[str, ...]
-    polarity: str | None = None
-    epistemic_status: str | None = None
-    temporal_scope: str | None = None
-    temporal_expression: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class BodyTurnOutputV2:
     response: str
     points: tuple[SemanticPointV2, ...]
+    sidecar_error: str | None = None
 
 
 def _text(value, limit=256):
@@ -116,57 +128,83 @@ def _object(pairs):
 
 
 def _point(value, context):
-    optional = ("polarity", "epistemic_status", "temporal_scope", "temporal_expression")
-    _fields(value, ("point_id", "meaning", "status", "context_links", "unresolved_refs"), optional)
-    if _text(value["point_id"]) not in context.point_ids:
-        raise PointSidecarError("Point identity was not allocated by the host")
+    _fields(value, ("slot", "meaning", "status", "context_links", "unresolved_refs"))
+    slot = value["slot"]
+    if type(slot) is not int or not 0 <= slot < len(context.point_ids):
+        raise PointSidecarError("invalid host Point slot")
     if value["status"] not in ("RESOLVED", "DEFER"):
         raise PointSidecarError("invalid Point status")
     refs = tuple(_text(ref) for ref in _array(value["unresolved_refs"], 8))
     if refs and value["status"] != "DEFER":
         raise PointSidecarError("unresolved references require DEFER")
-    targets = set(context.activated_targets)
+    targets = context.target_aliases()
     links = []
     for link in _array(value["context_links"], 8):
-        _fields(link, ("target_kind", "target_id", "relation"))
-        target = PointTarget(_text(link["target_kind"]), _text(link["target_id"]))
-        if target not in targets:
+        _fields(link, ("target", "relation"))
+        alias = _text(link["target"])
+        if alias not in targets:
             raise PointSidecarError("context target was not activated by the host")
+        target = targets[alias]
         links.append(
             PointContextLink(target.target_kind, target.target_id, _text(link["relation"]))
         )
-    metadata = {name: _text(value[name]) for name in optional if name in value}
     return SemanticPointV2(
-        value["point_id"],
+        context.point_ids[slot],
         context.interaction_id,
         context.turn_id,
         _text(value["meaning"], 2048),
         value["status"],
         tuple(links),
         refs,
-        **metadata,
     )
 
 
-def parse_body_turn_v2(payload: str, *, context: PointSidecarContext) -> BodyTurnOutputV2:
-    """Decode the response and Point siblings from one already completed Body call."""
+def parse_point_sidecar_v2(payload: str, *, context: PointSidecarContext):
+    """Strictly decode tool arguments. No repair, partial acceptance, or inference."""
     if not isinstance(payload, str) or _utf8_size(payload) > 65_536:
-        raise PointSidecarError("invalid or oversized Body output")
+        raise PointSidecarError("invalid or oversized sidecar output")
     try:
         value = json.loads(payload, object_pairs_hook=_object, parse_constant=_invalid_constant)
     except (ValueError, RecursionError) as exc:
-        raise PointSidecarError("invalid Body JSON") from exc
-    _fields(value, ("schema_version", "response", "points"))
-    if value["schema_version"] != SCHEMA_VERSION:
-        raise PointSidecarError("unsupported Body sidecar schema")
-    response = _text(value["response"], 16_384)
+        raise PointSidecarError("invalid sidecar JSON") from exc
+    _fields(value, ("points",))
     values = _array(value["points"], MAX_POINTS)
     if _utf8_size(json.dumps(values, ensure_ascii=False)) > MAX_SIDECAR_BYTES:
         raise PointSidecarError("sidecar byte budget exceeded")
     points = tuple(_point(point, context) for point in values)
-    if len({point.point_id for point in points}) != len(points):
-        raise PointSidecarError("duplicate Point identities")
-    return BodyTurnOutputV2(response, points)
+    if [value["slot"] for value in values] != list(range(len(points))):
+        raise PointSidecarError("Point slots must be unique and consecutive from zero")
+    return points
+
+
+def parse_body_turn_v2(
+    message: dict, *, context: PointSidecarContext, finish_reason: str = "tool_calls"
+) -> BodyTurnOutputV2:
+    """Keep normal content even when the independent tool sidecar is rejected."""
+    try:
+        if not isinstance(message, dict):
+            raise PointSidecarError("invalid provider message")
+        response = _text(message.get("content"), 16_384)
+    except PointSidecarError as exc:
+        raise BodyResponseError("missing or invalid normal Body response") from exc
+    try:
+        if finish_reason not in ("stop", "tool_calls"):
+            raise PointSidecarError("incomplete Body sidecar")
+        calls = _array(message.get("tool_calls"), 1)
+        if len(calls) != 1 or not isinstance(calls[0], dict):
+            raise PointSidecarError("expected one sidecar tool call")
+        call = calls[0]
+        function = call.get("function")
+        if (
+            call.get("type") != "function"
+            or not isinstance(function, dict)
+            or function.get("name") != SIDECAR_TOOL
+        ):
+            raise PointSidecarError("unexpected sidecar tool")
+        points = parse_point_sidecar_v2(function.get("arguments"), context=context)
+        return BodyTurnOutputV2(response, points)
+    except PointSidecarError as exc:
+        return BodyTurnOutputV2(response, (), str(exc))
 
 
 def _invalid_constant(value):
@@ -190,43 +228,79 @@ def allocate_point_context(
 def body_point_sidecar_instruction(context: PointSidecarContext) -> str:
     """Attach to the normal Body request; the host owns inference and source authority."""
     envelope = {
-        "schema_version": SCHEMA_VERSION,
-        "response": "your normal user-facing response",
         "points": [
             {
-                "point_id": context.point_ids[0],
-                "meaning": "faithful turn-local understanding in this conversation",
+                "slot": 0,
+                "meaning": "minimal semantic commitment explicitly made by the current user turn",
                 "status": "RESOLVED",
                 "context_links": [],
                 "unresolved_refs": [],
             }
         ],
     }
-    activated = [
-        {"target_kind": target.target_kind, "target_id": target.target_id}
-        for target in context.activated_targets
-    ]
     return (
-        "In this SAME normal Body inference, return one JSON object with sibling response "
-        "and Point sidecar. Do not call another model or tool to produce Points. "
-        "Points describe the current turn's local meaning; they may depend on prior turns. "
-        "Do not make them artificially context-free or split them into NLP atoms. "
-        "Prefer one Point per coherent local understanding; use multiple only for materially "
-        "different meanings, never near-duplicate reformulations of the same correction. "
-        "Preserve correction, qualification, uncertainty, negation, time, and partial plan "
-        "updates. Only include optional polarity, epistemic_status, temporal_scope, or "
-        "temporal_expression (nonempty text) when materially relevant. "
-        "Use open-text relations for relevant prior context_links, with exactly "
-        "target_kind, target_id, relation. Only link to the host's activated targets. "
-        "Unresolved references require explicit unresolved_refs and status DEFER; do not guess. "
-        "RESOLVED means locally understood, not canonical or complete outside this context. "
-        "Never output Scope, SourceRef, revision, time authority, interaction_id, turn_id, "
-        "or canonical identity. Points remain proposals awaiting later Block compilation. "
-        "Output at most 4 Points, meaning <=2048 characters, links/refs <=8 each, "
-        "optional text/relation/ref <=256 characters, sidecar <=12288 UTF-8 bytes. "
-        "Use an empty points array only when no semantic content is present. "
-        "No extra fields, markdown fences, or prose outside JSON.\n"
-        f"Allocated current-turn Point IDs: {json.dumps(context.point_ids)}\n"
-        f"Activated prior targets: {json.dumps(activated, ensure_ascii=False)}\n"
-        f"Output shape: {json.dumps(envelope, ensure_ascii=False)}"
+        f"In this SAME normal Body inference, give the normal user-facing reply in message "
+        f"content, then call {SIDECAR_TOOL} once for the independent Point sidecar. "
+        "Do not wait for a tool result or another inference to give the reply. "
+        "meaning is minimal semantic commitment: record ONLY what the current user turn "
+        "explicitly commits in the existing dialogue. Prior context may identify an explicit "
+        "correction or qualification, but must not add a new commitment. Never copy your own "
+        "response, explanations, advice or world knowledge into the user's Point. "
+        "Do not add unexpressed independence, exclusivity, causation, permanence, preference "
+        "or negation. Preserve expressed uncertainty, scope, time and partial updates. "
+        "Default ONE Point for the whole turn-local understanding state. Multiple Points "
+        "are allowed ONLY for truly independent semantic lines in the same turn that may "
+        "develop separately; never split one correction/qualification into NLP atoms. "
+        "RESOLVED requires the dialogue itself to determine a unique antecedent. If multiple "
+        "antecedents remain semantically possible, or selection relies on common sense/world "
+        "knowledge, use DEFER and record the ambiguous expression in unresolved_refs. "
+        "Do not decide ambiguity from which antecedent seems more plausible. "
+        "RESOLVED is local, not context-complete or canonical. "
+        "Use slots 0,1,... in order; the host assigns all stable identities. "
+        "context_links use only activated aliases with open-text relation; link relevant "
+        "corrections/qualifications without promoting previous proposals into facts. "
+        "No host identity, authority, extra fields or markdown in tool arguments. "
+        "At most 4 Points, meaning <=2048 characters, links/refs <=8 each, "
+        "relation/ref <=256 characters, Point array <=12288 UTF-8 bytes. "
+        "Empty points only when no semantic content is present.\n"
+        f"Available current slots: {list(range(len(context.point_ids)))}\n"
+        f"Activated targets: {list(context.target_aliases())}\n"
+        f"Tool arguments: {json.dumps(envelope, ensure_ascii=False)}"
     )
+
+
+def body_point_sidecar_tool(context: PointSidecarContext) -> dict:
+    """Strict function schema; provider support is a host capability, not assumed."""
+    link = {
+        "type": "object",
+        "properties": {"target": {"type": "string"}, "relation": {"type": "string"}},
+        "required": ["target", "relation"],
+        "additionalProperties": False,
+    }
+    fields = {
+        "slot": {"type": "integer", "minimum": 0, "maximum": len(context.point_ids) - 1},
+        "meaning": {"type": "string"},
+        "status": {"type": "string", "enum": ["RESOLVED", "DEFER"]},
+        "context_links": {"type": "array", "items": link},
+        "unresolved_refs": {"type": "array", "items": {"type": "string"}},
+    }
+    point = {
+        "type": "object",
+        "properties": fields,
+        "required": list(fields),
+        "additionalProperties": False,
+    }
+    return {
+        "type": "function",
+        "function": {
+            "name": SIDECAR_TOOL,
+            "strict": True,
+            "description": "Propose current-turn minimal semantic commitment; no tool execution.",
+            "parameters": {
+                "type": "object",
+                "properties": {"points": {"type": "array", "items": point}},
+                "required": ["points"],
+                "additionalProperties": False,
+            },
+        },
+    }

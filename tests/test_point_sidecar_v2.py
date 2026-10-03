@@ -4,12 +4,16 @@ import pytest
 
 from mr_mem.point_sidecar_v2 import (
     MAX_SIDECAR_BYTES,
+    SIDECAR_TOOL,
+    BodyResponseError,
     PointSidecarContext,
     PointSidecarError,
     PointTarget,
     allocate_point_context,
     body_point_sidecar_instruction,
+    body_point_sidecar_tool,
     parse_body_turn_v2,
+    parse_point_sidecar_v2,
 )
 
 
@@ -27,20 +31,12 @@ def context(**overrides):
 
 def payload(**overrides):
     return {
-        "schema_version": "body_point_sidecar_v2",
-        "response": "明白，只调整第一部分。",
         "points": [
             {
-                "point_id": "session-1/turn-2/p0",
+                "slot": 0,
                 "meaning": "第一部分改成周五，其余安排沿用前一轮。",
                 "status": "RESOLVED",
-                "context_links": [
-                    {
-                        "target_kind": "POINT",
-                        "target_id": "session-1/turn-1/p0",
-                        "relation": "仅修改第一部分，保留其余安排",
-                    }
-                ],
+                "context_links": [{"target": "p0", "relation": "仅修改第一部分，保留其余安排"}],
                 "unresolved_refs": [],
             }
         ],
@@ -48,117 +44,187 @@ def payload(**overrides):
     }
 
 
-def test_same_body_output_keeps_local_meaning_and_binds_host_ids():
-    result = parse_body_turn_v2(json.dumps(payload()), context=context())
-    assert result.response == payload()["response"]
+def message(arguments=None):
+    return {
+        "content": "明白，只调整第一部分。",
+        "tool_calls": [
+            {
+                "id": "provider-call",
+                "type": "function",
+                "function": {
+                    "name": SIDECAR_TOOL,
+                    "arguments": json.dumps(payload()) if arguments is None else arguments,
+                },
+            }
+        ],
+    }
+
+
+def test_same_inference_binds_slot_and_alias_to_host_ids():
+    result = parse_body_turn_v2(message(), context=context())
+    assert result.response == message()["content"] and result.sidecar_error is None
     point = result.points[0]
+    assert (point.point_id, point.interaction_id, point.turn_id) == (
+        "session-1/turn-2/p0",
+        "session-1",
+        "turn-2",
+    )
     assert point.meaning == payload()["points"][0]["meaning"]
-    assert (point.interaction_id, point.turn_id) == ("session-1", "turn-2")
-    assert point.context_links[0].relation == "仅修改第一部分，保留其余安排"
-    assert point.polarity is None
+    assert point.context_links[0].target_id == "session-1/turn-1/p0"
 
 
 @pytest.mark.parametrize(
     "field",
-    ["scope", "source_ref", "known_at", "occurred_at", "revision", "turn_id", "canonical_id"],
+    [
+        "point_id",
+        "scope",
+        "source_ref",
+        "known_at",
+        "occurred_at",
+        "revision",
+        "turn_id",
+        "canonical_id",
+        "polarity",
+    ],
 )
-def test_body_cannot_supply_host_authority(field):
+def test_body_cannot_supply_host_authority_or_extra_fields(field):
     value = payload()
     value["points"][0][field] = "forged"
     with pytest.raises(PointSidecarError):
-        parse_body_turn_v2(json.dumps(value), context=context())
+        parse_point_sidecar_v2(json.dumps(value), context=context())
 
 
 @pytest.mark.parametrize(
     "changes",
     [
-        {"point_id": "invented"},
+        {"slot": -1},
+        {"slot": 2},
+        {"slot": True},
+        {"slot": 0.0},
+        {"slot": "0"},
         {"status": "CLOSED"},
         {"meaning": " "},
         {"meaning": "x" * 2049},
-        {"context_links": [{"target_kind": "POINT", "target_id": "unknown", "relation": "修正"}]},
-        {
-            "context_links": [
-                {"target_kind": "BLOCK", "target_id": "session-1/turn-1/p0", "relation": "修正"}
-            ]
-        },
+        {"context_links": [{"target": "b0", "relation": "修正"}]},
+        {"context_links": [{"target": "session-1/turn-1/p0", "relation": "修正"}]},
+        {"context_links": [{"target": "p0", "target_id": "forged", "relation": "修正"}]},
         {"unresolved_refs": ["他指的是谁"]},
         {"unresolved_refs": ["未解"] * 9},
-        {"epistemic_status": None},
-        {"temporal_scope": True},
     ],
 )
-def test_invalid_semantics_reject_entire_sidecar(changes):
+def test_invalid_point_rejects_entire_sidecar(changes):
     value = payload()
     value["points"][0].update(changes)
     with pytest.raises(PointSidecarError):
-        parse_body_turn_v2(json.dumps(value), context=context())
+        parse_point_sidecar_v2(json.dumps(value), context=context())
 
 
 @pytest.mark.parametrize(
     "value",
     [
-        payload(schema_version="semantic_delta_v1"),
+        payload(schema_version="old"),
         payload(points=[payload()["points"][0]] * 2),
         payload(points=[payload()["points"][0]] * 5),
         payload(points={}),
-        payload(response=""),
+        payload(response="reply"),
         payload(scope="forged"),
+        payload(points=[{**payload()["points"][0], "slot": 1}]),
     ],
 )
 def test_invalid_envelope_is_not_repaired(value):
     with pytest.raises(PointSidecarError):
-        parse_body_turn_v2(json.dumps(value), context=context())
+        parse_point_sidecar_v2(json.dumps(value), context=context())
 
 
-@pytest.mark.parametrize("value", ['{"response":"one","response":"two"}', "NaN", "```json\n{}"])
-def test_strict_json(value):
-    with pytest.raises(PointSidecarError):
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"points":[],"points":[]}',
+        "NaN",
+        "```json\n{}",
+        "{",
+        "\ud800",
+        json.dumps(payload(points=[{**payload()["points"][0], "meaning": "\ud800"}])),
+    ],
+)
+def test_bad_json_isolated_from_normal_response(raw):
+    result = parse_body_turn_v2(message(raw), context=context())
+    assert result.response == message()["content"]
+    assert result.points == () and result.sidecar_error
+
+
+@pytest.mark.parametrize("failure", ["missing", "extra", "wrong_name", "length", "no_calls"])
+def test_sidecar_channel_failure_keeps_response(failure):
+    value = message()
+    finish = "stop"
+    if failure == "missing":
+        value.pop("tool_calls")
+    elif failure == "extra":
+        value["tool_calls"] *= 2
+    elif failure == "wrong_name":
+        value["tool_calls"][0]["function"]["name"] = "other_tool"
+    elif failure == "length":
+        finish = "length"
+    else:
+        value["tool_calls"] = []
+    result = parse_body_turn_v2(value, context=context(), finish_reason=finish)
+    assert result.response == value["content"] and result.points == () and result.sidecar_error
+
+
+@pytest.mark.parametrize("content", [None, "", "\ud800"])
+def test_sidecar_never_substitutes_for_missing_response(content):
+    value = {**message(), "content": content}
+    with pytest.raises(BodyResponseError):
         parse_body_turn_v2(value, context=context())
 
 
-def test_defer_preserves_unresolved_reference_and_material_qualifiers():
+def test_defer_preserves_expression_without_guessing_antecedent():
     value = payload()
     value["points"][0].update(
         status="DEFER",
-        unresolved_refs=["他"],
-        polarity="仅否定基础设施自营",
-        epistemic_status="尚待核实",
-        temporal_scope="未来",
-        temporal_expression="下个月",
+        unresolved_refs=["它"],
+        meaning="它需要先加密才能上传；对话尚未确定它指什么。",
     )
-    point = parse_body_turn_v2(json.dumps(value), context=context()).points[0]
-    assert point.status == "DEFER" and point.unresolved_refs == ("他",)
-    assert point.epistemic_status == "尚待核实" and point.temporal_expression == "下个月"
+    point = parse_point_sidecar_v2(json.dumps(value), context=context())[0]
+    assert point.status == "DEFER" and point.unresolved_refs == ("它",)
 
 
-def test_host_allocates_replay_stable_and_unambiguous_identities():
+def test_aliases_are_typed_request_local_and_never_expose_identities():
+    ctx = context(
+        activated_targets=(
+            PointTarget("POINT", "long-point-id"),
+            PointTarget("BLOCK", "long-block-id"),
+            PointTarget("POINT", "second-point-id"),
+            PointTarget("MEMORY", "long-memory-id"),
+        )
+    )
+    assert list(ctx.target_aliases()) == ["p0", "b0", "p1", "m0"]
+    instruction = body_point_sidecar_instruction(ctx)
+    wire = instruction + json.dumps(body_point_sidecar_tool(ctx))
+    assert all(target.target_id not in wire for target in ctx.activated_targets)
+    assert all(point_id not in wire for point_id in ctx.point_ids)
+    assert "minimal semantic commitment" in instruction and "Default ONE Point" in instruction
+    value = payload()
+    value["points"][0]["context_links"] = [{"target": "b0", "relation": "限定"}]
+    link = parse_point_sidecar_v2(json.dumps(value), context=ctx)[0].context_links[0]
+    assert (link.target_kind, link.target_id) == ("BLOCK", "long-block-id")
+
+
+def test_host_identities_remain_replay_stable():
     assert allocate_point_context("a/b", "c") == allocate_point_context("a/b", "c")
     assert (
         allocate_point_context("a/b", "c").point_ids != allocate_point_context("a", "b/c").point_ids
     )
-    instruction = body_point_sidecar_instruction(context())
-    assert context().point_ids[0] in instruction
-    assert "SAME normal Body inference" in instruction
 
 
-def test_bound_is_on_total_utf8_sidecar_and_not_only_point_count():
-    values = []
-    for i in range(4):
-        point = {**payload()["points"][0], "point_id": f"p{i}", "meaning": "界" * 2048}
-        values.append(point)
+def test_bound_is_on_total_utf8_sidecar():
+    values = [{**payload()["points"][0], "slot": i, "meaning": "界" * 2048} for i in range(4)]
     assert len(json.dumps(values, ensure_ascii=False).encode()) > MAX_SIDECAR_BYTES
     with pytest.raises(PointSidecarError):
-        parse_body_turn_v2(
+        parse_point_sidecar_v2(
             json.dumps(payload(points=values)),
             context=context(point_ids=tuple(f"p{i}" for i in range(4))),
         )
-
-
-@pytest.mark.parametrize("value", ["\ud800", json.dumps(payload(response="\ud800"))])
-def test_invalid_unicode_is_a_protocol_rejection(value):
-    with pytest.raises(PointSidecarError):
-        parse_body_turn_v2(value, context=context())
 
 
 @pytest.mark.parametrize(
@@ -171,6 +237,6 @@ def test_invalid_unicode_is_a_protocol_rejection(value):
         {"activated_targets": (PointTarget("POINT", "session-1/turn-2/p0"),)},
     ],
 )
-def test_host_context_is_bounded_and_cannot_activate_current_slots(overrides):
+def test_host_context_is_bounded(overrides):
     with pytest.raises(PointSidecarError):
         context(**overrides)
