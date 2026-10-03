@@ -4,8 +4,8 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 
-SCHEMA_VERSION = "body_point_sidecar_v2_1"
-SIDECAR_TOOL = "emit_point_sidecar"
+SCHEMA_VERSION = "body_point_sidecar_v2_2"
+SIDECAR_TOOL = "emit_body_turn"
 FRAME_START = "\n<point_sidecar>"
 FRAME_END = "</point_sidecar>"
 MAX_POINTS = 4
@@ -130,15 +130,11 @@ def _object(pairs):
 
 
 def _point(value, context):
-    _fields(value, ("slot", "meaning", "status", "context_links", "unresolved_refs"))
+    _fields(value, ("slot", "meaning", "context_links", "unresolved_refs"))
     slot = value["slot"]
     if type(slot) is not int or not 0 <= slot < len(context.point_ids):
         raise PointSidecarError("invalid host Point slot")
-    if value["status"] not in ("RESOLVED", "DEFER"):
-        raise PointSidecarError("invalid Point status")
     refs = tuple(_text(ref) for ref in _array(value["unresolved_refs"], 8))
-    if refs and value["status"] != "DEFER":
-        raise PointSidecarError("unresolved references require DEFER")
     targets = context.target_aliases()
     links = []
     for link in _array(value["context_links"], 8):
@@ -155,7 +151,7 @@ def _point(value, context):
         context.interaction_id,
         context.turn_id,
         _text(value["meaning"], 2048),
-        value["status"],
+        "DEFER" if refs else "RESOLVED",
         tuple(links),
         refs,
     )
@@ -182,16 +178,10 @@ def parse_point_sidecar_v2(payload: str, *, context: PointSidecarContext):
 def parse_body_turn_v2(
     message: dict, *, context: PointSidecarContext, finish_reason: str = "tool_calls"
 ) -> BodyTurnOutputV2:
-    """Keep normal content even when the independent tool sidecar is rejected."""
+    """Decode one strict function envelope; content is not the reply authority."""
     try:
         if not isinstance(message, dict):
             raise PointSidecarError("invalid provider message")
-        response = _text(message.get("content"), 16_384)
-    except PointSidecarError as exc:
-        raise BodyResponseError("missing or invalid normal Body response") from exc
-    try:
-        if finish_reason not in ("stop", "tool_calls"):
-            raise PointSidecarError("incomplete Body sidecar")
         calls = _array(message.get("tool_calls"), 1)
         if len(calls) != 1 or not isinstance(calls[0], dict):
             raise PointSidecarError("expected one sidecar tool call")
@@ -203,7 +193,22 @@ def parse_body_turn_v2(
             or function.get("name") != SIDECAR_TOOL
         ):
             raise PointSidecarError("unexpected sidecar tool")
-        points = parse_point_sidecar_v2(function.get("arguments"), context=context)
+        arguments = function.get("arguments")
+        if not isinstance(arguments, str) or _utf8_size(arguments) > 65_536:
+            raise PointSidecarError("invalid or oversized Body envelope")
+        value = json.loads(arguments, object_pairs_hook=_object, parse_constant=_invalid_constant)
+        if not isinstance(value, dict):
+            raise PointSidecarError("invalid Body envelope")
+        response = _text(value.get("response"), 16_384)
+    except (ValueError, RecursionError) as exc:
+        raise BodyResponseError("missing or invalid strict-envelope response") from exc
+    try:
+        if finish_reason != "tool_calls":
+            raise PointSidecarError("incomplete Body envelope")
+        _fields(value, ("response", "points"))
+        points = parse_point_sidecar_v2(
+            json.dumps({"points": value["points"]}, ensure_ascii=False), context=context
+        )
         return BodyTurnOutputV2(response, points)
     except PointSidecarError as exc:
         return BodyTurnOutputV2(response, (), str(exc))
@@ -259,7 +264,6 @@ def body_point_sidecar_instruction(context: PointSidecarContext, *, transport="f
             {
                 "slot": 0,
                 "meaning": "minimal semantic commitment explicitly made by the current user turn",
-                "status": "RESOLVED",
                 "context_links": [],
                 "unresolved_refs": [],
             }
@@ -267,10 +271,12 @@ def body_point_sidecar_instruction(context: PointSidecarContext, *, transport="f
     }
     if transport == "tool":
         channel = (
-            f"give the normal user-facing reply in message content, then call {SIDECAR_TOOL} "
-            "once for the independent Point sidecar. Do not wait for a tool result or another "
-            "inference to give the reply. "
+            f"return exactly one strict function call to {SIDECAR_TOOL}. Its arguments contain "
+            "response (the complete normal user-facing reply) and points (Point proposals). "
+            "The response need not appear in message content. No separate content or frame. "
+            "Do not execute or wait for a tool result or another inference. "
         )
+        envelope = {"response": "normal user-facing reply", **envelope}
     elif transport == "frame":
         channel = (
             "write the normal user-facing reply as ordinary text FIRST, then append an "
@@ -293,11 +299,12 @@ def body_point_sidecar_instruction(context: PointSidecarContext, *, transport="f
         "Default ONE Point for the whole turn-local understanding state. Multiple Points "
         "are allowed ONLY for truly independent semantic lines in the same turn that may "
         "develop separately; never split one correction/qualification into NLP atoms. "
-        "RESOLVED requires the dialogue itself to determine a unique antecedent. If multiple "
+        "An antecedent is resolved only if the dialogue itself determines it uniquely. If multiple "
         "antecedents remain semantically possible, or selection relies on common sense/world "
-        "knowledge, use DEFER and record the ambiguous expression in unresolved_refs. "
+        "knowledge, record the ambiguous expression in unresolved_refs. "
         "Do not decide ambiguity from which antecedent seems more plausible. "
-        "RESOLVED is local, not context-complete or canonical. "
+        "Do not output status; the host derives it solely from unresolved_refs. "
+        "Local understanding is not context-complete or canonical. "
         "Use slots 0,1,... in order; the host assigns all stable identities. "
         "context_links use only activated aliases with open-text relation; link relevant "
         "corrections/qualifications without promoting previous proposals into facts. "
@@ -322,7 +329,6 @@ def body_point_sidecar_tool(context: PointSidecarContext) -> dict:
     fields = {
         "slot": {"type": "integer", "minimum": 0, "maximum": len(context.point_ids) - 1},
         "meaning": {"type": "string"},
-        "status": {"type": "string", "enum": ["RESOLVED", "DEFER"]},
         "context_links": {"type": "array", "items": link},
         "unresolved_refs": {"type": "array", "items": {"type": "string"}},
     }
@@ -337,11 +343,14 @@ def body_point_sidecar_tool(context: PointSidecarContext) -> dict:
         "function": {
             "name": SIDECAR_TOOL,
             "strict": True,
-            "description": "Propose current-turn minimal semantic commitment; no tool execution.",
+            "description": "Emit normal response and current-turn Point proposals; no execution.",
             "parameters": {
                 "type": "object",
-                "properties": {"points": {"type": "array", "items": point}},
-                "required": ["points"],
+                "properties": {
+                    "response": {"type": "string"},
+                    "points": {"type": "array", "items": point},
+                },
+                "required": ["response", "points"],
                 "additionalProperties": False,
             },
         },

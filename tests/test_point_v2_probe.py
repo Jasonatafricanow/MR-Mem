@@ -15,7 +15,6 @@ def reply(meaning="", raw=None):
             {
                 "slot": 0,
                 "meaning": meaning,
-                "status": "RESOLVED",
                 "context_links": [],
                 "unresolved_refs": [],
             }
@@ -30,7 +29,7 @@ def reply(meaning="", raw=None):
                 "type": "function",
                 "function": {
                     "name": SIDECAR_TOOL,
-                    "arguments": json.dumps(args) if raw is None else raw,
+                    "arguments": json.dumps({"response": "继续。", **args}) if raw is None else raw,
                 },
             }
         ],
@@ -39,6 +38,8 @@ def reply(meaning="", raw=None):
 
 def framed_reply(meaning="", raw=None):
     arguments = reply(meaning, raw)["tool_calls"][0]["function"]["arguments"]
+    if raw is None:
+        arguments = json.dumps({"points": json.loads(arguments)["points"]})
     return "继续。\n<point_sidecar>" + arguments + "\n</point_sidecar>"
 
 
@@ -104,7 +105,8 @@ def test_truncation_preserves_content_but_rejects_even_parseable_sidecar(tmp_pat
     assert records[0]["sidecar_error"] == "incomplete Body sidecar"
 
 
-def test_native_replay_keeps_original_assistant_turns(tmp_path):
+@pytest.mark.parametrize("reply_field", ["native_assistant_after_turn", "assistant_after_turn"])
+def test_source_replay_keeps_original_assistant_turns(tmp_path, reply_field):
     calls = []
     native_reply = {"role": "assistant", "content": "native reply"}
 
@@ -118,7 +120,7 @@ def test_native_replay_keeps_original_assistant_turns(tmp_path):
                 "id": "native",
                 "history": [{"role": "user", "content": "original prefix"}],
                 "turns": ["first", "correction"],
-                "native_assistant_after_turn": [[native_reply], []],
+                reply_field: [[native_reply], []],
             }
         ],
         body,

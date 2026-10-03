@@ -8,6 +8,7 @@ from pathlib import Path
 from mr_mem.point_sidecar_v2 import (
     FRAME_END,
     FRAME_START,
+    SCHEMA_VERSION,
     BodyResponseError,
     PointTarget,
     allocate_point_context,
@@ -28,6 +29,7 @@ def run_probe(cases, body_infer, output: Path, *, transport="frame"):
     output.parent.mkdir(parents=True, exist_ok=True)
     for case in cases:
         conversation = list(case.get("history", []))
+        source_replies = case.get("native_assistant_after_turn", case.get("assistant_after_turn"))
         if not 1 <= len(case["turns"]) <= 16 or len(conversation) > 32:
             raise ValueError("probe fixture exceeds turn bound")
         if (
@@ -51,7 +53,6 @@ def run_probe(cases, body_infer, output: Path, *, transport="frame"):
                 {
                     "alias": aliases[p.point_id],
                     "meaning": p.meaning,
-                    "status": p.status,
                     "unresolved_refs": p.unresolved_refs,
                     "context_links": [
                         {"target": aliases[link.target_id], "relation": link.relation}
@@ -73,8 +74,11 @@ def run_probe(cases, body_infer, output: Path, *, transport="frame"):
                 "turn_index": index,
                 "raw_turn": user_text,
                 "model_call_count": 1,
-                "protocol": "body_point_sidecar_v2_1",
+                "protocol": SCHEMA_VERSION,
                 "transport": transport,
+                "conversation_prefix_sha256": sha256(
+                    json.dumps(conversation, ensure_ascii=False).encode()
+                ).hexdigest(),
                 "request_sha256": sha256(json.dumps([messages, tool]).encode()).hexdigest(),
             }
             try:
@@ -82,7 +86,11 @@ def run_probe(cases, body_infer, output: Path, *, transport="frame"):
                 record.update(raw_body_output=raw, provider_usage=usage)
                 parser = parse_body_turn_v2 if transport == "tool" else parse_body_frame_v2
                 result = parser(
-                    raw, context=context, finish_reason=usage.get("finish_reason", "stop")
+                    raw,
+                    context=context,
+                    finish_reason=usage.get(
+                        "finish_reason", "tool_calls" if transport == "tool" else "stop"
+                    ),
                 )
                 record.update(measure_body_output_tokens(raw, usage, transport=transport))
                 record.update(response=result.response, points=[asdict(p) for p in result.points])
@@ -111,23 +119,20 @@ def run_probe(cases, body_infer, output: Path, *, transport="frame"):
                 output.write_text(
                     json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
-                if not isinstance(exc, BodyResponseError) or not case.get(
-                    "native_assistant_after_turn"
-                ):
+                if not isinstance(exc, BodyResponseError) or source_replies is None:
                     raise
                 # Offline native replay can continue from original source replies.
                 # Missing generated content stays a failed receipt; never invent a reply.
-                conversation.extend(case["native_assistant_after_turn"][index])
+                conversation.extend(source_replies[index])
                 continue
             records.append(record)
             output.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
-            native_replies = case.get("native_assistant_after_turn")
-            if native_replies is None:
+            if source_replies is None:
                 conversation.append({"role": "assistant", "content": result.response})
             else:
                 # Teacher-forced offline replay preserves the original native conversation.
                 # The newly generated response is evidence, not a replacement source turn.
-                conversation.extend(native_replies[index])
+                conversation.extend(source_replies[index])
             for point in result.points:
                 targets.append(PointTarget("POINT", point.point_id))
                 prior_points.append(point)
@@ -151,6 +156,8 @@ def measure_body_output_tokens(raw, usage, *, transport="tool"):
         return unknown
     completion = usage.get("completion_tokens")
     reasoning = usage.get("completion_tokens_details", {}).get("reasoning_tokens")
+    if reasoning is None and usage.get("thinking") == "disabled":
+        reasoning = 0
     if type(completion) is not int or type(reasoning) is not int or reasoning < 0:
         return unknown
     visible = completion - reasoning

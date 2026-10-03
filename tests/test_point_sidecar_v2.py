@@ -36,7 +36,6 @@ def payload(**overrides):
             {
                 "slot": 0,
                 "meaning": "第一部分改成周五，其余安排沿用前一轮。",
-                "status": "RESOLVED",
                 "context_links": [{"target": "p0", "relation": "仅修改第一部分，保留其余安排"}],
                 "unresolved_refs": [],
             }
@@ -54,7 +53,9 @@ def message(arguments=None):
                 "type": "function",
                 "function": {
                     "name": SIDECAR_TOOL,
-                    "arguments": json.dumps(payload()) if arguments is None else arguments,
+                    "arguments": json.dumps({"response": "明白，只调整第一部分。", **payload()})
+                    if arguments is None
+                    else arguments,
                 },
             }
         ],
@@ -109,7 +110,6 @@ def test_body_cannot_supply_host_authority_or_extra_fields(field):
         {"context_links": [{"target": "b0", "relation": "修正"}]},
         {"context_links": [{"target": "session-1/turn-1/p0", "relation": "修正"}]},
         {"context_links": [{"target": "p0", "target_id": "forged", "relation": "修正"}]},
-        {"unresolved_refs": ["他指的是谁"]},
         {"unresolved_refs": ["未解"] * 9},
     ],
 )
@@ -148,16 +148,15 @@ def test_invalid_envelope_is_not_repaired(value):
         json.dumps(payload(points=[{**payload()["points"][0], "meaning": "\ud800"}])),
     ],
 )
-def test_bad_json_isolated_from_normal_response(raw):
-    result = parse_body_turn_v2(message(raw), context=context())
-    assert result.response == message()["content"]
-    assert result.points == () and result.sidecar_error
+def test_bad_envelope_json_never_uses_untrusted_content_as_a_reply(raw):
+    with pytest.raises(BodyResponseError):
+        parse_body_turn_v2(message(raw), context=context())
 
 
 @pytest.mark.parametrize("failure", ["missing", "extra", "wrong_name", "length", "no_calls"])
 def test_sidecar_channel_failure_keeps_response(failure):
     value = message()
-    finish = "stop"
+    finish = "tool_calls"
     if failure == "missing":
         value.pop("tool_calls")
     elif failure == "extra":
@@ -168,13 +167,17 @@ def test_sidecar_channel_failure_keeps_response(failure):
         finish = "length"
     else:
         value["tool_calls"] = []
-    result = parse_body_turn_v2(value, context=context(), finish_reason=finish)
-    assert result.response == value["content"] and result.points == () and result.sidecar_error
+    if failure == "length":
+        result = parse_body_turn_v2(value, context=context(), finish_reason=finish)
+        assert result.response == value["content"] and result.points == () and result.sidecar_error
+    else:
+        with pytest.raises(BodyResponseError):
+            parse_body_turn_v2(value, context=context(), finish_reason=finish)
 
 
 @pytest.mark.parametrize("content", [None, "", "\ud800"])
 def test_sidecar_never_substitutes_for_missing_response(content):
-    value = {**message(), "content": content}
+    value = message(json.dumps({"response": content, **payload()}))
     with pytest.raises(BodyResponseError):
         parse_body_turn_v2(value, context=context())
 
@@ -207,12 +210,28 @@ def test_valid_frame_maps_host_ids_and_length_rejects_only_sidecar(closing_space
 def test_defer_preserves_expression_without_guessing_antecedent():
     value = payload()
     value["points"][0].update(
-        status="DEFER",
         unresolved_refs=["它"],
         meaning="它需要先加密才能上传；对话尚未确定它指什么。",
     )
     point = parse_point_sidecar_v2(json.dumps(value), context=context())[0]
     assert point.status == "DEFER" and point.unresolved_refs == ("它",)
+
+
+def test_empty_refs_resolve_and_model_authored_status_is_forbidden():
+    assert parse_point_sidecar_v2(json.dumps(payload()), context=context())[0].status == "RESOLVED"
+    value = payload()
+    value["points"][0]["status"] = "RESOLVED"
+    result = parse_body_turn_v2(
+        message(json.dumps({"response": "正常回复", **value})), context=context()
+    )
+    assert result.response == "正常回复" and result.points == () and result.sidecar_error
+
+
+def test_envelope_owns_response_even_when_content_is_empty_or_conflicting():
+    for content in (None, "", "This is not the reply authority"):
+        value = {**message(), "content": content}
+        result = parse_body_turn_v2(value, context=context())
+        assert result.response == "明白，只调整第一部分。" and not result.sidecar_error
 
 
 def test_aliases_are_typed_request_local_and_never_expose_identities():
