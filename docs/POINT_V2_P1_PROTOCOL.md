@@ -1,7 +1,7 @@
-# P1.2 — host-derived status and single-envelope Body output
+# P1.3 — referential ambiguity and correction-target binding
 
 Architecture authority: [ADR-0003](ADR-0003-TURN-POINT-LIVE-WINDOW-BLOCK-COMPILATION.md).
-P1.2 changes the opt-in transport/contract only. The original
+P1.3 narrows two semantic boundaries on the existing P1.2 wire. The original
 [P1 NO-GO](POINT_V2_P1_GATE_A.md) and [P1.1 NO-GO](POINT_V2_P11_GATE_A.md)
 remain unchanged; [P1.2 A/B evidence](POINT_V2_P12_GATE_A.md) records the new result.
 No P2, Block, canonical admission or Thread/LCE work is included.
@@ -29,11 +29,29 @@ remain viable or choosing one requires common sense/world knowledge. Only a
 unique antecedent determined by the dialogue itself is resolved. Status is local,
 not context completeness or canonical authority.
 
-`open_context` is not introduced in this increment: no separate nonreferential
-deferral contract has been established. Unspecified execution parameters are not
-automatically a referent ambiguity, and expressed uncertainty belongs in meaning.
+`unresolved_refs` contains only an expression in the current user turn whose
+semantic referent cannot be uniquely determined from the dialogue. Missing
+execution details, causes, further actor information, future parameters or an
+unfinished account do not qualify. A clear local commitment can stay minimal
+without those details. Prior unresolved refs are not inherited unless a current
+expression still has that ambiguity. DEFER means not knowing what a current
+expression refers to, rather than not knowing everything about the subject.
+
+`open_context` is not introduced in this increment; expressed uncertainty belongs
+in meaning.
 The Gate explicitly measures excessive DEFER as well as false RESOLVED. A host-
 derived status can be perfectly consistent while its Body-authored refs are wrong.
+
+For a correction/refinement, first identify the actual prior semantic state being
+corrected from the dialogue, then bind its activated alias through `context_links`.
+The open-text relation specifies what changes and what remains affirmed. Lexical
+similarity alone cannot select the target. An assistant's interpretation must not
+become the user's prior commitment merely through a link. Keep one correction
+and its affirmed intended rule in one Point; never label that affirmed rule as
+the rejected target or invent the reason for the correction. If the activated
+targets do not represent the target, do not fabricate an alias; preserve the
+explicit correction in meaning and defer only an actual ambiguous expression.
+No operation field, closed relation taxonomy or host semantic repair is added.
 
 ## Strict single-envelope transport
 
