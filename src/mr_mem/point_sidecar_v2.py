@@ -82,7 +82,15 @@ class BodyTurnOutputV2:
 def _text(value, limit=256):
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise PointSidecarError("invalid or oversized text")
+    _utf8_size(value)
     return value
+
+
+def _utf8_size(value):
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise PointSidecarError("invalid Unicode text") from exc
 
 
 def _fields(value, required, optional=()):
@@ -142,7 +150,7 @@ def _point(value, context):
 
 def parse_body_turn_v2(payload: str, *, context: PointSidecarContext) -> BodyTurnOutputV2:
     """Decode the response and Point siblings from one already completed Body call."""
-    if not isinstance(payload, str) or len(payload.encode("utf-8")) > 65_536:
+    if not isinstance(payload, str) or _utf8_size(payload) > 65_536:
         raise PointSidecarError("invalid or oversized Body output")
     try:
         value = json.loads(payload, object_pairs_hook=_object, parse_constant=_invalid_constant)
@@ -153,7 +161,7 @@ def parse_body_turn_v2(payload: str, *, context: PointSidecarContext) -> BodyTur
         raise PointSidecarError("unsupported Body sidecar schema")
     response = _text(value["response"], 16_384)
     values = _array(value["points"], MAX_POINTS)
-    if len(json.dumps(values, ensure_ascii=False).encode("utf-8")) > MAX_SIDECAR_BYTES:
+    if _utf8_size(json.dumps(values, ensure_ascii=False)) > MAX_SIDECAR_BYTES:
         raise PointSidecarError("sidecar byte budget exceeded")
     points = tuple(_point(point, context) for point in values)
     if len({point.point_id for point in points}) != len(points):
@@ -203,6 +211,8 @@ def body_point_sidecar_instruction(context: PointSidecarContext) -> str:
         "and Point sidecar. Do not call another model or tool to produce Points. "
         "Points describe the current turn's local meaning; they may depend on prior turns. "
         "Do not make them artificially context-free or split them into NLP atoms. "
+        "Prefer one Point per coherent local understanding; use multiple only for materially "
+        "different meanings, never near-duplicate reformulations of the same correction. "
         "Preserve correction, qualification, uncertainty, negation, time, and partial plan "
         "updates. Only include optional polarity, epistemic_status, temporal_scope, or "
         "temporal_expression (nonempty text) when materially relevant. "

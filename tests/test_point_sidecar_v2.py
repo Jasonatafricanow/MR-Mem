@@ -153,3 +153,24 @@ def test_bound_is_on_total_utf8_sidecar_and_not_only_point_count():
             json.dumps(payload(points=values)),
             context=context(point_ids=tuple(f"p{i}" for i in range(4))),
         )
+
+
+@pytest.mark.parametrize("value", ["\ud800", json.dumps(payload(response="\ud800"))])
+def test_invalid_unicode_is_a_protocol_rejection(value):
+    with pytest.raises(PointSidecarError):
+        parse_body_turn_v2(value, context=context())
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"point_ids": ()},
+        {"point_ids": ("p", "p")},
+        {"point_ids": ["p"]},
+        {"activated_targets": (PointTarget("UNKNOWN", "p"),)},
+        {"activated_targets": (PointTarget("POINT", "session-1/turn-2/p0"),)},
+    ],
+)
+def test_host_context_is_bounded_and_cannot_activate_current_slots(overrides):
+    with pytest.raises(PointSidecarError):
+        context(**overrides)
