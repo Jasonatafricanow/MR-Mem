@@ -35,7 +35,7 @@ from mr_mem.point_sidecar_v2 import (
 )
 
 context = allocate_point_context(native_session_id, native_turn_id)
-# Host attaches the instruction and tool to its existing normal Body request.
+# Host attaches the frame instruction to its existing normal Body request.
 message, usage = existing_body_inference(
     existing_live_messages, body_point_sidecar_instruction(context),
 )
@@ -56,7 +56,7 @@ production routing, P2 buffer, Block compiler, canonical admission or LCE wiring
 The selected fallback returns ordinary text followed by an independent reserved
 frame. Normal text is never JSON-escaped or placed inside the sidecar object:
 
-```json
+```text
 Normal user-facing response.
 <point_sidecar>
 {"points":[{
