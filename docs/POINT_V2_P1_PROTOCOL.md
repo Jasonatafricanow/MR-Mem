@@ -2,8 +2,9 @@
 
 Architecture authority: [ADR-0003](ADR-0003-TURN-POINT-LIVE-WINDOW-BLOCK-COMPILATION.md).
 P1.3 narrows two semantic boundaries on the existing P1.2 wire. The original
-[P1 NO-GO](POINT_V2_P1_GATE_A.md) and [P1.1 NO-GO](POINT_V2_P11_GATE_A.md)
-remain unchanged; [P1.2 A/B evidence](POINT_V2_P12_GATE_A.md) records the new result.
+[P1 NO-GO](POINT_V2_P1_GATE_A.md), [P1.1 NO-GO](POINT_V2_P11_GATE_A.md) and
+[P1.2 A/B evidence](POINT_V2_P12_GATE_A.md) remain unchanged.
+[P1.3 strict replay](POINT_V2_P13_GATE_A.md) records the current result.
 No P2, Block, canonical admission or Thread/LCE work is included.
 
 ## Meaning and host-derived status
@@ -94,6 +95,11 @@ A/B uses the same model with thinking disabled **in both arms**, without modifyi
 the live profile. A nonthinking experiment does not certify the unchanged thinking
 route. The exported schema remains provider-neutral; this capability limit is not
 silently worked around by auto tools or a mode switch in MR-Mem.
+
+P1.3 reruns only strict + thinking disabled on the same 28 source turns and original
+reply prefixes. It does not repeat the frame A/B or choose a production mode.
+The host still validates every argument: one P1.3 response omitted a required
+Point field despite requesting strict output, and was rejected without repair.
 
 Once a valid envelope contains a usable response, Point validation failure returns
 that response, zero Points and `sidecar_error`. Missing/wrong/multiple functions,
