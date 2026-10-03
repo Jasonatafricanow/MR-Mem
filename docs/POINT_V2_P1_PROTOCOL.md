@@ -1,112 +1,141 @@
-# P1 — normal Body response and SemanticPoint V2 sidecar
+# P1.1 — minimal Point commitment and independent Body sidecar
 
 Architecture authority: [ADR-0003](ADR-0003-TURN-POINT-LIVE-WINDOW-BLOCK-COMPILATION.md).
-This increment implements the Point protocol and a host-owned dialogue probe.
-It does not establish Block fidelity or production readiness.
+P1.1 repairs the opt-in P1 producer protocol. The original
+[Gate A NO-GO](POINT_V2_P1_GATE_A.md) remains historical evidence.
+
+## Meaning and reference resolution
+
+`meaning` is **minimal semantic commitment**: only what the current user turn
+explicitly commits in the existing dialogue. Earlier context may identify a
+correction or qualification; it cannot supply a new commitment. The Body's own
+response, explanations, advice and world knowledge are not the user's Point.
+Do not add unexpressed independence, exclusivity, causation, permanence,
+preference or negation. Keep expressed uncertainty, time, scope and partial updates
+in `meaning`, without requiring separate metadata fields or a semantic ontology.
+
+Reference resolution is conservative:
+
+- A unique antecedent determined by the dialogue itself permits `RESOLVED`.
+- Multiple semantically viable antecedents require `DEFER` and `unresolved_refs`.
+- Choosing via common sense or world knowledge requires `DEFER`.
+
+`RESOLVED` is local understanding, not context completeness or canonical admission.
+The host validates the protocol; it does not decide semantic fidelity by string
+matching. Default **one Point per turn-local understanding state**. Multiple Points
+are permitted only for truly independent semantic lines in the same turn that
+may develop separately. One correction must not become several NLP atoms.
 
 ## Host integration contract
 
 ```python
 from mr_mem.point_sidecar_v2 import (
-    allocate_point_context,
-    body_point_sidecar_instruction,
-    parse_body_turn_v2,
+    allocate_point_context, body_point_sidecar_instruction,
+    parse_body_frame_v2,
 )
 
 context = allocate_point_context(native_session_id, native_turn_id)
-instruction = body_point_sidecar_instruction(context)
-# Append instruction to the normal Body request's existing live conversation.
-# The HOST calls its existing Body exactly once, producing response + points.
-raw_body_output = existing_body_inference(existing_live_messages, instruction)
-result = parse_body_turn_v2(raw_body_output, context=context)
+# Host attaches the instruction and tool to its existing normal Body request.
+message, usage = existing_body_inference(
+    existing_live_messages, body_point_sidecar_instruction(context),
+)
+result = parse_body_frame_v2(
+    message, context=context, finish_reason=usage["finish_reason"],
+)
 show_response(result.response)
-# result.points remains intermediate, noncanonical semantic state.
+if result.sidecar_error:
+    record_rejected_sidecar(result.sidecar_error)  # no repair inference
+else:
+    record_point_proposals(result.points)  # intermediate, noncanonical
 ```
 
-MR-Mem provides no model client, retry, semantic fallback, or model configuration.
-The producer owns the inference and request assembly. Parsing never invokes a model.
-This module is opt-in and does not modify existing V1 admission or production routing.
+The host owns one inference, provider capabilities, request assembly and source
+authority. MR-Mem supplies no model client or retry. This remains opt-in with no
+production routing, P2 buffer, Block compiler, canonical admission or LCE wiring.
 
-The wire envelope is exactly:
+The selected fallback returns ordinary text followed by an independent reserved
+frame. Normal text is never JSON-escaped or placed inside the sidecar object:
 
 ```json
-{
-  "schema_version": "body_point_sidecar_v2",
-  "response": "normal user-facing response",
-  "points": [{
-    "point_id": "one host-allocated current-turn slot",
-    "meaning": "faithful local interpretation; may depend on earlier turns",
-    "status": "RESOLVED",
-    "context_links": [],
-    "unresolved_refs": []
-  }]
-}
+Normal user-facing response.
+<point_sidecar>
+{"points":[{
+  "slot":0,
+  "meaning":"minimal semantic commitment explicitly made by this turn",
+  "status":"RESOLVED",
+  "context_links":[{"target":"p0","relation":"qualifies the earlier proposal"}],
+  "unresolved_refs":[]
+}]}
+</point_sidecar>
 ```
 
-Optional Point fields are nonempty text: `polarity`, `epistemic_status`,
-`temporal_scope`, and `temporal_expression`. They preserve material interpretation;
-they are not a finite semantic ontology. A context link has exactly `target_kind`
-(`POINT`, `BLOCK`, or `MEMORY`), `target_id`, and an open-text `relation`.
+Both markers are reserved and must not appear inside normal response content.
+The opening marker starts on a new line. Whitespace around argument JSON and
+before the closing marker is insignificant; trailing nonwhitespace or repeated
+frames reject the sidecar. A broken/missing close cannot swallow the preceding
+normal response. If no opening marker exists, content is preserved and the sidecar
+is marked missing. This is bounded framing, not recovery of arbitrarily corrupted
+response bytes.
 
-The host supplies the eligible prior targets, after its own scope/source/lifecycle
-checks. P1 checks membership in that supplied set; it does not certify canonical
-freshness. An unknown target is rejected, not guessed or silently discarded.
+The existing Body route was tested first with ordinary tools and beta strict tools.
+Both capability samples returned content and `emit_point_sidecar` in one inference,
+but the full strict-tool fixture run returned empty content on request eight.
+Consequently tool support does not establish reliable simultaneous normal replies.
+The full rerun uses frames on the original chat-completions route, without JSON
+mode, tools, mode/model changes or a second inference. Tool arguments remain
+available as an opt-in transport via `body_point_sidecar_tool`,
+`body_point_sidecar_instruction(transport="tool")` and `parse_body_turn_v2` for hosts
+that can guarantee simultaneous content. No returned sidecar tool is executed.
+The old P1 envelope is intentionally not decoded by this unmerged revision.
 
-The host binds interaction/turn IDs after decoding. It allocates four stable local
-Point slots using a versioned hash of the session, native turn ID, and slot number.
-These are not canonical memory identities. Replaying the same host turn allocates
-the same slots; new semantics cannot silently change an already persisted receipt.
-Receipt persistence and lifecycle are later stages, not implemented by P1.
+The host allocates replay-stable Point IDs from interaction, native turn and slot;
+the model sees only integer slots `0,1,...`. Slot numbers must be consecutive and
+unique. Historical targets use request-local `p0/p1` (Point), `b0` (Block), and `m0`
+(Memory) aliases. The immutable request context maps aliases back to typed stable
+IDs after validation. Only the host knows these IDs. Prior proposal projections
+also replace their own IDs and linked target IDs with aliases.
 
-The Body cannot output system-owned Scope, SourceRef, revisions, timestamps,
-interaction/turn IDs, or canonical identity. Duplicate JSON keys, invented IDs,
-unknown fields, malformed Unicode, invalid statuses, and budget violations reject
-the entire sidecar. P1 does not repair, partially accept, or rerun inference.
-The host must define how to preserve the normal response when a sidecar is rejected;
-this opt-in parser alone is not a gateway failure-handling policy.
+The host activates prior targets after its scope/source/lifecycle checks. P1.1
+checks membership in that set without certifying canonical freshness. Unknown
+aliases, host authority fields, duplicate JSON keys, invalid Unicode/statuses,
+slot violations and budgets reject the entire sidecar. Explicit unresolved refs
+require `DEFER`. Rejected sidecars produce no Points and cannot contaminate the
+next request's Point proposals. Their normal response remains available and the
+probe continues with that response. No partial acceptance, repair or retry occurs.
 
-`RESOLVED` means locally understood. It does not mean context-complete, canonical,
-or safe to retrieve alone. Explicit unresolved references require `DEFER`.
-No Point emitted here is wired to Thread, Path B, canonical admission, or retrieval.
+`finish_reason=stop` is not proof of valid arguments. Frames require `stop`; the
+tool transport accepts `stop` or `tool_calls`. Other finish reasons reject the
+sidecar while preserving any usable content. If normal content is missing or invalid, the host gets
+`BodyResponseError`; sidecar arguments never become a substitute user reply.
 
-## Operational bounds
+## Bounds and evidence
 
-- At most four Points per turn; at most 12,288 UTF-8 bytes for the emitted Point array.
-- Meaning at most 2,048 characters; at most eight context links and eight unresolved refs.
-- ID, optional text, relation, and unresolved-ref text at most 256 characters each.
-- At most 128 host-activated prior targets; current slots cannot be prior targets.
-- Full Body JSON at most 65,536 UTF-8 bytes; response at most 16,384 characters.
+- At most four Points; default one. Empty only when no semantic content is present.
+- Point array at most 12,288 UTF-8 bytes; raw arguments at most 65,536 bytes.
+- Meaning at most 2,048 characters; links/refs at most eight each.
+- Relation/ref and host ID text at most 256 characters; activated targets at most 128.
+- Normal response at most 16,384 characters.
 
-These are initial protocol safety bounds, not semantic definitions or tokenizer
-estimates. Token overhead and semantic quality require provider evidence.
+The optional strict provider schema describes structure. Host checks remain necessary for
+unsupported schema bounds, identities and cross-field consistency. Strict JSON
+does not certify meaning, antecedents or independent semantic lines.
 
-## Fixtures and real inference evidence
+The seven frozen synthetic fixtures and the private frozen native replay remain
+unchanged. `examples/point_v2_probe.py` calls `body_infer(messages, tool_or_none)` once per
+turn (`None` for frames). Native teacher-forced replay keeps original assistant turns as subsequent
+source history; this is offline replay, not a deployed Hermes gateway integration.
+An empty generated response remains a failed receipt; native replay can continue
+with the original source replies to cover later turns without inventing content.
+For ordinary synthetic conversations, a missing reply stops the probe.
+Evidence records raw output, response, host-bound Points,
+separate sidecar rejection, usage, wire bytes and request hashes. Full native
+evidence stays private; only reviewed aggregates may be published.
 
-`tests/fixtures/point_v2_dialogues.json` freezes seven **synthetic** dialogue groups:
-repeated correction, delayed qualification, scope distinction, unresolved reference,
-partial plan update, topic diversion/return, and certainty/withdrawal. They are
-dialogues with review criteria, not premade Point graphs or a claim of real-data quality.
-
-`examples/point_v2_probe.py::run_probe` accepts the host's existing `body_infer`
-callback. Each normal user turn gets one response-and-Point request. Previous raw
-turns/responses and Point proposals remain available in the bounded probe context.
-The probe records raw turns, response, emitted Points, model calls, provider usage,
-wire bytes, and failures. Provider token bytes may attribute visible overhead as a
-range; missing traces remain unknown. Reasoning overhead is not isolated by this
-measurement. A rejected/truncated output stops that probe without a
-repair call. Full probe evidence is private; publish only reviewed aggregate results.
-
-Some provider traces duplicate a JSON prefill token. Excluding that duplicate for
-byte alignment requires exact remaining-byte equality and matching provider visible
-token accounting; the adjustment and provider count are retained separately. This
-does not repair or alter the raw Body JSON, and does not estimate unseen tokens.
-
-Native replay fixtures may provide `history` and `native_assistant_after_turn`.
-The next request then keeps the original native assistant turns rather than replacing
-source history with the probe response. This is teacher-forced offline replay,
-not evidence of a deployed Hermes gateway hook or an unchanged real conversation.
-
-Unit tests check protocol, references, bounds, and one-call probe execution.
-They do not establish local semantic fidelity. Gate A additionally requires actual
-normal Body output, reviewed multi-turn meaning and links, acceptable measured
-overhead, and validation on representative native dialogue. P2 remains gated on A.
+Frame overhead is attributed only when provider token bytes exactly reproduce
+the raw output and provider completion/reasoning counts are available. Boundary
+tokens give a range. Provider-visible tokens absent from that exact byte trace are
+recorded separately and widen the upper bound; they are never called measured
+sidecar text. Otherwise attribution remains unknown; wire
+bytes are not substituted for tokens. Reasoning overhead is not isolated without
+a matched control. Gate A still requires reviewed semantics and native evidence;
+unit tests and strict syntax alone do not open P2.

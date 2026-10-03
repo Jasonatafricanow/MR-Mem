@@ -6,6 +6,8 @@ from hashlib import sha256
 
 SCHEMA_VERSION = "body_point_sidecar_v2_1"
 SIDECAR_TOOL = "emit_point_sidecar"
+FRAME_START = "\n<point_sidecar>"
+FRAME_END = "</point_sidecar>"
 MAX_POINTS = 4
 MAX_SIDECAR_BYTES = 12_288
 
@@ -207,6 +209,31 @@ def parse_body_turn_v2(
         return BodyTurnOutputV2(response, (), str(exc))
 
 
+def parse_body_frame_v2(
+    payload: str, *, context: PointSidecarContext, finish_reason: str = "stop"
+) -> BodyTurnOutputV2:
+    """Decode a normal text reply followed by an independent, reserved sidecar frame."""
+    if not isinstance(payload, str):
+        raise BodyResponseError("invalid normal Body response")
+    response, separator, frame = payload.partition(FRAME_START)
+    try:
+        response = _text(response, 16_384)
+    except PointSidecarError as exc:
+        raise BodyResponseError("missing or invalid normal Body response") from exc
+    try:
+        if finish_reason != "stop":
+            raise PointSidecarError("incomplete Body sidecar")
+        if not separator:
+            raise PointSidecarError("missing sidecar frame")
+        arguments, end, trailing = frame.partition(FRAME_END)
+        if not end or trailing.strip() or FRAME_START in frame:
+            raise PointSidecarError("invalid sidecar frame boundary")
+        points = parse_point_sidecar_v2(arguments, context=context)
+        return BodyTurnOutputV2(response, points)
+    except PointSidecarError as exc:
+        return BodyTurnOutputV2(response, (), str(exc))
+
+
 def _invalid_constant(value):
     raise PointSidecarError(f"invalid JSON constant: {value}")
 
@@ -225,7 +252,7 @@ def allocate_point_context(
     return PointSidecarContext(interaction_id, turn_id, point_ids, activated_targets)
 
 
-def body_point_sidecar_instruction(context: PointSidecarContext) -> str:
+def body_point_sidecar_instruction(context: PointSidecarContext, *, transport="frame") -> str:
     """Attach to the normal Body request; the host owns inference and source authority."""
     envelope = {
         "points": [
@@ -238,11 +265,26 @@ def body_point_sidecar_instruction(context: PointSidecarContext) -> str:
             }
         ],
     }
+    if transport == "tool":
+        channel = (
+            f"give the normal user-facing reply in message content, then call {SIDECAR_TOOL} "
+            "once for the independent Point sidecar. Do not wait for a tool result or another "
+            "inference to give the reply. "
+        )
+    elif transport == "frame":
+        channel = (
+            "write the normal user-facing reply as ordinary text FIRST, then append an "
+            "independent sidecar frame on a new line: <point_sidecar> followed by JSON tool "
+            "arguments, then </point_sidecar> on a new line. These markers are reserved; "
+            "never use them within the normal reply. No text after the closing marker. "
+            "Do not put the normal reply inside JSON. "
+        )
+    else:
+        raise ValueError("unknown Body sidecar transport")
     return (
-        f"In this SAME normal Body inference, give the normal user-facing reply in message "
-        f"content, then call {SIDECAR_TOOL} once for the independent Point sidecar. "
-        "Do not wait for a tool result or another inference to give the reply. "
-        "meaning is minimal semantic commitment: record ONLY what the current user turn "
+        "In this SAME normal Body inference, "
+        + channel
+        + "meaning is minimal semantic commitment: record ONLY what the current user turn "
         "explicitly commits in the existing dialogue. Prior context may identify an explicit "
         "correction or qualification, but must not add a new commitment. Never copy your own "
         "response, explanations, advice or world knowledge into the user's Point. "

@@ -12,6 +12,7 @@ from mr_mem.point_sidecar_v2 import (
     allocate_point_context,
     body_point_sidecar_instruction,
     body_point_sidecar_tool,
+    parse_body_frame_v2,
     parse_body_turn_v2,
     parse_point_sidecar_v2,
 )
@@ -176,6 +177,31 @@ def test_sidecar_never_substitutes_for_missing_response(content):
     value = {**message(), "content": content}
     with pytest.raises(BodyResponseError):
         parse_body_turn_v2(value, context=context())
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "",
+        "\n<point_sidecar>{",
+        "\n<point_sidecar>{}\n</point_sidecar>trailing",
+        "\n<point_sidecar>{}\n<point_sidecar>{}\n</point_sidecar>",
+        '\n<point_sidecar>{"points":[],"points":[]}\n</point_sidecar>',
+        "\n<point_sidecar>\ud800\n</point_sidecar>",
+    ],
+)
+def test_frame_failure_keeps_response_even_if_sidecar_has_invalid_unicode(suffix):
+    result = parse_body_frame_v2("正常回复。" + suffix, context=context())
+    assert result.response == "正常回复。" and result.points == () and result.sidecar_error
+
+
+@pytest.mark.parametrize("closing_space", ["", "\n", " \n"])
+def test_valid_frame_maps_host_ids_and_length_rejects_only_sidecar(closing_space):
+    raw = "正常回复。\n<point_sidecar>" + json.dumps(payload()) + closing_space + "</point_sidecar>"
+    result = parse_body_frame_v2(raw, context=context())
+    assert result.points[0].point_id == context().point_ids[0] and not result.sidecar_error
+    truncated = parse_body_frame_v2(raw, context=context(), finish_reason="length")
+    assert truncated.response == "正常回复。" and truncated.points == ()
 
 
 def test_defer_preserves_expression_without_guessing_antecedent():
