@@ -17,3 +17,12 @@ compiler version is the canonical provenance version. Legacy factual memories
 without native occurrence authority return `None`. No point IDs, point objects,
 dependency objects or cohabit internals appear in the public view. MR-Mem owns
 canonical cognition; consumers own rebuildable derived structure only.
+
+Call `ProjectionQueue.register_projection_target(target)` once at consumer
+composition. Registration and backfill are atomic and durable; future canonical
+inserts enqueue registered targets alongside the existing `unassigned` intent.
+Re-registration preserves successes. Use `rebuild(target=..., reset=True)` for an
+explicit replay. Lifecycle and relation changes requeue affected identities.
+Worker success acknowledges its captured generation only, so a mutation during
+delivery cannot erase a newer pending update. This infrastructure names no LCE
+consumer and imports no LCE code.
