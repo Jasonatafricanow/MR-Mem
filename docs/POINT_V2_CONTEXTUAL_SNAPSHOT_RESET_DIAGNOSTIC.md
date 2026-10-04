@@ -104,4 +104,7 @@ Emit a concise snapshot of the contextual understanding you are currently using 
 Results will be appended after locked observations and manual reviews.
 
 Gold/pack were committed before inference in `7fd1ff593fe241f0ab8b6cdfbfb6419a0d4827b1`.
-Predeclared manifest SHA256: `236fbe949e7bcb6144de23f81913fe9aed5b2008d4ceaabb3e4c7ac1653ea204`.
+Predeclared manifest SHA256: `4a79707969d965aea48e079ef64b6d02495e2326cf37502bda450b80c8dcb51d`.
+
+Committed gold Git blob SHA256: `b949de3f372ef9e74930f669a4930b3a839ce2e810bc876fbb67ee5a609ffa41`.
+Windows working-file CRLF and Git LF bytes have separate hashes; parsed gold content is identical. No gold labels changed.
