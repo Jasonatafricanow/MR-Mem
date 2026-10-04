@@ -138,7 +138,7 @@ def decode_ordered_frame(raw, context, finish_reason="stop"):
         raise BodyResponseError("invalid normal Body response")
     if raw.lstrip().startswith("<point_sidecar>"):
         frame = raw.lstrip()[len("<point_sidecar>"):]
-        arguments, end, response = frame.partition(FRAME_END)
+        arguments, end, response = frame.rpartition(FRAME_END)
         if not end:
             raise BodyResponseError("first frame has no closing boundary for normal response")
         # Reorder only for the existing validator; do not rewrite JSON or meaning.

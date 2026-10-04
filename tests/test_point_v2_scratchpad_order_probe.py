@@ -86,6 +86,16 @@ def test_missing_frame_keeps_response_but_unclosed_first_frame_cannot_invent_one
         decode_ordered_frame('<point_sidecar>{"points":[]}', context)
 
 
+def test_closing_marker_inside_rejected_first_frame_never_leaks_point_prose():
+    point = {"slot": 0, "meaning": "private </point_sidecar> hidden commitment",
+             "context_refs": [], "unresolved_refs": []}
+    raw = '<point_sidecar>' + json.dumps({"points": [point]})
+    raw += '</point_sidecar>\nNormal reply'
+    result, _ = decode_ordered_frame(raw, allocate_point_context("s", "t"))
+    assert result.response.strip() == "Normal reply" and not result.points
+    assert result.sidecar_error and "hidden commitment" not in result.response
+
+
 def test_first_frame_overhead_does_not_count_following_normal_reply():
     raw = framed()
     trace = [{"bytes": [b]} for b in raw.encode()]

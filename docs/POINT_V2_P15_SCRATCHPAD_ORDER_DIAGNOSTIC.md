@@ -43,13 +43,15 @@ order clauses differ; arm labels are not model-visible.
 Arm A:
 
 ```text
-In this SAME normal Body inference, write the normal user-facing reply as ordinary text FIRST, then append an independent sidecar frame on a new line: <point_sidecar> followed by JSON tool arguments, then </point_sidecar> on a new line. These markers are reserved; never use them within the normal reply. No text after the closing marker. Do not put the normal reply inside JSON. 
+In this SAME normal Body inference, write the normal user-facing reply as ordinary text FIRST, then append an independent sidecar frame on a new line: <point_sidecar> followed by JSON tool arguments, then </point_sidecar> on a new line. These markers are reserved; never use them within the normal reply. No text after the closing marker. Do not put the normal reply inside JSON.
 ```
+
+The manifest retains one trailing ASCII separator space after each clause.
 
 Arm B:
 
 ```text
-In this SAME normal Body inference, write the independent sidecar frame FIRST: <point_sidecar> followed by JSON tool arguments, then </point_sidecar> on a new line, then write the complete normal user-facing reply as ordinary text on a new line. These markers are reserved; never use them within the normal reply. No text before the opening marker. Do not put the normal reply inside JSON. 
+In this SAME normal Body inference, write the independent sidecar frame FIRST: <point_sidecar> followed by JSON tool arguments, then </point_sidecar> on a new line, then write the complete normal user-facing reply as ordinary text on a new line. These markers are reserved; never use them within the normal reply. No text before the opening marker. Do not put the normal reply inside JSON.
 ```
 
 Record conversation-prefix, activated-context, semantic-clause, order-clause and
