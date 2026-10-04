@@ -1,11 +1,14 @@
-# P1.4 — turn-local meaning and weak explicit context references
+# P1.5 — meaning-changing ambiguity and minimal historical abstraction
 
 Architecture authority: [ADR-0003](ADR-0003-TURN-POINT-LIVE-WINDOW-BLOCK-COMPILATION.md).
-P1.4 removes cross-turn relation compilation from Point. The original
+P1.4 removed cross-turn relation compilation from Point. P1.5 changes only the
+ambiguity and historical-demonstrative clauses; transport, wire, host-derived
+status, weak refs and coverage-gap policy remain unchanged. The original
 [P1 NO-GO](POINT_V2_P1_GATE_A.md), [P1.1 NO-GO](POINT_V2_P11_GATE_A.md) and
 [P1.2 A/B evidence](POINT_V2_P12_GATE_A.md) remain unchanged.
 [P1.3 strict replay](POINT_V2_P13_GATE_A.md) remains historical evidence.
-[P1.4 replay](POINT_V2_P14_GATE_A.md) records the current result.
+[P1.4 replay](POINT_V2_P14_GATE_A.md) remains historical evidence.
+[P1.5 replay](POINT_V2_P15_GATE_A.md) records the current result.
 No P2, Block, canonical admission or Thread/LCE work is included.
 
 ## Meaning and host-derived status
@@ -17,6 +20,12 @@ causation, permanence, preference or negation. Preserve expressed uncertainty,
 scope, time, corrections and partial updates. Default one Point per turn-local
 understanding state; multiple only for independently developing semantic lines.
 
+Historical demonstratives such as "the earlier calculation/treatment/plan/conclusion"
+stay at the user's expressed level of abstraction. Do not expand such an object
+into a specific historical rule or proposition merely because the prior dialogue
+suggests one. The current Point records the expressed commitment; reconstructing
+the historical object belongs to Block.
+
 The Body emits `slot`, `meaning`, `context_refs` and `unresolved_refs`, **never
 `status`**. After structural validation, the host computes:
 
@@ -26,18 +35,21 @@ status = "DEFER" if unresolved_refs else "RESOLVED"
 
 This computes a redundant protocol bit; it does not infer, delete, invent or
 repair the Body's unresolved content. Model-authored status is an unknown field
-and rejects the sidecar. References are ambiguous when multiple antecedents
-remain viable or choosing one requires common sense/world knowledge. Only a
-unique antecedent determined by the dialogue itself is resolved. Status is local,
-not context completeness or canonical authority.
+and rejects the sidecar. Status is local, not context completeness or canonical
+authority.
 
-`unresolved_refs` contains only an expression in the current user turn whose
-semantic referent cannot be uniquely determined from the dialogue. Missing
-execution details, causes, further actor information, future parameters or an
-unfinished account do not qualify. A clear local commitment can stay minimal
-without those details. Prior unresolved refs are not inherited unless a current
-expression still has that ambiguity. DEFER means not knowing what a current
-expression refers to, rather than not knowing everything about the subject.
+`unresolved_refs` contains only a current-turn expression with **two or more
+semantically viable referents whose different resolutions change the current
+Point's proposition**. Unknown specific identity or a generic discourse object
+does not qualify when the local commitment can be faithfully expressed at that
+level. Missing execution details, causes, further actor information, future
+parameters or an unfinished account do not qualify either. For example, a request
+to move the referred meeting to the afternoon is locally clear even if its precise
+identity is unknown; two viable backup plans for "it" requiring encryption before
+uploading produce different propositions and require DEFER. Common sense, world
+knowledge or greater plausibility cannot eliminate a viable alternative. Prior
+unresolved refs are not inherited unless a current expression still has this
+meaning-changing ambiguity. The field name is retained to freeze the wire.
 
 `open_context` is not introduced in this increment; expressed uncertainty belongs
 in meaning.
@@ -102,7 +114,7 @@ the live profile. A nonthinking experiment does not certify the unchanged thinki
 route. The exported schema remains provider-neutral; this capability limit is not
 silently worked around by auto tools or a mode switch in MR-Mem.
 
-P1.4 reruns only strict + thinking disabled on the same 28 source turns and original
+P1.5 reruns only strict + thinking disabled on the same 28 source turns and original
 reply prefixes. It does not repeat the frame A/B or choose a production mode.
 The host still validates every argument. P1.3 showed a required-field omission
 despite strict output; invalid Points are rejected without repair.
