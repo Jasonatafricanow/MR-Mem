@@ -9,6 +9,7 @@ from examples import point_v2_scratchpad_order_probe as old
 from examples.point_v2_contextual_snapshot_probe import (
     freeze_reset_inputs,
     make_request,
+    run_plan,
     verify_pair,
 )
 from tests.test_point_v2_scratchpad_order_probe import fixture_input
@@ -63,3 +64,53 @@ def test_new_gold_binds_34_raw_prefixes_and_pack_requires_context():
         assert entry["required_axes"] and entry["unresolved_refs"] == "EMPTY"
         assert verify_pair(turn)
         assert "expected_understanding" not in json.dumps(make_request(turn, "B"))
+
+
+def test_semantic_or_order_mutation_fails_before_inference():
+    frozen = freeze_reset_inputs(inputs(), [])
+    frozen[0]["semantic_clauses"]["B"] += " added prohibition"
+    with pytest.raises(ValueError, match="semantic task changed"):
+        verify_pair(frozen[0])
+    frozen = freeze_reset_inputs(inputs(), [])
+    frozen[0]["order_a_clause"] = "Point first"
+    with pytest.raises(ValueError, match="order changed"):
+        verify_pair(frozen[0])
+
+
+def test_one_inference_isolated_failure_and_no_gold_leak_or_feedback(tmp_path):
+    frozen = freeze_reset_inputs(inputs(), [])
+    saved = deepcopy(frozen)
+    gold = {"entries": [{"id": f"{t['case_id']}/{t['turn_index']}",
+                          "conversation_prefix_sha256": t["conversation_prefix_sha256"],
+                          "current_turn_sha256": sha256(t["raw_turn"].encode()).hexdigest(),
+                          "expected_understanding": "private gold never in request"}
+                        for t in frozen]}
+    plan = [{"input_index":i,"arm":arm,"pair_id":str(i)}
+            for i in range(2) for arm in ("A", "B")]
+    calls = []
+
+    def infer(payload):
+        calls.append(payload)
+        assert "private gold" not in json.dumps(payload)
+        if payload["messages"][1]["content"] == "first" and len(payload["messages"]) == 3:
+            return 'reply\n<point_sidecar>{}</point_sidecar>', {"finish_reason":"stop"}
+        return old_test_frame(), {"finish_reason":"stop"}
+
+    output = tmp_path / "receipts.json"
+    result = run_plan(frozen, plan, infer, output, gold)
+    assert len(calls) == len(result) == 4
+    assert frozen == saved
+    assert all(r["model_call_count"] == 1 for r in result)
+    assert all(r["response"] == "reply" and r["point_coverage_gap"] for r in result[:2])
+    assert all(r["points"] for r in result[2:])
+    with pytest.raises(ValueError, match="overwrite"):
+        run_plan(frozen, plan, infer, output, gold)
+    gold["entries"][0]["conversation_prefix_sha256"] = "wrong"
+    with pytest.raises(ValueError, match="binding differs"):
+        run_plan(frozen, plan, infer, tmp_path / "new.json", gold)
+    assert len(calls) == 4
+
+
+def old_test_frame():
+    return ('reply\n<point_sidecar>{"points": [{"slot": 0, "meaning": "snapshot", '
+            '"context_refs": [], "unresolved_refs": []}]}</point_sidecar>')

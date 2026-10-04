@@ -1,5 +1,7 @@
 """P1-R1 experiment: change semantic task only; never production instructions."""
 
+import json
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import asdict
 from hashlib import sha256
@@ -7,10 +9,17 @@ from hashlib import sha256
 from examples.point_v2_scratchpad_order_probe import (
     CONTEXT_MARKER,
     SEMANTIC_MARKER,
+    decode_ordered_frame,
     fingerprint,
+    measure_frame_span,
     request_bytes,
 )
-from mr_mem.point_sidecar_v2 import allocate_point_context
+from mr_mem.point_sidecar_v2 import (
+    BodyResponseError,
+    PointSidecarContext,
+    PointTarget,
+    allocate_point_context,
+)
 
 BASE_HEAD = "80b907789e225d69c7c9022f5bcf94d6af3f320b"
 TASK_B = (
@@ -56,7 +65,8 @@ def freeze_reset_inputs(original, pack):
         if item["activated_targets"]:
             raise ValueError("new raw-context probes have no baseline Point hints")
         frozen.append({"case_id": item["id"], "turn_index": 0,
-                       "raw_turn": item["current_turn"], "conversation": item["conversation"],
+                       "raw_turn": item["current_turn"],
+                       "conversation": deepcopy(item["conversation"]),
                        "context": asdict(context), "order_a_clause": order,
                        "instruction_tail": task_a + CONTEXT_MARKER
                        + " [0, 1, 2, 3]\nActivated targets: []\nTool arguments: "
@@ -67,8 +77,11 @@ def freeze_reset_inputs(original, pack):
     for turn in frozen:
         _, activated = turn["instruction_tail"].split(CONTEXT_MARKER, 1)
         turn["semantic_clauses"] = {"A": task_a, "B": TASK_B}
+        turn["task_sha256"] = {k: sha256(v.encode()).hexdigest()
+                               for k, v in turn["semantic_clauses"].items()}
         turn["activated_payload"] = CONTEXT_MARKER + activated
         turn["activated_context_sha256"] = sha256(turn["activated_payload"].encode()).hexdigest()
+        turn["order_sha256"] = sha256(turn["order_a_clause"].encode()).hexdigest()
     return frozen
 
 
@@ -87,6 +100,11 @@ def make_request(turn, arm):
 
 def verify_pair(turn):
     a, b = make_request(turn, "A"), make_request(turn, "B")
+    for arm in ("A", "B"):
+        if sha256(turn["semantic_clauses"][arm].encode()).hexdigest() != turn["task_sha256"][arm]:
+            raise ValueError("frozen semantic task changed")
+    if sha256(turn["order_a_clause"].encode()).hexdigest() != turn["order_sha256"]:
+        raise ValueError("frozen response-first order changed")
     for payload in (a, b):
         if fingerprint(payload["messages"][1:-1]) != turn["conversation_prefix_sha256"]:
             raise ValueError("raw prefix changed")
@@ -100,3 +118,62 @@ def verify_pair(turn):
     if request_bytes(a) != request_bytes(b):
         raise ValueError("paired inputs differ outside semantic task")
     return sha256(request_bytes(a)).hexdigest()
+
+
+def run_plan(frozen, plan, infer, output, gold, *, workers=2):
+    """One call per frozen observation; reject source/gold drift before any calls."""
+    if output.exists():
+        raise ValueError("refuse to overwrite observations")
+    if workers not in (1, 2):
+        raise ValueError("at most two independent requests")
+    index = {entry["id"]: entry for entry in gold["entries"]}
+    if len(index) != len(gold["entries"]):
+        raise ValueError("duplicate gold entry")
+    for item in plan:
+        turn = frozen[item["input_index"]]
+        key = f"{turn['case_id']}/{turn['turn_index']}"
+        entry = index[key]
+        if (entry["conversation_prefix_sha256"] != turn["conversation_prefix_sha256"]
+            or entry["current_turn_sha256"] != sha256(turn["raw_turn"].encode()).hexdigest()):
+            raise ValueError("gold raw-prefix binding differs")
+        verify_pair(turn)
+
+    def one(item):
+        turn = frozen[item["input_index"]]
+        payload = make_request(turn, item["arm"])
+        record = {**item, "case_id": turn["case_id"], "turn_index": turn["turn_index"],
+                  "raw_turn": turn["raw_turn"], "model_call_count": 1,
+                  "conversation_prefix_sha256": turn["conversation_prefix_sha256"],
+                  "activated_context_sha256": turn["activated_context_sha256"],
+                  "semantic_clause_sha256": turn["task_sha256"][item["arm"]],
+                  "order_clause_sha256": turn["order_sha256"],
+                  "normalized_request_sha256": verify_pair(turn),
+                  "request_body_sha256": sha256(request_bytes(payload)).hexdigest()}
+        value = turn["context"]
+        context = PointSidecarContext(
+            value["interaction_id"], value["turn_id"], tuple(value["point_ids"]),
+            tuple(PointTarget(**p) for p in value["activated_targets"]),
+        )
+        try:
+            raw, usage = infer(payload)
+            record.update(raw_body_output=raw, provider_usage=usage)
+            result, actual = decode_ordered_frame(raw, context, usage.get("finish_reason", "stop"))
+            record.update(response=result.response, points=[asdict(p) for p in result.points],
+                          sidecar_error=result.sidecar_error,
+                          sidecar_status="REJECTED" if result.sidecar_error else "ACCEPTED",
+                          actual_order=actual, order_violation=actual != "RESPONSE_FIRST",
+                          point_coverage_gap=not bool(result.points))
+            record.update(measure_frame_span(raw, usage))
+        except (RuntimeError, BodyResponseError) as exc:
+            record.update(error=str(exc), points=[], point_coverage_gap=True)
+        return record
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    records = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for start in range(0, len(plan), 2):
+            futures = [pool.submit(one, item) for item in plan[start:start + 2]]
+            records.extend(future.result() for future in futures)
+            output.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(json.dumps({"completed": len(records), "planned": len(plan)}), flush=True)
+    return records
