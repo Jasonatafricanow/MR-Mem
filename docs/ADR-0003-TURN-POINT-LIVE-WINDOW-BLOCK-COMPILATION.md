@@ -126,7 +126,7 @@ The normal online route is:
 ~~~text
 live conversation prefix
 + relevant original turns still in the active window
-+ accepted turn-local Points
++ available accepted turn-local Points as intermediate hints
 + bounded adjacent canonical context when explicitly needed
         |
         v
@@ -197,29 +197,31 @@ Those judgments belong to the Semantic Authority operating over the live context
 
 The Point sidecar should remain bounded. It exists to preserve the Body's current semantic understanding and provide useful intermediate state for later Block compilation.
 
-A V2 Point proposal should minimally carry:
+P1.4 contract refinement (2026-10-04): remove cross-turn relation interpretation
+from the Point sidecar. A V2 Point proposal should minimally carry:
 
 ~~~text
 SemanticPoint
 - point_id                  system/turn-stable local identity
 - interaction_id / turn_id
-- meaning                   faithful local semantic interpretation
-- context_links[]           optional links to prior Point/Block IDs
-    - target_id
-    - relation              open semantic relation text
+- meaning                   minimal current-turn semantic commitment
+- context_refs[]            optional explicit references to activated objects
+    - target_kind / target_id  host-bound; Body emits short aliases
 - epistemic                 when materially present
 - polarity                  when materially present
 - temporal_scope/expression when materially present
 - unresolved_refs[]         unresolved contextual references
-- status                    RESOLVED / DEFER
+- status                    host derives RESOLVED / DEFER from unresolved_refs
 ~~~
 
 Rules:
 - meaning is local semantic meaning, not a requirement to restate all prior context.
-- relation remains open semantic language; do not create a closed ontology for unlimited meanings.
+- context_refs carry no relation text; omit uncertain or merely topical references.
+- Point does not compile correction, qualification, supersession, assistant misunderstanding or retained historical scope; the contextual Block compiler does.
 - epistemic/polarity/time are retained when they materially change interpretation.
 - unresolved references are not guessed; they remain DEFER or explicit unresolved context.
 - SourceRef, Scope, occurred_at, known_at and host revision authority remain system-bound, not Body-authored.
+- Sidecar rejection preserves a usable normal reply, admits no Point and records a source-linked coverage gap. Exact raw live turns remain eligible for Block compilation even when no Point is available.
 
 The protocol may later be reduced or extended only based on real compiler needs. It must not grow into a complete duplicate of the conversation.
 
@@ -271,13 +273,17 @@ The compiler receives only bounded material:
 ~~~text
 Input:
 - exact source turns for the candidate span
-- accepted Point sidecars for those turns
+- available accepted Point sidecars for those turns, plus Point coverage-gap receipts
 - immediately adjacent accepted Block context if required
 - explicit unresolved references / activated canonical context
 - system authority envelope
 ~~~
 
 It must not receive the user's complete lifetime history by default.
+
+Exact raw live turns are the semantic evidence. Points are cheap intermediate
+hints; the compiler must not assume complete Point coverage or omit a raw turn
+because its sidecar was missing or rejected.
 
 A candidate Block should minimally produce:
 

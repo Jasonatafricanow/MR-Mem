@@ -39,10 +39,9 @@ SemanticPointV2
 - turn_id
 - meaning
 - status: RESOLVED | DEFER
-- context_links[]
+- context_refs[]
     - target_kind: POINT | BLOCK | MEMORY
     - target_id
-    - relation: open text
 - polarity: optional
 - epistemic_status: optional
 - temporal_scope: optional
@@ -63,10 +62,14 @@ System-bound, never Body-authored:
 1. meaning describes what this turn currently means in context; it does not have to restate the entire conversation.
 2. Do not require a Point to become context-free.
 3. Do not split one turn into artificial atomic propositions unless the Body naturally needs multiple Points to represent materially different local meanings.
-4. context_links preserve meaningful dependence on earlier Points/Blocks.
-5. relation text is open-ended; no finite world-semantic taxonomy.
-6. unresolved reference or missing context is explicit. Do not hallucinate resolution.
+4. context_refs name only activated objects explicitly referenced by the current turn; uncertain or merely topical references are omitted.
+5. Point does not judge historical correction/qualification/supersession or preserved scope. There is no relation field; contextual compilation belongs to Block.
+6. unresolved_refs marks current-turn referential ambiguity, not missing execution details. Do not hallucinate resolution; Host derives status from refs.
 7. Point generation is a sibling structured output of the response.
+
+P1.4 refinement (2026-10-04): a schema miss rejects all Points while preserving a
+usable response and recording a source-linked coverage gap. Raw live turns remain
+available to the later compiler; complete Point coverage is not a prerequisite.
 
 ### Experiment
 
@@ -83,7 +86,7 @@ For each turn save:
 - raw turn;
 - assistant response;
 - emitted Point;
-- context links;
+- explicit context refs and coverage-gap receipts;
 - model-call count;
 - additional output tokens.
 
@@ -93,7 +96,8 @@ GO only if:
 - no extra semantic model call;
 - Point meaning remains locally faithful;
 - no requirement that every Point stand alone;
-- correction/reference links are emitted reliably enough to help later Block compilation;
+- emitted context refs do not guess targets or compile historical relations;
+- sidecar failures preserve usable responses, reject invalid Points and retain source-linked coverage gaps;
 - bounded sidecar overhead is acceptable.
 
 Do not touch Block production code before the protocol fixture suite is frozen.
@@ -108,7 +112,7 @@ Keep the uncompiled semantic frontier aligned with the live conversation window.
 
 ~~~text
 ActiveSemanticBuffer
-- ordered Point receipts
+- ordered Point receipts, including missing/rejected sidecar coverage gaps
 - source turn refs
 - current uncompiled span start
 - last accepted Block boundary
@@ -126,6 +130,7 @@ ActiveSemanticBuffer
 - restart can reconstruct from native source + Point receipts;
 - accepted Blocks remove/retire covered frontier state;
 - unresolved Points stay pending rather than being silently dropped.
+- raw source turns with no Point remain in the frontier and compiler candidate span.
 
 ### Gate B
 
@@ -150,7 +155,7 @@ Input:
 ~~~text
 - current live conversation prefix
 - exact candidate span
-- Point sidecars for the span
+- available Point sidecars and coverage-gap receipts for the span
 - last adjacent accepted Block when required
 - explicitly activated canonical context for unresolved refs
 - stable compiler instruction/version

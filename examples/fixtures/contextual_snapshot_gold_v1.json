@@ -1,0 +1,590 @@
+{
+  "version": "contextual_snapshot_gold_v1",
+  "authority": "Human predeclared expected turn-time understanding from complete original raw prefix, not prior Point/reply gold. Never sent to Body.",
+  "point_boundary": "Point is turn-bounded, not utterance-bounded.",
+  "review_rules": {
+    "main_classes": [
+      "CONTEXTUAL_POINT_CORRECT",
+      "CONTEXTUAL_POINT_WRONG",
+      "UNCERTAIN"
+    ],
+    "axis_classes": [
+      "CORRECT",
+      "WRONG",
+      "UNCERTAIN",
+      "NOT_APPLICABLE"
+    ],
+    "axes": [
+      "actor",
+      "speech_act",
+      "resolved_references",
+      "predicate_target",
+      "scope",
+      "contextual_constraints",
+      "over_expansion",
+      "unrelated_history"
+    ],
+    "criteria": "All required semantic content/axes must be preserved across union of admitted Points, without forbidden changes. Missing required context or omitted required actor is WRONG, not automatically UNCERTAIN. Linguistic paraphrases, resolved pronouns and assistant first-person are allowed when actor/object remain unambiguous. A raw B-only copy that fails a required axis is WRONG. Missing/rejected sidecar is UNCERTAIN; never silently a success. Genuine irresolvable output reading remains UNCERTAIN. Optional context need not be exhaustive. No keyword/equality judge.",
+    "context_refs": "Weak activated alias pointers only; may be empty even when meaning uses raw dialogue. Never infer open-text historical relations. Semantic incorrect/nonexplicit pointer fails Point fidelity; protocol-unactivated alias rejects whole sidecar.",
+    "granularity": "Default one Point per turn, multiple only independently developing lines. Report count/fragmentation separately; no automatic correctness from count.",
+    "normal_response": "Independent manual local-intent/dialogue-grounding review against the same raw prefix, not Point as authority or external factual/financial certification.",
+    "agreement": "Report six prior joint categories with Point contextual judgments, preserving both-wrong alignment as failure. No reply used to relabel Point.",
+    "block_boundary": "No requirement to compile final multi-turn closure. Whole-theme/history summaries are leakage/mini-Block when unrelated to current understanding."
+  },
+  "entries": [
+    {
+      "id": "repeated_correction/0",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "384e5a316f08bff3fe4a8a21e10028f93372236752a8266df763bf68dcfafa45",
+      "current_turn_sha256": "0f14521242697937f98bcd8d9b1dee9d6a74058e194eba16d513bb5c79ddc0c8",
+      "expected_understanding": "Intention to stop battery swapping; scope not yet specified.",
+      "required_axes": {},
+      "optional_context": [],
+      "forbidden": [
+        "Invent national-network/vehicle/technology scope before supplied."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "repeated_correction/1",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "0ce26f543f507db5c269042a7d2ac8ae6df4024367289c6c684be1d9763eb008",
+      "current_turn_sha256": "c313be4e68c4b1771bdd451979f0ad68848e571f7e2a05003d173edb88b9a610",
+      "expected_understanding": "Correct assistant reading of stopping battery swapping: intended exit is self-operated nationwide station network.",
+      "required_axes": {
+        "predicate_target": "Correction of assistant personal-use interpretation, not a prior user commitment to abandon technology.",
+        "scope": "Self-operated nationwide station network."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Attribute assistant personal-use interpretation to user."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "repeated_correction/2",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "95e7700eb2c0ab675052e1d5d0363cd066455d15ec910a26103d44047841a21a",
+      "current_turn_sha256": "4f21a1f4348cf064b0e37dd13535e50881ea74f1ff3e9b8b8ffbef0b0b193fd8",
+      "expected_understanding": "Network self-operation exit remains distinct from continuing swapping vehicles and technology.",
+      "required_axes": {
+        "scope": "Vehicles/technology continue; exit concerns self-operated nationwide station infrastructure.",
+        "contextual_constraints": "Preserve current clarification against previously resolved network-exit scope."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Only copy vehicle sentence while omitting the network-versus-technology distinction."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "delayed_qualification/0",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "9586f6bc1ade213e3e2ad80038a82a5037572b5b3aee3593a9fcaf3107a7870a",
+      "current_turn_sha256": "f758926addd2d57a53ecc7ccbf7d26d94058389ea1eaad0ff19fc7c741f4f93c",
+      "expected_understanding": "Permission/proposal to automate weekly reports later.",
+      "required_axes": {},
+      "optional_context": [],
+      "forbidden": [
+        "Invent recipients/time/content commitments."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "delayed_qualification/1",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "7cbb51d2d7e13a1c8091f5c17633a86bcd20b5a58bf46f65066384cd5ed1b7a1",
+      "current_turn_sha256": "33a3e9eb90a496da0473acf1c6ef4e318fefb07a737f023ef81253531e6fc04e",
+      "expected_understanding": "Existing weekly report must include tasks completed this week.",
+      "required_axes": {
+        "resolved_references": "The existing weekly report."
+      },
+      "optional_context": [
+        "It is the previously discussed automated report."
+      ],
+      "forbidden": [
+        "Turn completed tasks into unfinished or all tasks."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "delayed_qualification/2",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "8836044a4237e6bbdc4ec6fa1a1b43b86b30ec63726937dbe29feb289a52abca",
+      "current_turn_sha256": "74b0854e684cab9742088ab0179e97f138b72fa009f3e4957016b79163d28149",
+      "expected_understanding": "Existing automatic weekly-report sending is allowed only to test group; formal group requires user approval first.",
+      "required_axes": {
+        "resolved_references": "Automatic weekly-report sending, not tasks themselves.",
+        "scope": "Test group automation versus formal group user approval."
+      },
+      "optional_context": [
+        "Completed-this-week task content may be retained but is not required to interpret recipient qualification."
+      ],
+      "forbidden": [
+        "Require approval in test group or auto-send formal group."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "scope_distinction/0",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "00f945fc52a75df58ea319d603e735f88fedad3cc5b5650d284dcc3df54a46f4",
+      "current_turn_sha256": "1ea372c43017c7282b4c8bff5547f8b5eb134cd649f8e9a73b0faf4607270529",
+      "expected_understanding": "Battery swapping has value.",
+      "required_axes": {},
+      "optional_context": [],
+      "forbidden": [
+        "Infer unconditional independence from external conditions."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "scope_distinction/1",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "1f981645bc4fc502c837c81fcefb86c702fcc5dd413d60907fe96e579ab5751a",
+      "current_turn_sha256": "e83d68d24beb416ff28bb803e45ccfbf414d98c43fe419bef725e84c0466f02d",
+      "expected_understanding": "Distinguish value of battery swapping from possibly poor economics of carmaker directly owning national heavy-asset station network.",
+      "required_axes": {
+        "scope": "Technology value versus direct nationwide infrastructure ownership; poor economics remains possible, not certain.",
+        "contextual_constraints": "Earlier value assertion remains the contrast for current ownership criticism."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Bare economics-only extraction omitting this expressed contrast."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "scope_distinction/2",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "e04e66c50dc7fac4bf0b45c90608ae7b7a5e0075f4da1acff4c86f4aea27545b",
+      "current_turn_sha256": "5dc08d5d27fe35db509ae0bd9586eb725c7ecae20e3cad85bb655e8df43fa9ca",
+      "expected_understanding": "Continuing swapping vehicles and exiting self-operated network are compatible in the technology/ownership distinction.",
+      "required_axes": {
+        "scope": "Vehicle technology versus direct nationwide station ownership/self-operation.",
+        "contextual_constraints": "Current compatibility claim uses established technology-versus-heavy-asset distinction."
+      },
+      "optional_context": [
+        "Do not need full economic rationale."
+      ],
+      "forbidden": [
+        "Whole history of infrastructure economics as final canonical conclusion."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "cross_turn_reference/0",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "96c89b90ee59b12ad30f8c91a86eb61d4cfca1655a1c6b47a451cf61c51f87fd",
+      "current_turn_sha256": "8839346fefa2d4f9ccfcff0a1f744c3037988f8f21b438dde725052ceddf3f59",
+      "expected_understanding": "A is local backup, B is cloud backup.",
+      "required_axes": {
+        "resolved_references": "A local; B cloud."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Swap A/B definitions."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "cross_turn_reference/1",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "30f2c1a61efc745b0f987a8319bab88e291835b8ddd4f617138f62508b26b11e",
+      "current_turn_sha256": "14ca53a251cd4181ff8b7c5712445263ae0e18b3700f9df58f1e3faf52d24870",
+      "expected_understanding": "Ambiguous it needs encryption before upload; A and B remain viable from raw prefix.",
+      "required_axes": {
+        "resolved_references": "Keep it ambiguous; require DEFER without choosing cloud/data via common sense."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Resolve it to B/cloud/data merely because upload sounds cloud-related."
+      ],
+      "unresolved_refs": "REQUIRED"
+    },
+    {
+      "id": "cross_turn_reference/2",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "a783f534a4fabf4a376058d1d03c0970f1a1f8fe92f572ebfa052a9d0fa70a97",
+      "current_turn_sha256": "1bce79b5f62321e41c7af2fbc59c11c6900b704507fa245ef94153ae192e7989",
+      "expected_understanding": "Prior ambiguous it explicitly resolves to B/cloud backup; B needs encryption before upload while A/local workflow stays unchanged.",
+      "required_axes": {
+        "resolved_references": "It=B/cloud backup; A=local backup.",
+        "contextual_constraints": "Encryption-before-upload requirement is now bound to B; A unchanged."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Drop encryption/upload constraint and merely restate B label."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "partial_plan_update/0",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "eae7e10d5cd2e52576f14a053a29b0d71a30bd360a19cd93ac0823d3e594afb3",
+      "current_turn_sha256": "7b5c9765be75f0c203deca62bee745553158a20afdf5f48c920c0cfd382bd04f",
+      "expected_understanding": "Thursday demo, Friday release, budget10000.",
+      "required_axes": {
+        "contextual_constraints": "All three plan parameters."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Alter date/budget."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "partial_plan_update/1",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "66829beb98306de4b6f7e2cbe3e111791c714988cde84305ee3d4377f61c9339",
+      "current_turn_sha256": "c178b3045f2ea35a69183b9727acfbdeebad9d7f8fde99d447b67163397336d9",
+      "expected_understanding": "Existing Friday release changes to next Monday; demo and budget are not withdrawn.",
+      "required_axes": {
+        "resolved_references": "Existing release date, formerly Friday; now next Monday.",
+        "scope": "Only release date updated."
+      },
+      "optional_context": [
+        "Thursday demo and10000 budget may be explicit but do not need repetition."
+      ],
+      "forbidden": [
+        "Bare release sentence without identifying prior release update; withdraw whole plan."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "partial_plan_update/2",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "98d5bdc919fedca30f14360c952e5a4e6e86a233f5040941d5eab494689dccdd",
+      "current_turn_sha256": "fec44130c513e11fc049fb068eddd5d936546d1c3c87110352054c0a2ce5b362",
+      "expected_understanding": "Demo remains Thursday and budget remains10000 in the release-updated plan.",
+      "required_axes": {
+        "resolved_references": "Demo=Thursday; budget=10000.",
+        "contextual_constraints": "These two unchanged parameters are the current referents of unchanged."
+      },
+      "optional_context": [
+        "Monday release may remain implicit; no full final-plan compilation required."
+      ],
+      "forbidden": [
+        "Only write dates/budget unchanged without resolved values."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "diversion_and_return/0",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "43ad2a2f882dd66af2b335b702c0eecdde4f5be5a12275f03d1755b20733e984",
+      "current_turn_sha256": "f8762e1787c7349fd37c986ad22ce357bafed79ff79b3c80607eea5895250239",
+      "expected_understanding": "Use SQLite as local storage initially.",
+      "required_axes": {
+        "scope": "Initially/local storage."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Permanent ban on cloud."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "diversion_and_return/1",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "84fad2405535371f3848f2b34f6a296739ddd57f05e7f0a723a9b9952caf2ff0",
+      "current_turn_sha256": "c58331c293b70b317d01fe1ed5c392271a8549c347a47fc58d1985160cb5e02c",
+      "expected_understanding": "Separate request to move referenced meeting to afternoon; unknown meeting identity does not make request semantically ambiguous.",
+      "required_axes": {
+        "scope": "Meeting request independent of storage."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Include unrelated SQLite/storage history in this meeting Point."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "diversion_and_return/2",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "d8ab38a77ccd21fafdb4e15b596d3f4a6488b5ea50c191e1523eb52ad5a35ba8",
+      "current_turn_sha256": "37525e7e85fe38c1301fc34c4aeb069b8678074c16b965e0b86370e3b07b3ece",
+      "expected_understanding": "Previously chosen SQLite local-storage plan should stay off cloud for now.",
+      "required_axes": {
+        "resolved_references": "Storage plan=SQLite local storage, not the meeting.",
+        "scope": "Temporary off-cloud storage instruction."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Copy storage that plan without resolving unique SQLite context; link meeting."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "diversion_and_return/3",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "275b000a09bc18e8e7b907ddf68dc7deebba98faded73a9d044e49e2d1d462a8",
+      "current_turn_sha256": "52f014e36507ba1be0e4aa81b78ef28094d4be2da4cfc107d16f9f9a9024d20f",
+      "expected_understanding": "Keeping SQLite storage off cloud is only a first-version limitation, reevaluable later.",
+      "required_axes": {
+        "resolved_references": "This=off-cloud restriction for SQLite/local storage.",
+        "scope": "First version only; later reconsideration allowed."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Bare first-version limitation without identifying storage/off-cloud object; meeting history leakage."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "certainty_and_withdrawal/0",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "4a486b273abd3ccb6a3cac5b9b25b0a6d3ccd72de8b310e9287e3e986d54dffd",
+      "current_turn_sha256": "95050e55b78af98511236a50af2a9d4900e9ecff6bfea20c437a19eee139b0d9",
+      "expected_understanding": "Possible next-month move to Hangzhou, not yet decided.",
+      "required_axes": {
+        "scope": "Uncertain next-month Hangzhou move."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Convert possibility to confirmed move."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "certainty_and_withdrawal/1",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "8f0966d82309f8cf1276627921097bfc916afe8de4afc559b4cd09d219acf39d",
+      "current_turn_sha256": "4ea8d1122602140925e32e23f42177452de0ca2dd1c39dc0d642673b48f24e0d",
+      "expected_understanding": "Previously tentative next-month move to Hangzhou is now confirmed.",
+      "required_axes": {
+        "resolved_references": "Move destination=Hangzhou.",
+        "scope": "Confirmation replaces uncertainty for this move."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Bare move without Hangzhou; retain uncertainty contrary to confirmation."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "certainty_and_withdrawal/2",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "39ecb60d31948f5b03625b014f182b826380bba1d70eb1eb8990ff2de86d7443",
+      "current_turn_sha256": "3e5c259b13a1b65d5ba6217f921a70f0371f11b5b47fc77b79b5510524224eb7",
+      "expected_understanding": "Cancel next-month Hangzhou move while preserving preference for Hangzhou.",
+      "required_axes": {
+        "resolved_references": "Canceled plan=next-month Hangzhou move; retained city preference=Hangzhou.",
+        "scope": "Plan cancellation is not preference withdrawal."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Bare plan canceled/city preference retained without resolving their unique objects."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "native_model_correction/0",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "c0172763db27315d74a83ff3e085ef6461127e2b42f66a2ccab4e0126312093e",
+      "current_turn_sha256": "46dad3edaa28d24e3377a55b4af6fed4473042850c4111fbb4ca5bc5e27ebc3a",
+      "expected_understanding": "User challenges current framework/API approach and asks whether small Laya can replace Jev in that framework for phone-local deployment.",
+      "required_axes": {
+        "speech_act": "Replacement feasibility question plus small-size observation, not established implementation decision.",
+        "resolved_references": "Existing Jev framework, Jev→Laya replacement; unknown exact Laya identity is not itself ambiguity."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Use future correction to pretend decision-model identity already established at this prefix."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "native_model_correction/1",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "ce372783f6a1d3b933e056f8d1a2e497077d40424daeddff40f1e8da0e3a799f",
+      "current_turn_sha256": "89521c36b51e078f8c231d1a494905969e4985c94abce95d43c6365741d86194",
+      "expected_understanding": "User corrects assistant treating Laya as generation model: Laya and Jev are decision models, assistant researched this yesterday, and they need upstream LLM cleaning.",
+      "required_axes": {
+        "actor": "Research performer is assistant, not user/unspecified.",
+        "speech_act": "Correction, not a new unsupported universal classification.",
+        "predicate_target": "Assistant model-layer misunderstanding.",
+        "contextual_constraints": "Decision model versus generation/reply layer and need for upstream cleaning."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Omit research actor; preserve assistant mistaken generation-layer assumption as user belief."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "native_execution_correction/0",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "1092419a1f3165236cac4712a04ba7549761cb5d05ddb39ef60144992390cfa1",
+      "current_turn_sha256": "1490c971e3e41440d4efb9ae412c67389a40774a16c8ab0fd353f8fc82b134c5",
+      "expected_understanding": "User asks what G1 (previously discussed earliest-entry group) means and whether it enters D1; exact day mapping is not defined by this supplied prefix.",
+      "required_axes": {
+        "speech_act": "Question about definition/entry time, never user confirmation of G1=D1.",
+        "resolved_references": "G1 refers to discussed earliest-entry group; D1 mapping remains unknown, not supplied by future replies."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Assert G1=D1/D2; use future source continuation; DEFER merely for missing day definition."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "native_execution_correction/1",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "33f7e44575201fd70ab631d7ecb969893befe591b40f44755b34d70701ecf325",
+      "current_turn_sha256": "b60f073d468b1d9ef7bfb7db747017896a2871d25896f7a5c2b61c92ea494308",
+      "expected_understanding": "User accepts replacing opaque G labels with verification/entry-day names; requests explanation of losses using theoretical peak-day closing-price calculation.",
+      "required_axes": {
+        "speech_act": "Rename consent and calculation question/proposal, not assertion of no losses.",
+        "resolved_references": "Rename concerns prior G1/G2/G3 labeling; price request concerns the existing comparison/calculation.",
+        "scope": "Seems earlier buying yields more; do not turn this into universal certainty."
+      },
+      "optional_context": [
+        "May describe V1/D2 etc but all three full mappings are not required.",
+        "DEFER may identify genuinely different peak-day/highest-close interpretations, not unspecified data/parameters."
+      ],
+      "forbidden": [
+        "Drop rename referent or assume all earlier trades profitable."
+      ],
+      "unresolved_refs": "OPTIONAL_MATERIAL_PRICE_AMBIGUITY"
+    },
+    {
+      "id": "native_execution_correction/2",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "437fe25019183e8fdf5e67e21b2a90634a5f303e66e98eba2fee492d3c7d607e",
+      "current_turn_sha256": "50f9f3f768680f686c8cc52433419a743538b59f2f6a85157f2c9e50a38abc2e",
+      "expected_understanding": "User corrects prior assistant calculation/treatment and affirms buy→rise→drawdown exit; future-function criticism concerns prior treatment, not a rejection of the affirmed exit rule.",
+      "required_axes": {
+        "predicate_target": "Prior assistant calculation/treatment; may identify prior retrospective peak/peak-day pricing. Do not attach criticism to causal trailing exit itself.",
+        "scope": "Affirmed rise-then-drawdown exit remains; prior hard-stop/path scenario is not a user commitment.",
+        "contextual_constraints": "Distinguish criticized calculation/treatment from affirmed trailing-exit rule."
+      },
+      "optional_context": [
+        "Generic earlier calculation/treatment is sufficient if distinction is explicit; exact ultimate historical closure not required."
+      ],
+      "forbidden": [
+        "Infer drawdown exit itself future-based; treat all alternative historical targets as equally viable despite explicit affirmed rule."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "native_rhetorical_correction/0",
+      "source_class": "original_28",
+      "conversation_prefix_sha256": "8185f5e91064654b0b63adfb3ac7e94a4d4b46e32a83f07f70065774f7d5b83e",
+      "current_turn_sha256": "cc8037ebd4194a8dd0bfb387dfb5a0587044d27fab2babcbd700bd9371743502",
+      "expected_understanding": "User denies actual dizziness, corrects assistant recording hyperbole in Statebar, and asks Jev install/use, charges and recharge.",
+      "required_axes": {
+        "speech_act": "Rhetorical-expression correction plus usage/cost questions.",
+        "predicate_target": "Assistant literal symptom interpretation and recording.",
+        "scope": "Not actual dizziness; do not certify payment facts not supplied."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Turn rhetorical phrase into real health state; answer propositions into user commitments."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "probe_unique_reference/0",
+      "source_class": "new_context_dependency_pack",
+      "conversation_prefix_sha256": "8e3496fcb4e53865a7237578600cf2b2fb07ba5c648cceabdb504719332c2d5d",
+      "current_turn_sha256": "7907a2ede3b5e782aa9b3bd9cd3c2e30182730214c840342f8ed3844a5922c11",
+      "expected_understanding": "B/cloud backup must be encrypted before upload.",
+      "required_axes": {
+        "resolved_references": "It uniquely=B/cloud backup under explicit established discussion focus."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Bare current-sentence restatement omitting uniquely resolved required context.",
+        "Unrelated history or whole-dialogue semantic closure."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "probe_actor_object/0",
+      "source_class": "new_context_dependency_pack",
+      "conversation_prefix_sha256": "6697986357692b022887473c69d25b00da739641d913e8f6c793b85d0d09b631",
+      "current_turn_sha256": "ef7b2a7217ec71134d632a621cd5ba7b18d89783b6d4a2f8c706162f9597b903",
+      "expected_understanding": "User asks if assistant-investigated Qingzhou decision-classification model can run offline.",
+      "required_axes": {
+        "actor": "Yesterday investigator=assistant.",
+        "resolved_references": "That model=Qingzhou, not Baifan.",
+        "speech_act": "Offline feasibility question, not offline capability assertion."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Bare current-sentence restatement omitting uniquely resolved required context.",
+        "Unrelated history or whole-dialogue semantic closure."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "probe_delayed_scope/0",
+      "source_class": "new_context_dependency_pack",
+      "conversation_prefix_sha256": "ba6b7c4d7a4c3bbf9b5c4cb163f214b6962c8ba5183e286554f79eac7b9c0722",
+      "current_turn_sha256": "0c6f5c9f0cb726cdc7494069ac556185374ec11ad1b7e4f38c2949389f88075b",
+      "expected_understanding": "Off-cloud SQLite storage restriction is v1-only; v2 can be reevaluated.",
+      "required_axes": {
+        "resolved_references": "This=SQLite off-cloud storage restriction.",
+        "scope": "First version only, reconsider second version."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Bare current-sentence restatement omitting uniquely resolved required context.",
+        "Unrelated history or whole-dialogue semantic closure."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "probe_elliptic_correction/0",
+      "source_class": "new_context_dependency_pack",
+      "conversation_prefix_sha256": "313ab1e44524a9c2ab1c979a84f0924f395a366f2bba9a63f52d8788399bddca",
+      "current_turn_sha256": "1ede532c57f10f3fa0367785c414d6e2ffbe3223993669803a2bdb470da3a6a9",
+      "expected_understanding": "User again corrects assistant: objection targets retrospective future-peak sell-price calculation, while realtime drawdown exit rule should not be changed.",
+      "required_axes": {
+        "predicate_target": "Earlier future-peak pricing calculation, not current rule-change suggestion.",
+        "contextual_constraints": "Retain explicit calculation-versus-realtime-exit distinction."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Bare current-sentence restatement omitting uniquely resolved required context.",
+        "Unrelated history or whole-dialogue semantic closure."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "probe_established_distinction/0",
+      "source_class": "new_context_dependency_pack",
+      "conversation_prefix_sha256": "f7ed083c657b3b233a69a45802e383c748802c59864697ebb8b035bab84050e9",
+      "current_turn_sha256": "a87c5e88a77b925a19f237ab18233ab546869363e8231ab56d539a74348487e7",
+      "expected_understanding": "User affirms referring to swapping vehicles/technology, rather than nationwide self-operated station assets.",
+      "required_axes": {
+        "resolved_references": "Former=swapping vehicles/technology.",
+        "contextual_constraints": "Distinction from station-network self-operated assets."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Bare current-sentence restatement omitting uniquely resolved required context.",
+        "Unrelated history or whole-dialogue semantic closure."
+      ],
+      "unresolved_refs": "EMPTY"
+    },
+    {
+      "id": "probe_contextual_only/0",
+      "source_class": "new_context_dependency_pack",
+      "conversation_prefix_sha256": "f0cd2df874e227d45693560bfe958bf65b8e2e4ff07a58457f07d546f055fede",
+      "current_turn_sha256": "ec5ac96ffaf421e79e3ece587ad8ff81d01a197b33bcdc61b3be6261822c7d3a",
+      "expected_understanding": "For this demonstration, change recipient to formal group and require user approval, preserving established permission rule.",
+      "required_axes": {
+        "resolved_references": "Formal one=formal group; change concerns current demonstration recipient.",
+        "scope": "Formal-group user approval; not changing global automation permissions."
+      },
+      "optional_context": [],
+      "forbidden": [
+        "Bare current-sentence restatement omitting uniquely resolved required context.",
+        "Unrelated history or whole-dialogue semantic closure."
+      ],
+      "unresolved_refs": "EMPTY"
+    }
+  ]
+}

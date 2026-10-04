@@ -1,0 +1,135 @@
+{
+  "version": "contextual_snapshot_probe_pack_v1",
+  "cases": [
+    {
+      "id": "probe_unique_reference",
+      "conversation": [
+        {
+          "role": "user",
+          "content": "方案A是本地备份，方案B是云端备份。接下来只讨论方案B。"
+        },
+        {
+          "role": "assistant",
+          "content": "好，接下来“它”专指方案B，方案A不在本段讨论范围。"
+        },
+        {
+          "role": "user",
+          "content": "它上传前必须先加密。"
+        }
+      ],
+      "current_turn": "它上传前必须先加密。",
+      "activated_targets": []
+    },
+    {
+      "id": "probe_actor_object",
+      "conversation": [
+        {
+          "role": "assistant",
+          "content": "昨天我查过模型“青舟”，它是做决策分类的小模型；我还没查“白帆”。"
+        },
+        {
+          "role": "user",
+          "content": "好，继续看青舟。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我们继续讨论青舟。"
+        },
+        {
+          "role": "user",
+          "content": "你昨天查的那个模型能离线跑吗？"
+        }
+      ],
+      "current_turn": "你昨天查的那个模型能离线跑吗？",
+      "activated_targets": []
+    },
+    {
+      "id": "probe_delayed_scope",
+      "conversation": [
+        {
+          "role": "user",
+          "content": "SQLite 存储先不上云。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，当前存储留在本地，不上云。"
+        },
+        {
+          "role": "user",
+          "content": "这个只针对第一版，第二版可以再评估。"
+        }
+      ],
+      "current_turn": "这个只针对第一版，第二版可以再评估。",
+      "activated_targets": []
+    },
+    {
+      "id": "probe_elliptic_correction",
+      "conversation": [
+        {
+          "role": "user",
+          "content": "我刚才反对的是那段拿未来峰值定卖价的计算，不是实时回撤退出规则。"
+        },
+        {
+          "role": "assistant",
+          "content": "那我把实时回撤退出规则改掉。"
+        },
+        {
+          "role": "user",
+          "content": "不是这个，我说的是前面那个计算。"
+        }
+      ],
+      "current_turn": "不是这个，我说的是前面那个计算。",
+      "activated_targets": []
+    },
+    {
+      "id": "probe_established_distinction",
+      "conversation": [
+        {
+          "role": "assistant",
+          "content": "这里有两层：前者是换电车型和技术，后者是全国站网的自营资产。"
+        },
+        {
+          "role": "user",
+          "content": "对，这两层要分开。"
+        },
+        {
+          "role": "assistant",
+          "content": "你接下来指的是前者还是后者？"
+        },
+        {
+          "role": "user",
+          "content": "对，我说的是前者。"
+        }
+      ],
+      "current_turn": "对，我说的是前者。",
+      "activated_targets": []
+    },
+    {
+      "id": "probe_contextual_only",
+      "conversation": [
+        {
+          "role": "user",
+          "content": "周报只在测试群自动发，正式群需要我审批。"
+        },
+        {
+          "role": "assistant",
+          "content": "我先演示测试群的自动发送。"
+        },
+        {
+          "role": "user",
+          "content": "别改权限规则，只改下面的演示收件群。"
+        },
+        {
+          "role": "assistant",
+          "content": "下面这段演示，是发测试群还是正式群？"
+        },
+        {
+          "role": "user",
+          "content": "换成正式那个，先走我审批。"
+        }
+      ],
+      "current_turn": "换成正式那个，先走我审批。",
+      "activated_targets": []
+    }
+  ]
+}
