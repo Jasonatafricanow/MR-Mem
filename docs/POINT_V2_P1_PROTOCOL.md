@@ -1,10 +1,11 @@
-# P1.3 — referential ambiguity and correction-target binding
+# P1.4 — turn-local meaning and weak explicit context references
 
 Architecture authority: [ADR-0003](ADR-0003-TURN-POINT-LIVE-WINDOW-BLOCK-COMPILATION.md).
-P1.3 narrows two semantic boundaries on the existing P1.2 wire. The original
+P1.4 removes cross-turn relation compilation from Point. The original
 [P1 NO-GO](POINT_V2_P1_GATE_A.md), [P1.1 NO-GO](POINT_V2_P11_GATE_A.md) and
 [P1.2 A/B evidence](POINT_V2_P12_GATE_A.md) remain unchanged.
-[P1.3 strict replay](POINT_V2_P13_GATE_A.md) records the current result.
+[P1.3 strict replay](POINT_V2_P13_GATE_A.md) remains historical evidence.
+[P1.4 replay](POINT_V2_P14_GATE_A.md) records the current result.
 No P2, Block, canonical admission or Thread/LCE work is included.
 
 ## Meaning and host-derived status
@@ -16,7 +17,7 @@ causation, permanence, preference or negation. Preserve expressed uncertainty,
 scope, time, corrections and partial updates. Default one Point per turn-local
 understanding state; multiple only for independently developing semantic lines.
 
-The Body emits `slot`, `meaning`, `context_links` and `unresolved_refs`, **never
+The Body emits `slot`, `meaning`, `context_refs` and `unresolved_refs`, **never
 `status`**. After structural validation, the host computes:
 
 ```python
@@ -43,16 +44,18 @@ in meaning.
 The Gate explicitly measures excessive DEFER as well as false RESOLVED. A host-
 derived status can be perfectly consistent while its Body-authored refs are wrong.
 
-For a correction/refinement, first identify the actual prior semantic state being
-corrected from the dialogue, then bind its activated alias through `context_links`.
-The open-text relation specifies what changes and what remains affirmed. Lexical
-similarity alone cannot select the target. An assistant's interpretation must not
-become the user's prior commitment merely through a link. Keep one correction
-and its affirmed intended rule in one Point; never label that affirmed rule as
-the rejected target or invent the reason for the correction. If the activated
-targets do not represent the target, do not fabricate an alias; preserve the
-explicit correction in meaning and defer only an actual ambiguous expression.
-No operation field, closed relation taxonomy or host semantic repair is added.
+`context_refs` is only a list of short aliases for activated objects explicitly
+referenced by the current turn. Omit uncertain or merely topical pointers. It
+carries no relation, operation, rejected/affirmed-state description or historical
+belief reconstruction. Host maps aliases to typed targets; it does not judge the
+logical relationship between turns. `meaning` remains the current turn's minimal
+commitment, without importing the assistant's explanations.
+
+Correction, qualification, supersession, assistant misunderstanding, retained
+scope and semantic closure belong to contextual Block compilation over raw live
+turns plus available Points. This refines the Point contract in ADR-0003 and the
+implementation plan without changing their turn-local Point/live-window Block
+architecture. The old draft wires are not decoded by this revision.
 
 ## Strict single-envelope transport
 
@@ -63,7 +66,7 @@ whose arguments contain both normal reply and Point proposals:
 {"response":"normal user-facing reply","points":[{
   "slot":0,
   "meaning":"minimal current-turn commitment",
-  "context_links":[{"target":"p0","relation":"qualifies the prior proposal"}],
+  "context_refs":["p0"],
   "unresolved_refs":[]
 }]}
 ```
@@ -85,7 +88,10 @@ result = parse_body_turn_v2(
     message, context=context, finish_reason=usage["finish_reason"],
 )
 show_response(result.response)
-record_rejection(result.sidecar_error) if result.sidecar_error else record_proposals(result.points)
+record_turn_receipt(
+    native_session_id, native_turn_id, points=result.points,
+    point_coverage_gap=not result.points, rejection=result.sidecar_error,
+)
 ```
 
 MR-Mem supplies no provider client, retry or model settings. Provider capability
@@ -96,14 +102,16 @@ the live profile. A nonthinking experiment does not certify the unchanged thinki
 route. The exported schema remains provider-neutral; this capability limit is not
 silently worked around by auto tools or a mode switch in MR-Mem.
 
-P1.3 reruns only strict + thinking disabled on the same 28 source turns and original
+P1.4 reruns only strict + thinking disabled on the same 28 source turns and original
 reply prefixes. It does not repeat the frame A/B or choose a production mode.
-The host still validates every argument: one P1.3 response omitted a required
-Point field despite requesting strict output, and was rejected without repair.
+The host still validates every argument. P1.3 showed a required-field omission
+despite strict output; invalid Points are rejected without repair.
 
 Once a valid envelope contains a usable response, Point validation failure returns
-that response, zero Points and `sidecar_error`. Missing/wrong/multiple functions,
-unparseable envelope JSON or invalid/missing response produce `BodyResponseError`.
+that response, zero Points and `sidecar_error`. Record the source-linked Point
+coverage gap; a missing Point does not exclude its raw turn from later compilation.
+Missing/wrong/multiple functions, unparseable envelope JSON or invalid/missing
+response produce `BodyResponseError`.
 The decoder never rescues response text from untrusted `message.content` or repairs
 malformed JSON. Completion must finish with `tool_calls`; a parseable incomplete
 envelope preserves any usable response but rejects all Points.
@@ -117,7 +125,7 @@ The frame route remains available via the default
 ```text
 Normal reply.
 <point_sidecar>
-{"points":[{"slot":0,"meaning":"...","context_links":[],"unresolved_refs":[]}]}
+{"points":[{"slot":0,"meaning":"...","context_refs":[],"unresolved_refs":[]}]}
 </point_sidecar>
 ```
 
@@ -134,17 +142,19 @@ Current model slots are consecutive unique integers `0,1,...`; the host maps the
 to replay-stable Point IDs. Prior targets use typed request-local `p0/p1/b0/m0`
 aliases. Stable IDs and host scope/source/time authority never enter model output.
 The immutable host context checks eligible aliases without certifying freshness.
-Prior proposals sent to the model also use aliases and omit the redundant status.
+Prior proposals sent to the model also use aliases, with no relation or redundant
+status. Schema `body_point_sidecar_v2_4` emits `context_refs: ["p0", ...]`; each
+decoded ref is a host-bound `PointTarget` with no semantic relation attribute.
 
 - At most four Points, default one; empty only when no semantic content exists.
 - Point array at most 12,288 UTF-8 bytes; raw arguments at most 65,536 bytes.
-- Meaning at most 2,048 characters; links/refs at most eight each.
-- Relation/ref/host identity text at most 256 characters; activated targets at most 128.
+- Meaning at most 2,048 characters; context/unresolved refs at most eight each.
+- Ref/host identity text at most 256 characters; activated targets at most 128.
 - Normal reply at most 16,384 characters.
 
 Unknown fields/aliases, duplicate keys, invalid Unicode, slot errors and budgets
 reject all Points. Strict JSON structure does not certify meaning or correct refs.
-The old unmerged P1/P1.1 wires are intentionally not decoded by this revision;
+The old unmerged P1 through P1.3 wires are intentionally not decoded by this revision;
 existing V1 production contracts are unchanged.
 
 `run_probe` supports the selected transport with one callback per turn. For paired
@@ -158,3 +168,16 @@ Provider traces must reproduce raw frame bytes exactly to measure Point/frame
 tokens. Missing tool traces keep Point-only token attribution unknown. Explicitly
 disabled thinking is recorded; completion totals still include normal replies and
 cannot be called Point cost. Full native responses and token traces stay private.
+
+## Coverage gaps
+
+Each probe receipt records the source turn fingerprint and whether no Point was
+accepted. Sidecar rejection preserves any usable normal response, admits zero
+Points, records the reason and retains the original raw-source prefix. Empty
+Point output also records absent Point coverage without inventing semantics.
+
+A schema miss alone is no longer an automatic Gate A architecture blocker.
+Incorrect Point admission, lost usable response or untracked raw-source coverage
+is a failure. No retry, partial salvage or empty-ref repair is added. The later
+Block compiler's authority input is raw live turns; available Points are hints
+and cannot be assumed complete.
