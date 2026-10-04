@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 
-SCHEMA_VERSION = "body_point_sidecar_v2_2"
+SCHEMA_VERSION = "body_point_sidecar_v2_4"
 SIDECAR_TOOL = "emit_body_turn"
 FRAME_START = "\n<point_sidecar>"
 FRAME_END = "</point_sidecar>"
@@ -24,13 +24,6 @@ class BodyResponseError(ValueError):
 class PointTarget:
     target_kind: str
     target_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class PointContextLink:
-    target_kind: str
-    target_id: str
-    relation: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +75,7 @@ class SemanticPointV2:
     turn_id: str
     meaning: str
     status: str
-    context_links: tuple[PointContextLink, ...]
+    context_refs: tuple[PointTarget, ...]
     unresolved_refs: tuple[str, ...]
 
 
@@ -130,29 +123,27 @@ def _object(pairs):
 
 
 def _point(value, context):
-    _fields(value, ("slot", "meaning", "context_links", "unresolved_refs"))
+    _fields(value, ("slot", "meaning", "context_refs", "unresolved_refs"))
     slot = value["slot"]
     if type(slot) is not int or not 0 <= slot < len(context.point_ids):
         raise PointSidecarError("invalid host Point slot")
     refs = tuple(_text(ref) for ref in _array(value["unresolved_refs"], 8))
     targets = context.target_aliases()
-    links = []
-    for link in _array(value["context_links"], 8):
-        _fields(link, ("target", "relation"))
-        alias = _text(link["target"])
+    aliases = [_text(alias) for alias in _array(value["context_refs"], 8)]
+    if len(set(aliases)) != len(aliases):
+        raise PointSidecarError("duplicate context reference")
+    references = []
+    for alias in aliases:
         if alias not in targets:
             raise PointSidecarError("context target was not activated by the host")
-        target = targets[alias]
-        links.append(
-            PointContextLink(target.target_kind, target.target_id, _text(link["relation"]))
-        )
+        references.append(targets[alias])
     return SemanticPointV2(
         context.point_ids[slot],
         context.interaction_id,
         context.turn_id,
         _text(value["meaning"], 2048),
         "DEFER" if refs else "RESOLVED",
-        tuple(links),
+        tuple(references),
         refs,
     )
 
@@ -264,7 +255,7 @@ def body_point_sidecar_instruction(context: PointSidecarContext, *, transport="f
             {
                 "slot": 0,
                 "meaning": "minimal semantic commitment explicitly made by the current user turn",
-                "context_links": [],
+                "context_refs": [],
                 "unresolved_refs": [],
             }
         ],
@@ -291,8 +282,8 @@ def body_point_sidecar_instruction(context: PointSidecarContext, *, transport="f
         "In this SAME normal Body inference, "
         + channel
         + "meaning is minimal semantic commitment: record ONLY what the current user turn "
-        "explicitly commits in the existing dialogue. Prior context may identify an explicit "
-        "correction or qualification, but must not add a new commitment. Never copy your own "
+        "explicitly expresses in the existing dialogue. Use prior dialogue only to understand "
+        "current expressions, not to compile historical semantic relations. Never copy your own "
         "response, explanations, advice or world knowledge into the user's Point. "
         "Do not add unexpressed independence, exclusivity, causation, permanence, preference "
         "or negation. Preserve expressed uncertainty, scope, time and partial updates. "
@@ -312,21 +303,14 @@ def body_point_sidecar_instruction(context: PointSidecarContext, *, transport="f
         "Do not output status; the host derives it solely from unresolved_refs. "
         "Local understanding is not context-complete or canonical. "
         "Use slots 0,1,... in order; the host assigns all stable identities. "
-        "context_links use only activated aliases with open-text relation; link relevant "
-        "corrections/qualifications without promoting previous proposals into facts. "
-        "For a correction/refinement, FIRST identify the actual prior semantic state being "
-        "corrected in the dialogue, then bind its activated alias in context_links. State "
-        "in the open-text relation what is corrected and what remains affirmed. Choose the "
-        "target from the conversational correction, never just matching current vocabulary. "
-        "Distinguish the user's prior commitment from the assistant's interpretation of it; "
-        "a link does not make an assistant explanation the user's earlier commitment. "
-        "Keep one correction and its affirmed intended rule in ONE Point. Never turn the "
-        "affirmed rule into the rejected target or invent a causal reason for the correction. "
-        "If no activated alias represents the target, do not fabricate one; retain the "
-        "explicit correction in meaning and record a ref only for actual referential ambiguity. "
+        "context_refs is a list of activated aliases ONLY for context objects explicitly "
+        "pointed to by the CURRENT turn. If the reference is uncertain or merely topically "
+        "related, leave it out. Do not infer correction, qualification, supersession, "
+        "rejected/affirmed historical states or assistant misunderstanding; that cross-turn "
+        "compilation belongs to Block. No relation text or reconstruction of past beliefs. "
         "No host identity, authority, extra fields or markdown in tool arguments. "
-        "At most 4 Points, meaning <=2048 characters, links/refs <=8 each, "
-        "relation/ref <=256 characters, Point array <=12288 UTF-8 bytes. "
+        "At most 4 Points, meaning <=2048 characters, context/unresolved refs <=8 each, "
+        "ref <=256 characters, Point array <=12288 UTF-8 bytes. "
         "Empty points only when no semantic content is present.\n"
         f"Available current slots: {list(range(len(context.point_ids)))}\n"
         f"Activated targets: {list(context.target_aliases())}\n"
@@ -336,16 +320,10 @@ def body_point_sidecar_instruction(context: PointSidecarContext, *, transport="f
 
 def body_point_sidecar_tool(context: PointSidecarContext) -> dict:
     """Strict function schema; provider support is a host capability, not assumed."""
-    link = {
-        "type": "object",
-        "properties": {"target": {"type": "string"}, "relation": {"type": "string"}},
-        "required": ["target", "relation"],
-        "additionalProperties": False,
-    }
     fields = {
         "slot": {"type": "integer", "minimum": 0, "maximum": len(context.point_ids) - 1},
         "meaning": {"type": "string"},
-        "context_links": {"type": "array", "items": link},
+        "context_refs": {"type": "array", "items": {"type": "string"}},
         "unresolved_refs": {"type": "array", "items": {"type": "string"}},
     }
     point = {

@@ -36,7 +36,7 @@ def payload(**overrides):
             {
                 "slot": 0,
                 "meaning": "第一部分改成周五，其余安排沿用前一轮。",
-                "context_links": [{"target": "p0", "relation": "仅修改第一部分，保留其余安排"}],
+                "context_refs": ["p0"],
                 "unresolved_refs": [],
             }
         ],
@@ -72,7 +72,7 @@ def test_same_inference_binds_slot_and_alias_to_host_ids():
         "turn-2",
     )
     assert point.meaning == payload()["points"][0]["meaning"]
-    assert point.context_links[0].target_id == "session-1/turn-1/p0"
+    assert point.context_refs[0].target_id == "session-1/turn-1/p0"
 
 
 @pytest.mark.parametrize(
@@ -87,6 +87,8 @@ def test_same_inference_binds_slot_and_alias_to_host_ids():
         "turn_id",
         "canonical_id",
         "polarity",
+        "context_links",
+        "relation",
     ],
 )
 def test_body_cannot_supply_host_authority_or_extra_fields(field):
@@ -107,9 +109,11 @@ def test_body_cannot_supply_host_authority_or_extra_fields(field):
         {"status": "CLOSED"},
         {"meaning": " "},
         {"meaning": "x" * 2049},
-        {"context_links": [{"target": "b0", "relation": "修正"}]},
-        {"context_links": [{"target": "session-1/turn-1/p0", "relation": "修正"}]},
-        {"context_links": [{"target": "p0", "target_id": "forged", "relation": "修正"}]},
+        {"context_refs": ["b0"]},
+        {"context_refs": ["session-1/turn-1/p0"]},
+        {"context_refs": [{"target": "p0", "target_id": "forged", "relation": "修正"}]},
+        {"context_refs": ["p0", "p0"]},
+        {"context_refs": ["p0"] * 9},
         {"unresolved_refs": ["未解"] * 9},
     ],
 )
@@ -250,9 +254,9 @@ def test_aliases_are_typed_request_local_and_never_expose_identities():
     assert all(point_id not in wire for point_id in ctx.point_ids)
     assert "minimal semantic commitment" in instruction and "Default ONE Point" in instruction
     value = payload()
-    value["points"][0]["context_links"] = [{"target": "b0", "relation": "限定"}]
-    link = parse_point_sidecar_v2(json.dumps(value), context=ctx)[0].context_links[0]
-    assert (link.target_kind, link.target_id) == ("BLOCK", "long-block-id")
+    value["points"][0]["context_refs"] = ["b0"]
+    reference = parse_point_sidecar_v2(json.dumps(value), context=ctx)[0].context_refs[0]
+    assert (reference.target_kind, reference.target_id) == ("BLOCK", "long-block-id")
 
 
 def test_host_identities_remain_replay_stable():

@@ -54,10 +54,7 @@ def run_probe(cases, body_infer, output: Path, *, transport="frame"):
                     "alias": aliases[p.point_id],
                     "meaning": p.meaning,
                     "unresolved_refs": p.unresolved_refs,
-                    "context_links": [
-                        {"target": aliases[link.target_id], "relation": link.relation}
-                        for link in p.context_links
-                    ],
+                    "context_refs": [aliases[ref.target_id] for ref in p.context_refs],
                 }
                 for p in prior_points
             ]
@@ -73,6 +70,7 @@ def run_probe(cases, body_infer, output: Path, *, transport="frame"):
                 "case_id": case["id"],
                 "turn_index": index,
                 "raw_turn": user_text,
+                "source_turn_sha256": sha256(user_text.encode()).hexdigest(),
                 "model_call_count": 1,
                 "protocol": SCHEMA_VERSION,
                 "transport": transport,
@@ -96,6 +94,7 @@ def run_probe(cases, body_infer, output: Path, *, transport="frame"):
                 record.update(response=result.response, points=[asdict(p) for p in result.points])
                 record["sidecar_error"] = result.sidecar_error
                 record["sidecar_status"] = "REJECTED" if result.sidecar_error else "ACCEPTED"
+                record["point_coverage_gap"] = not bool(result.points)
                 arguments = (
                     raw["tool_calls"][0]["function"]["arguments"]
                     if transport == "tool" and not result.sidecar_error
@@ -115,6 +114,7 @@ def run_probe(cases, body_infer, output: Path, *, transport="frame"):
                 )
             except (BodyResponseError, RuntimeError) as exc:
                 record["error"] = str(exc)
+                record["point_coverage_gap"] = True
                 records.append(record)
                 output.write_text(
                     json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"

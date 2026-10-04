@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ def reply(meaning="", raw=None):
             {
                 "slot": 0,
                 "meaning": meaning,
-                "context_links": [],
+                "context_refs": [],
                 "unresolved_refs": [],
             }
         ]
@@ -75,7 +76,39 @@ def test_rejected_sidecar_saves_response_and_continues_without_repair(tmp_path):
     assert len(calls) == len(records) == 2
     assert all(r["response"] == "继续。" and r["sidecar_status"] == "REJECTED" for r in records)
     assert calls[1][2] == {"role": "assistant", "content": "继续。"}
+    assert all(r["point_coverage_gap"] for r in records)
     assert "Previous Point proposals: []" in calls[1][-1]["content"]
+
+
+def test_missing_required_refs_records_gap_and_keeps_raw_source_prefix(tmp_path):
+    calls = []
+
+    def body(messages, _tool):
+        calls.append(messages)
+        if len(calls) == 1:
+            value = reply("first commitment")
+            args = json.loads(value["tool_calls"][0]["function"]["arguments"])
+            args["points"][0].pop("unresolved_refs")
+            value["tool_calls"][0]["function"]["arguments"] = json.dumps(args)
+            return value, {"finish_reason": "tool_calls"}
+        return reply("second commitment"), {"finish_reason": "tool_calls"}
+
+    records = run_probe(
+        [{"id": "gap", "turns": ["first", "second"],
+          "assistant_after_turn": [[{"role": "assistant", "content": "original reply"}], []]}],
+        body, tmp_path / "gaps.json", transport="tool",
+    )
+    assert len(calls) == len(records) == 2
+    first = records[0]
+    assert first["response"] == "继续。" and first["points"] == []
+    assert first["point_coverage_gap"] and first["sidecar_error"] == "missing fields"
+    assert first["source_turn_sha256"] == sha256(b"first").hexdigest()
+    assert calls[1][1:3] == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "original reply"},
+    ]
+    assert "Previous Point proposals: []" in calls[1][-1]["content"]
+    assert not records[1]["point_coverage_gap"]
 
 
 @pytest.mark.parametrize("failure", [RuntimeError, BodyResponseError])
