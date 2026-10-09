@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -94,6 +94,12 @@ class CanonicalMemoryStore:
                 target TEXT PRIMARY KEY);
         """)
         self._conn.executescript(SEMANTIC_SCHEMA_SQL)
+        # Producer-owned time at which a non-supersede lifecycle change became known.
+        # Rows invalidated before this table existed have no entry: time stays unknown.
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS lifecycle_transitions ("
+            "memory_id TEXT PRIMARY KEY, lifecycle TEXT NOT NULL, transitioned_at TEXT NOT NULL)"
+        )
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(projection_intents)")}
         if "generation" not in columns:
             self._conn.execute(
@@ -149,7 +155,19 @@ class CanonicalMemoryStore:
                 (scope_json(memory.scope), ref.source_key, ref.version_key, memory.memory_id),
             )
 
-    def _set_lifecycle(self, memory: CommittedMemory, lifecycle: MemoryLifecycle) -> None:
+    def _set_lifecycle(
+        self,
+        memory: CommittedMemory,
+        lifecycle: MemoryLifecycle,
+        *,
+        at: datetime | None = None,
+    ) -> None:
+        if at is not None:
+            # First recorded transition wins; it is the moment the change became known.
+            self._conn.execute(
+                "INSERT OR IGNORE INTO lifecycle_transitions VALUES (?,?,?)",
+                (memory.memory_id, lifecycle.value, at.isoformat()),
+            )
         self._conn.execute(
             "UPDATE canonical_memory SET payload=? WHERE memory_id=?",
             (_encode(replace(memory, lifecycle=lifecycle)), memory.memory_id),
@@ -167,10 +185,19 @@ class CanonicalMemoryStore:
         ref: SourceRef,
         *,
         deleted: bool = False,
+        at: datetime | None = None,
     ) -> tuple[str, ...]:
-        """Invalidate only support with this identity and stale revision, or a tombstone."""
+        """Invalidate only support with this identity and stale revision, or a tombstone.
+
+        ``at`` is when the invalidation became known (default: now, UTC). It is recorded
+        so as-of readers can tell whether a past cutoff predates the invalidation.
+        """
         if type(deleted) is not bool:
             raise ValueError("deleted must be bool")
+        if at is None:
+            at = datetime.now(UTC)
+        if type(at) is not datetime or at.tzinfo is None or at.utcoffset() != UTC.utcoffset(None):
+            raise ValueError("at must be a UTC datetime")
         with self._transaction():
             ids = self._conn.execute(
                 "SELECT memory_id FROM semantic_sources WHERE scope=? AND source_key=? "
@@ -181,7 +208,9 @@ class CanonicalMemoryStore:
             for (memory_id,) in ids:
                 memory = self.get(memory_id)
                 if memory is not None and memory.lifecycle is MemoryLifecycle.ACTIVE:
-                    self._set_lifecycle(memory, MemoryLifecycle.INVALIDATED)
+                    if at < memory.known_at:
+                        raise ValueError("at must not precede the memory's known_at")
+                    self._set_lifecycle(memory, MemoryLifecycle.INVALIDATED, at=at)
                     changed.append(memory_id)
         return tuple(changed)
 
