@@ -167,3 +167,83 @@ def test_semantic_thread_and_retrieval_use_native_provenance(tmp_path):
             hit.memory.memory_id for hit in retrieval.search(MemoryRetrievalQuery(SCOPE, "checks"))
         ) == (two.memory_id,)
         assert core.products.surface_threads(SCOPE, now=KNOWN) == ()
+
+
+def _invalidated_setup(core, host):
+    ref = host.put("turn-1", "one raw record")
+    first = service(core, host).admit(candidate(ref))
+    return first, host.put("turn-1", "edited", revision="2")
+
+
+def test_invalidation_time_is_recorded_first_wins_and_survives_restart(tmp_path):
+    from datetime import timedelta
+
+    from mr_mem.memory.semantic_projection import SqliteCanonicalSemanticBlockReader
+
+    path = tmp_path / "t.sqlite"
+    host = Host()
+    with MemoryCore(path) as core:
+        first, new_ref = _invalidated_setup(core, host)
+        t1 = first.known_at + timedelta(days=1)
+        assert core.canonical.invalidate_source(SCOPE, new_ref, at=t1) == (first.memory_id,)
+        # an idempotent retry must not move the recorded time
+        assert core.canonical.invalidate_source(SCOPE, new_ref, at=t1 + timedelta(days=5)) == ()
+    with MemoryCore(path):
+        reader = SqliteCanonicalSemanticBlockReader(path)
+        try:
+            view = reader.get_semantic_block_view(first.memory_id)
+        finally:
+            reader.close()
+    assert view.lifecycle is MemoryLifecycle.INVALIDATED
+    assert view.transition_known_at == t1
+
+
+def test_invalidation_time_defaults_to_now_and_is_validated(tmp_path):
+    from datetime import timedelta, timezone
+
+    from mr_mem.memory.semantic_projection import SqliteCanonicalSemanticBlockReader
+
+    path = tmp_path / "t.sqlite"
+    host = Host()
+    with MemoryCore(path) as core:
+        first, new_ref = _invalidated_setup(core, host)
+        east = timezone(timedelta(hours=8))
+        for bad in (datetime(2026, 9, 1), datetime(2026, 9, 1, tzinfo=east)):
+            with pytest.raises(ValueError):
+                core.canonical.invalidate_source(SCOPE, new_ref, at=bad)
+        with pytest.raises(ValueError):
+            core.canonical.invalidate_source(
+                SCOPE, new_ref, at=first.known_at - timedelta(seconds=1)
+            )
+        assert core.get(first.memory_id).lifecycle is MemoryLifecycle.ACTIVE  # rolled back
+        before = datetime.now(UTC)
+        core.canonical.invalidate_source(SCOPE, new_ref)
+        reader = SqliteCanonicalSemanticBlockReader(path)
+        try:
+            view = reader.get_semantic_block_view(first.memory_id)
+        finally:
+            reader.close()
+    assert before <= view.transition_known_at <= datetime.now(UTC)
+
+
+def test_reader_tolerates_database_without_transition_table(tmp_path):
+    import sqlite3
+
+    from mr_mem.memory.semantic_projection import SqliteCanonicalSemanticBlockReader
+
+    path = tmp_path / "t.sqlite"
+    host = Host()
+    with MemoryCore(path) as core:
+        first, new_ref = _invalidated_setup(core, host)
+        core.canonical.invalidate_source(SCOPE, new_ref)
+    con = sqlite3.connect(path)
+    con.execute("DROP TABLE lifecycle_transitions")
+    con.commit()
+    con.close()
+    reader = SqliteCanonicalSemanticBlockReader(path)
+    try:
+        view = reader.get_semantic_block_view(first.memory_id)
+    finally:
+        reader.close()
+    assert view.lifecycle is MemoryLifecycle.INVALIDATED
+    assert view.transition_known_at is None  # unknown stays unknown (fail-closed upstream)

@@ -75,6 +75,18 @@ class SqliteCanonicalSemanticBlockReader:
             )
         )
 
+    def _recorded_transition(
+        self, memory_id: str, lifecycle: MemoryLifecycle
+    ) -> datetime | None:
+        try:
+            row = self.__conn.execute(
+                "SELECT transitioned_at FROM lifecycle_transitions "
+                "WHERE memory_id=? AND lifecycle=?", (memory_id, lifecycle.value),
+            ).fetchone()
+        except sqlite3.OperationalError:  # database predates the table
+            return None
+        return datetime.fromisoformat(row[0]) if row else None
+
     def get_semantic_block_view(self, memory_id: str) -> CanonicalSemanticBlockView | None:
         self.__conn.execute("BEGIN")
         try:
@@ -99,6 +111,8 @@ class SqliteCanonicalSemanticBlockReader:
                 if memory.lifecycle is MemoryLifecycle.SUPERSEDED and transitions
                 else None
             )
+            if transition is None and memory.lifecycle is MemoryLifecycle.INVALIDATED:
+                transition = self._recorded_transition(memory_id, memory.lifecycle)
             return CanonicalSemanticBlockView(
                 memory.memory_id, memory.scope, memory.content,
                 memory.occurred_at, memory.known_at, memory.lifecycle,
