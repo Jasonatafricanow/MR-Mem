@@ -140,6 +140,7 @@ class MemoryThread:
     current_support_ids: tuple[str, ...]
     working_summary: str | None = None
     mature: bool = False
+    maturity_basis: str = "multi_source"
 
     def __post_init__(self) -> None:
         require_non_empty(self.thread_id, "thread_id")
@@ -182,6 +183,8 @@ class MemoryThread:
                 raise ValueError("working_summary exceeds 4096 characters")
         if type(self.mature) is not bool:
             raise ValueError("mature must be bool")
+        if self.maturity_basis not in {"multi_source", "semantic"}:
+            raise ValueError("unsupported Thread maturity basis")
         if self.mature and self.working_summary is None:
             raise ValueError("mature Thread requires working_summary")
 
@@ -392,6 +395,7 @@ class MemoryProductStore:
         at: datetime,
         working_summary: str | None = None,
         mature: bool | None = None,
+        semantic_maturity: bool = False,
     ) -> MemoryThread:
         """Replace the bounded current working set; do not append history."""
         self._writable()
@@ -407,11 +411,14 @@ class MemoryProductStore:
         if any(memory.scope != thread.scope for memory in memories):
             raise ValueError("thread support must exactly match thread Scope")
         next_summary = thread.working_summary if working_summary is None else working_summary
+        if semantic_maturity and mature is not True:
+            raise ValueError("semantic_maturity requires an explicit mature=True signal")
         next_mature = thread.mature if mature is None else mature
+        next_basis = "semantic" if semantic_maturity else thread.maturity_basis
         maturity_support = tuple(
             dict.fromkeys((*thread.origin_memory_ids, *supporting_memory_ids))
         )
-        if next_mature and not self._has_independent_support(maturity_support):
+        if next_mature and next_basis != "semantic" and not self._has_independent_support(maturity_support):
             if mature is True:
                 raise ValueError(
                     "mature Thread requires support from at least two interactions"
@@ -421,6 +428,7 @@ class MemoryProductStore:
             thread.current_support_ids == supporting_memory_ids
             and thread.working_summary == next_summary
             and thread.mature == next_mature
+            and thread.maturity_basis == next_basis
         ):
             return thread
         updated = replace(
@@ -430,6 +438,7 @@ class MemoryProductStore:
             current_support_ids=supporting_memory_ids,
             working_summary=next_summary,
             mature=next_mature,
+            maturity_basis=next_basis,
         )
         self._put_thread(updated)
         return updated
@@ -491,7 +500,10 @@ class MemoryProductStore:
             raise ValueError("Thread is not mature for LCE handoff")
         if not self._thread_support_is_current(thread):
             raise ValueError("Thread support is not current")
-        if not self._has_independent_support(thread.handoff_memory_ids):
+        if (
+            thread.maturity_basis != "semantic"
+            and not self._has_independent_support(thread.handoff_memory_ids)
+        ):
             raise ValueError("Thread maturity lacks independent interaction support")
         return thread
 
@@ -519,7 +531,10 @@ class MemoryProductStore:
             raise ValueError("Thread is not mature for compilation retirement")
         if not self._thread_support_is_current(thread):
             raise ValueError("Thread support is not current")
-        if not self._has_independent_support(thread.handoff_memory_ids):
+        if (
+            thread.maturity_basis != "semantic"
+            and not self._has_independent_support(thread.handoff_memory_ids)
+        ):
             raise ValueError("Thread maturity lacks independent interaction support")
         with self._conn:
             self._conn.execute(
@@ -676,6 +691,7 @@ def _decode_thread(payload: str) -> MemoryThread:
         data["current_support_ids"] = unique_all[-MAX_THREAD_CURRENT_SUPPORT:]
         data["working_summary"] = None
         data["mature"] = False
+        data["maturity_basis"] = "multi_source"
 
     data["origin_memory_ids"] = tuple(data["origin_memory_ids"])
     data["current_support_ids"] = tuple(data["current_support_ids"])
