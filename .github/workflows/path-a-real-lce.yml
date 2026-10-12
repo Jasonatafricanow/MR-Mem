@@ -1,0 +1,22 @@
+name: path-a-real-lce-integration
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lce-path-a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Jasonatafricanow/LCE-Longitudinal-Cognition-Engine
+          ref: 5228475d4cce7403078963695e2a98776f4fec24
+          path: lce-reference
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]" -e ./lce-reference
+      - run: python -m pytest -q tests/test_path_a_lce_integration.py
+      - run: python -m pytest -q tests/test_path_a_projection.py tests/test_path_a_runtime.py
