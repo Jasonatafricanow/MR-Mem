@@ -418,7 +418,11 @@ class MemoryProductStore:
         maturity_support = tuple(
             dict.fromkeys((*thread.origin_memory_ids, *supporting_memory_ids))
         )
-        if next_mature and next_basis != "semantic" and not self._has_independent_support(maturity_support):
+        if (
+            next_mature
+            and next_basis != "semantic"
+            and not self._has_independent_support(maturity_support)
+        ):
             if mature is True:
                 raise ValueError(
                     "mature Thread requires support from at least two interactions"
