@@ -214,7 +214,7 @@ class PathAProjector:
                     "UPDATE patha_event_receipts SET status=?,baseline_id=? WHERE event_id=?",
                     (status, baseline_id, update.event_id),
                 )
-            self.core.products.retire_compiled_thread(tid, baseline_id=baseline_id)
+            self._finish_handoff(tid, baseline_id)
         return PathAReceipt(update.event_id, tid, status, baseline_id)
 
     def flush(self, *, scope: Scope) -> tuple[PathAReceipt, ...]:
@@ -228,7 +228,7 @@ class PathAProjector:
         ).fetchall():
             thread = self.core.products.get_thread(tid)
             if thread is not None and thread.scope == scope and thread.mature:
-                self.core.products.retire_compiled_thread(tid, baseline_id=baseline_id)
+                self._finish_handoff(tid, baseline_id)
         for event_id, tid in self._conn.execute(
             "SELECT event_id,thread_id FROM patha_event_receipts "
             "WHERE status='pending' ORDER BY rowid"
@@ -246,9 +246,20 @@ class PathAProjector:
                     "UPDATE patha_event_receipts SET status='published',baseline_id=? "
                     "WHERE event_id=?", (baseline_id, event_id),
                 )
-            self.core.products.retire_compiled_thread(tid, baseline_id=baseline_id)
+            self._finish_handoff(tid, baseline_id)
             receipts.append(PathAReceipt(event_id, tid, "published", baseline_id))
         return tuple(receipts)
+
+    def _finish_handoff(self, tid: str, baseline_id: str) -> None:
+        thread = self.core.products.get_thread(tid)
+        if thread is not None:
+            self.core.products.retire_compiled_thread(tid, baseline_id=baseline_id)
+        # A reopened Thread is a new working projection. Earlier evidence stays
+        # reachable via the accepted Baseline, not copied into the new Thread.
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM patha_thread_support WHERE thread_id=?", (tid,),
+            )
 
     def _publish(self, thread: MemoryThread, support: tuple[str, ...]) -> str:
         assert self.publisher is not None
