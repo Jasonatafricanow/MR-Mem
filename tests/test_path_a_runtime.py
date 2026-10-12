@@ -2,10 +2,15 @@
 from mr_mem.memory.core import MemoryCore
 from mr_mem.memory.path_a import PathAAction, PathAProjector
 from mr_mem.memory.path_a_runtime import (
-    PathASearch, PathASemanticWriter, SemanticBlockInput, ThreadVerdict,
+    PathASearch,
+    PathASemanticWriter,
+    SemanticBlockInput,
+    ThreadVerdict,
 )
 from mr_mem.memory.retrieval import (
-    MemoryRetrievalQuery, MemoryRetrievalService, RetrievedMemoryCandidate,
+    MemoryRetrievalQuery,
+    MemoryRetrievalService,
+    RetrievedMemoryCandidate,
 )
 from tests.test_native_semantics import KNOWN, SCOPE, Clock, Host, candidate
 
