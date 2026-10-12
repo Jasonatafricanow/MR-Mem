@@ -130,3 +130,22 @@ def test_existing_legacy_maturity_gate_remains_explicitly_opt_in(tmp_path):
         )
         assert current.maturity_basis == "semantic"
         assert core.products.thread_handoff("legacy") == current
+
+
+def test_reopened_thread_does_not_inherit_prior_baseline_support(tmp_path):
+    host, publisher = Host(), Publisher()
+    with MemoryCore(tmp_path / "db.sqlite") as core:
+        first = put(core, host, "t1", "first", "Original conclusion")
+        second = put(core, host, "t2", "second", "Updated conclusion")
+        projector = PathAProjector(core, publisher=publisher)
+        projector.apply(scope=SCOPE, update=update(
+            "first-maturity", PathAAction.MATURE, (first.memory_id,),
+            "First settled conclusion",
+        ), at=KNOWN)
+        projector.apply(scope=SCOPE, update=update(
+            "second-maturity", PathAAction.MATURE, (second.memory_id,),
+            "New independently settled conclusion",
+        ), at=KNOWN)
+        assert len(publisher.projections) == 2
+        assert publisher.projections[1].supporting_memory_ids == (second.memory_id,)
+        projector.close()
