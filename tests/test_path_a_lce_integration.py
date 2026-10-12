@@ -1,12 +1,12 @@
 """Real LCE Draft/HEAD smoke, optional unless LCE is installed."""
 import pytest
 
-pytest.importorskip("lce")
-
 from mr_mem.memory.core import MemoryCore
 from mr_mem.memory.path_a import PathAAction, PathAProjector, PathAUpdate
 from mr_mem.memory.path_a_lce import LcePathAProjection
 from tests.test_native_semantics import KNOWN, SCOPE, Host, candidate, service
+
+pytest.importorskip("lce")
 
 
 def test_real_lce_path_a_without_path_b(tmp_path):
