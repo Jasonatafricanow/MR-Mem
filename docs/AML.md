@@ -10,7 +10,8 @@
 |---|---|
 | `source_store` | 原文按 request_id 只写一次；按 SourceRef 回查原文 |
 | `compiler` | 一次模型调用产出 SemanticBlock、Thread 信号和首次即成熟信号；`PROMPT_VERSION` 标记提示词版本 |
-| `embedding` | 本地 FastEmbed（如 bge）、任意 OpenAI 兼容 `/embeddings` 端点或 Gemini（可选） |
+| `embedding` | 本地 FastEmbed（如 bge）、任意 OpenAI 兼容 `/embeddings` 端点、Gemini，或火山方舟多模态向量（`ark`，如 doubao-embedding-vision，带本地向量缓存）（可选） |
+| `raw_arm` | 原文检索（`raw_base=true` 时启用）：每条消息一个单元，BM25 + 向量，RRF k=60、每路候选 200，即 P1 基线协议；单元保留所属消息的 record id，用于向上找到编译产物 |
 | `runtime` | Add / Search 管路：准入 Canonical → 向量投影 → 交给核心 `apply_block_signals`；检索交给核心 `PathAReader` |
 | `server` | HTTP 服务，对齐 AML 官方契约 |
 | `__main__` | `mr-mem-aml check / serve` |
@@ -24,8 +25,12 @@ POST /add
                         结果先记入 journal；重试时复用，不再调用模型
   Canonical 准入         按语义身份幂等
   向量投影（可选）        完成前不返回 200
+  原文检索单元（raw_base）  编译前就写入原文索引，原文立即可检索
+  编译输入               KNOWN_LINES = 核心 select_known_lines（最近活跃 + 内容唤醒 + 到点的计划），
+                        每条带状态和摘要；提示词 v3
   Path A（核心）         path_a_ingest.apply_block_signals：Thread 维护、成熟交接、commit / revise
-                        成熟判断沿用两次独立交互规则；全部按 processing_input_id 幂等
+                        成熟 = 编译器判断这件事已经结束；时间一律用消息时间；全部按 processing_input_id 幂等
+  内容审核拒绝（可选）     skip_rejected_compiles=true 时，模型端永久拒绝（4xx）的请求只保留原文、不产出 Block，计数
   → 200 时，内容已持久化且可检索
 
 POST /search            {"query","user_id","top_k"} → {"data":[{"id","content","score","created_at"}]}
@@ -33,6 +38,8 @@ POST /search            {"query","user_id","top_k"} → {"data":[{"id","content"
 POST /admin/flush       重扫所有 Scope，重试仍未交接的成熟 Thread
 GET  /health
 ```
+
+`raw_base=true` 时，Search 的基线是原文检索列表（与 P1 完全一致），Path A 模式在其上加入向上找到的投影（见 PATH_A.md §4）。多选题的选项按 `append_options` 追加到查询。
 
 失败语义：
 - 模型调用或 LCE 失败，**都不会回滚 Canonical**。请求保留为可恢复状态，返回 503 和 `Retry-After`，用同一个 request_id 重试即可续跑。
