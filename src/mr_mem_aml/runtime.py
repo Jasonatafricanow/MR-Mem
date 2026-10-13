@@ -227,6 +227,34 @@ class MemoryRuntime:
             for rid, messages in self.source.all_request_messages().items():
                 self.raw.add(units_for(rid, messages))
 
+    def raw_record(self, unit_id: str) -> str | None:
+        """Source record (message) of a raw hit, for evaluation mapping."""
+        unit = None if self.raw is None else self.raw.unit(unit_id)
+        return None if unit is None else unit.record_id
+
+    def line_report(self) -> list[dict]:
+        """Every line per user with its state, for offline inspection (e.g. split lines)."""
+        out = []
+        users = {m.user_id for ms in self.source.all_request_messages().values() for m in ms}
+        for user_id in sorted(users):
+            scope = user_scope(user_id)
+            lce = self.lce_for(scope)
+            threads = {t.open_question: t for t in self.core.products.list_threads(scope)}
+            for question, last_active in sorted(self.source.lines(user_id), key=lambda x: x[1]):
+                thread = threads.get(question)
+                head = None if lce is None else lce.lineage_head(question)
+                out.append({
+                    "user_id": user_id, "question": question, "last_active": last_active.isoformat(),
+                    "thread": None if thread is None else {
+                        "status": thread.status.value, "mature": thread.mature,
+                        "summary": thread.working_summary,
+                        "support": len(thread.handoff_memory_ids)},
+                    "lce": None if head is None else {
+                        "revision": head.revision_number, "content": head.content,
+                        "support": len(head.supporting_memory_ids)},
+                })
+        return out
+
     def _link_blocks(self, memory) -> None:
         for ref in memory.provenance.source_refs:
             linked = self._blocks_by_record.setdefault(ref.record_id, [])

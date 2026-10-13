@@ -94,6 +94,7 @@ class RawArm:
         self.k1, self.b = k1, b
         self._lock = threading.RLock()
         self._users: dict[str, _UserIndex] = defaultdict(_UserIndex)
+        self._by_id: dict[str, RawUnit] = {}
         arms = [RetrievalArm("bm25", _Arm(self, self._bm25))]
         if embedding is not None:
             arms.append(RetrievalArm("dense", _Arm(self, self._dense)))
@@ -110,6 +111,7 @@ class RawArm:
                     continue
                 freqs = Counter(lexical_tokens(unit.text))
                 index.units[unit.unit_id] = unit
+                self._by_id[unit.unit_id] = unit
                 length = sum(freqs.values())
                 if length:
                     index.lengths[unit.unit_id] = length
@@ -133,8 +135,8 @@ class RawArm:
 
     # -- read -------------------------------------------------------------
 
-    def unit(self, user_id: str, unit_id: str) -> RawUnit | None:
-        return self._users[user_id].units.get(unit_id)
+    def unit(self, unit_id: str) -> RawUnit | None:
+        return self._by_id.get(unit_id)
 
     def _bm25(self, user_id: str, text: str, limit: int) -> list[tuple[str, float]]:
         index = self._users[user_id]
