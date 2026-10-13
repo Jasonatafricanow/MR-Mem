@@ -203,9 +203,7 @@ class ThreadAutoUpdateService:
                     thread.status in (ThreadStatus.OPEN, ThreadStatus.RESOLVED)
                     and thread.mature
                     and thread.working_summary is not None
-                    and self._product._has_independent_support(
-                        thread.handoff_memory_ids
-                    )
+                    and self._product._has_active_support(thread.handoff_memory_ids)
                 ):
                     baseline_id = self._projection_compiler.compile(thread)
                     if baseline_id is None:
@@ -275,15 +273,14 @@ class ThreadAutoUpdateService:
         all_support = tuple(
             dict.fromkeys((*existing.origin_memory_ids, *merged_support))
         )
-        # Multiple Memory rows from one turn are still one supporting event.
-        # Maturity requires support from at least two admitted interactions.
+        # Mature = the compiler judged that the matter has ended at this time.
         mature = (
             existing.mature
-            and self._product._has_independent_support(existing.handoff_memory_ids)
+            and self._product._has_active_support(existing.handoff_memory_ids)
         ) or (
             next_summary is not None
-            and self._product._has_independent_support(all_support)
-            and (signal.mature or merged_support != existing.current_support_ids)
+            and signal.mature
+            and self._product._has_active_support(all_support)
         )
         return self._product.update_thread(
             existing.thread_id,
@@ -320,14 +317,8 @@ class ThreadAutoUpdateService:
             at=at,
             working_summary=signal.summary or existing.working_summary,
             mature=(
-                existing.mature
-                and self._product._has_independent_support(
-                    existing.handoff_memory_ids
-                )
-            )
-            or (
-                self._product._has_independent_support(maturity_support)
-                and (signal.summary is not None or signal.mature)
+                (signal.summary or existing.working_summary) is not None
+                and self._product._has_active_support(maturity_support)
             ),
         )
         return self._product.resolve_thread(

@@ -7,10 +7,11 @@ Path A semantics:
 
 - a settling signal (``resolve`` or ``mature``) on a line that already has an
   accepted LCE HEAD continues that line (MEMORY_ARCHITECTURE_V1 section 7,
-  "B1 + M4 -> B2") instead of reopening a Thread that would need new
-  independent support;
+  "B1 + M4 -> B2") instead of reopening a Thread;
 - every other Thread signal goes to ``ThreadAutoUpdateService``, whose stateless
-  rescan hands mature Threads to LCE (ADR-0033, two-interaction rule unchanged);
+  rescan hands mature Threads to LCE. Mature means the compiler judged that the
+  matter has ended at this time (replaces the ADR-0033 two-interaction rule,
+  2026-10-14);
 - a first-appearance commit becomes ``commit`` on a new line, or ``revise`` when
   the line already exists.
 

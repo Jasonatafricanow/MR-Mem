@@ -411,11 +411,9 @@ class MemoryProductStore:
         maturity_support = tuple(
             dict.fromkeys((*thread.origin_memory_ids, *supporting_memory_ids))
         )
-        if next_mature and not self._has_independent_support(maturity_support):
+        if next_mature and not self._has_active_support(maturity_support):
             if mature is True:
-                raise ValueError(
-                    "mature Thread requires support from at least two interactions"
-                )
+                raise ValueError("mature Thread requires active canonical support")
             next_mature = False
         if (
             thread.current_support_ids == supporting_memory_ids
@@ -468,14 +466,9 @@ class MemoryProductStore:
             touch_count=thread.touch_count + 1,
             current_support_ids=support,
             working_summary=summary,
-            mature=(
-                thread.mature
-                and self._has_independent_support(thread.handoff_memory_ids)
-            )
-            or (
-                summary is not None
-                and self._has_independent_support(maturity_support)
-            ),
+            # Resolving means the matter has ended at this point in time: the
+            # line is settled and mature whenever it carries an understanding.
+            mature=summary is not None and self._has_active_support(maturity_support),
         )
         self._put_thread(updated)
         return updated
@@ -491,8 +484,8 @@ class MemoryProductStore:
             raise ValueError("Thread is not mature for LCE handoff")
         if not self._thread_support_is_current(thread):
             raise ValueError("Thread support is not current")
-        if not self._has_independent_support(thread.handoff_memory_ids):
-            raise ValueError("Thread maturity lacks independent interaction support")
+        if not self._has_active_support(thread.handoff_memory_ids):
+            raise ValueError("Thread maturity lacks active canonical support")
         return thread
 
     def retire_compiled_thread(
@@ -519,8 +512,8 @@ class MemoryProductStore:
             raise ValueError("Thread is not mature for compilation retirement")
         if not self._thread_support_is_current(thread):
             raise ValueError("Thread support is not current")
-        if not self._has_independent_support(thread.handoff_memory_ids):
-            raise ValueError("Thread maturity lacks independent interaction support")
+        if not self._has_active_support(thread.handoff_memory_ids):
+            raise ValueError("Thread maturity lacks active canonical support")
         with self._conn:
             self._conn.execute(
                 "DELETE FROM memory_threads WHERE thread_id=?",
@@ -588,15 +581,16 @@ class MemoryProductStore:
         candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
         return tuple(item[3] for item in candidates[:limit])
 
-    def _has_independent_support(self, memory_ids: tuple[str, ...]) -> bool:
-        event_ids = {
-            event_id
-            for memory_id in memory_ids
-            if (memory := self._canonical.get(memory_id)) is not None
+    def _has_active_support(self, memory_ids: tuple[str, ...]) -> bool:
+        """Maturity is "the matter has ended at this time" (a settling signal), not
+        a count of interactions: one turn may both raise and settle a matter
+        ("I want this laptop" -> "no money, not buying"). Support only has to be
+        live canonical memory."""
+        return any(
+            (memory := self._canonical.get(memory_id)) is not None
             and memory.lifecycle is MemoryLifecycle.ACTIVE
-            for event_id in memory.provenance.support_event_ids
-        }
-        return len(event_ids) >= 2
+            for memory_id in memory_ids
+        )
 
     def _thread_support_is_current(self, thread: MemoryThread) -> bool:
         for memory_id in thread.handoff_memory_ids:

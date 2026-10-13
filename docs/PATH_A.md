@@ -50,7 +50,7 @@ items = reader.search(scope, query, limit=20, mode="path_a")
 ## 3. 与原实现的差异（需要正式 ADR 确认）
 
 1. **首次即成熟的直接提交（`commit`）。** 语义编译器判定某个 Block 已经包含完整、自洽的推理判断时，直接交给 LCE，不经过 Thread。
-   - Thread 的"两次独立交互"成熟规则**不变**，仍然只管从零开始的 Thread。
+   - 与 Thread 成熟的关系见第 4 点：首次即成熟针对的是一个 Block 本身就是完整判断的情况；Thread 成熟针对的是由多个 Block 演进到结束的事。
    - lineage 和同一问题的 Thread 共用，所以之后的 Thread 成熟会在这条 lineage 上产生新修订，而不是另起一条。
    - 依据：2026-10-13 用户意图（"单次成熟"），以及 ADR 输入材料 §3、§9。
 2. **已接受认知线的继续修订（`revise`）。**
@@ -58,6 +58,11 @@ items = reader.search(scope, query, limit=20, mode="path_a")
    - 本实现：已有 HEAD 的认知线收到 resolve 或成熟信号时，以"HEAD 的支撑 + 新 Block"产生新修订，内容使用编译器在同一次调用里给出的理解，不另外调用模型。非 settle 的信号（如 `track`）仍然开 Thread。
    - 已有 HEAD 的线再次经 Thread 成熟时，交接的支撑同样合并 HEAD 的支撑，新修订仍然引用旧证据。
    - 依据：MEMORY_ARCHITECTURE_V1 §7。
+4. **Thread 成熟 = 这件事在当前时间下结束了（替换 ADR-0033 的"两次独立交互"规则）。**
+   - Thread 是进行时，LCE Path A 是过去时。编译器判断一件事已经结束（`resolve`，或 `track` 带 `mature`），Thread 就成熟、交给 LCE；不再要求支撑来自两次不同的交互。
+   - 例："这电脑好牛，我想买" → "没钱，不买"：两个 Block，可以在同一轮里说完，事情结束即成熟。以后又想买，是另一件事：把这条线召回来对照，在同一条线上产生新修订。
+   - 只有新支撑、没有结束信号，不算成熟。
+   - 依据：2026-10-14 用户决定（治理设计稿 v5 §4.0、§4.4）。正式 ADR 待补。
 3. **证据回溯不到时不丢弃认知。** `accepted()` 对支撑不再 ACTIVE 的 HEAD 照常返回，标记 `evidence_complete=False`；读出口在认知和其支撑 Block 上都注明 "original evidence unavailable"。Mind-Runtime 的做法是整条跳过。依据：2026-10-13 用户规则（原文是权威证据，投影不消失，只有系统级人工删除才删）。
 4. **不产出 SemanticPoint。** MR-Mem 单独使用时，Point 没有消费方；编译器直接按语义完整性产出 Block。
 
