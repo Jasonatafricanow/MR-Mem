@@ -89,7 +89,8 @@ def test_open_thread_is_read_and_hidden_once_its_lineage_head_is_newer(env):
         track(a, "Move to Lisbon?", "Considering it"),), at=NOW)
     items = env.read("moving Lisbon")
     assert kinds(items)[:2] == ["thread", "support"]
-    assert "Question: Move to Lisbon? | Current understanding: Considering it" in items[0].content
+    assert "Ongoing matter, not concluded" in items[0].content
+    assert "Move to Lisbon? | So far: Considering it" in items[0].content
     # The same question is settled at first appearance elsewhere: the newer HEAD
     # supersedes the open Thread, so only the accepted understanding is served.
     b = env.admit("r2", 9, "decided to move to Lisbon in spring")
@@ -147,3 +148,35 @@ def test_revision_timeline_is_read_from_head(env):
     assert head.content.startswith("[Accepted understanding | revision 2 | as of 2026-08-01 00:05]")
     assert head.content.endswith("Postponed until after the trip")
     assert head.occurred_at == T0 + timedelta(minutes=5)
+
+
+def test_raw_base_reaches_projections_upward_from_raw_hits(env):
+    """Host raw evidence is the base list; a projection is read when a raw hit's
+    record was compiled into one of its Blocks (raw -> Block -> LCE line)."""
+    from mr_mem.integrations.path_a_read import RawHit
+
+    a = env.admit("r1", 0, "The user decided not to buy the laptop: no budget")
+    env.admit("r2", 5, "The user went hiking at the lake")
+    env.lce.commit(question="Buy the laptop?", summary="Not buying it: no budget",
+                   support=(a.memory_id,))
+    raw = [
+        RawHit("raw:1", "User: no money, so I am not buying that laptop", 0.9, T0, ("r1",)),
+        RawHit("raw:2", "User: lake hike was great", 0.5, T0 + timedelta(minutes=5), ("r2",)),
+    ]
+    blocks = {"r1": (a.memory_id,)}
+
+    def read(mode, **policy):
+        reader = PathAReader(
+            canonical_path=env.path, retrieval=None, lce=env.lce,
+            policy=ReadPolicy(include_source_text=False, **policy),
+            raw_search=lambda scope, query, limit: raw[:limit],
+            blocks_for_record=lambda record_id: blocks.get(record_id, ()),
+        )
+        return reader.search(SCOPE, "did I buy the laptop", limit=10, mode=mode)
+
+    items = read("path_a")
+    assert kinds(items) == ["lce", "support", "raw", "raw"]
+    assert [i.item_id for i in items[2:]] == ["raw:1", "raw:2"]  # base order kept
+    baseline = read("baseline", stamp_raw_hits=True)
+    assert kinds(baseline) == ["raw", "raw"]
+    assert baseline[0].content.startswith("[") and "no money" in baseline[0].content

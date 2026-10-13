@@ -11,6 +11,13 @@ evidence list instead of joining Memory, Thread and LCE stores themselves:
 
 ``mode="baseline"`` returns only the canonical retrieval part, rendered the
 same way, so the two modes differ only in whether projections are read.
+
+A host may instead supply its own raw-evidence retrieval (``raw_search``): the
+base list is then the host's raw hits, and projections are reached upward from
+them (raw record -> SemanticBlocks compiled from it -> their Thread / LCE line),
+the reverse of the projection -> evidence link used for verification. A
+projection whose support is reached from the raw hits AND whose own text is
+close to the query is read first (two independent routes agree).
 The ranking of projections is deliberately simple and replaceable; it was
 fixed before any evaluation run (docs/PATH_A.md) and is not benchmark-tuned.
 """
@@ -53,6 +60,21 @@ class EvidenceItem:
 
 
 @dataclass(frozen=True, slots=True)
+class RawHit:
+    """One host raw-evidence hit and the source records it came from."""
+
+    item_id: str
+    content: str
+    score: float
+    occurred_at: datetime | None
+    record_ids: tuple[str, ...]
+
+
+RawSearch = Callable[[Scope, str, int], Sequence[RawHit]]
+BlocksForRecord = Callable[[str], Sequence[str]]
+
+
+@dataclass(frozen=True, slots=True)
 class ReadPolicy:
     lce_limit: int = 5
     thread_limit: int = 2
@@ -64,6 +86,8 @@ class ReadPolicy:
     source_text_for_hits: bool = False
     support_rank_window: int = 10
     min_cosine: float = 0.60
+    # Prefix raw hits with their message time ("[YYYY-MM-DD HH:MM] ..."), both modes.
+    stamp_raw_hits: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -102,6 +126,8 @@ class PathAReader:
         policy: ReadPolicy | None = None,
         render_source: RenderSource | None = None,
         embed: Embed | None = None,
+        raw_search: RawSearch | None = None,
+        blocks_for_record: BlocksForRecord | None = None,
     ) -> None:
         self.canonical_path = Path(canonical_path)
         self.retrieval = retrieval
@@ -109,6 +135,8 @@ class PathAReader:
         self.policy = policy or ReadPolicy()
         self.render_source = render_source
         self.embed = embed
+        self.raw_search = raw_search
+        self.blocks_for_record = blocks_for_record
         self._embedding_cache: dict[str, tuple[float, ...]] = {}
 
     def _embedded(self, text: str) -> tuple[float, ...]:
@@ -138,14 +166,17 @@ class PathAReader:
             return []
         window = self.policy.support_rank_window
         query_vector = self._embedded(query) if self.embed is not None else None
-        scored: list[tuple[int, float, str]] = []
+        scored: list[tuple[int, int, float, str]] = []
         for key, (text, support) in candidates.items():
             best = min((rank_of[mid] for mid in support if mid in rank_of), default=10**9)
             cosine = _cosine(query_vector, self._embedded(text)) if query_vector else 0.0
-            if best <= window or (query_vector is not None and cosine >= self.policy.min_cosine):
-                scored.append((best, -cosine, key))
+            by_support = best <= window
+            by_text = query_vector is not None and cosine >= self.policy.min_cosine
+            if by_support or by_text:
+                # both routes agreeing outranks either one alone
+                scored.append((0 if by_support and by_text else 1, best, -cosine, key))
         scored.sort()
-        return [(key, 1.0 / (60 + min(best, 10**6))) for best, _, key in scored[:limit]]
+        return [(key, 1.0 / (60 + min(best, 10**6))) for _, best, _, key in scored[:limit]]
 
     def _support_items(
         self,
@@ -156,6 +187,8 @@ class PathAReader:
         seen_memory: set[str],
         seen_source: set[str],
         score: float,
+        *,
+        trajectory: bool = False,
     ) -> list[EvidenceItem]:
         items: list[EvidenceItem] = []
         refs: list[SourceRef] = []
@@ -167,7 +200,11 @@ class PathAReader:
             -(m.occurred_at.timestamp() if m.occurred_at else 0.0),
             m.memory_id,
         ))
-        for memory in found[: self.policy.support_limit]:
+        found = found[: self.policy.support_limit]
+        if trajectory:  # an ongoing matter reads as its steps in time order
+            found.sort(key=lambda m: (m.occurred_at.timestamp() if m.occurred_at else 0.0,
+                                      m.memory_id))
+        for memory in found:
             memory_id = memory.memory_id
             refs.extend(memory.provenance.source_refs)
             if memory_id in seen_memory:
@@ -211,6 +248,9 @@ class PathAReader:
         seen_source: set[str] = set()
         store = CanonicalMemoryStore(self.canonical_path, read_only=True)
         try:
+            if self.raw_search is not None:
+                self._raw_read(scope, query, limit, mode, store, items, seen_memory, seen_source)
+                return tuple(items[:limit])
             hits = self.retrieval.search(
                 MemoryRetrievalQuery(scope=scope, text=query, limit=limit),
                 budget=MemorySurfaceBudget(max_items=limit, max_characters=65536),
@@ -238,6 +278,24 @@ class PathAReader:
         finally:
             store.close()
         return tuple(items[:limit])
+
+    def _raw_read(self, scope, query, limit, mode, store, items, seen_memory, seen_source) -> None:
+        raw = list(self.raw_search(scope, query, limit))
+        if mode == "path_a":
+            # upward: a Block's rank is the best rank of a raw hit it was compiled from
+            rank_of: dict[str, int] = {}
+            if self.blocks_for_record is not None:
+                for position, hit in enumerate(raw, 1):
+                    for record_id in hit.record_ids:
+                        for memory_id in self.blocks_for_record(record_id):
+                            rank_of.setdefault(memory_id, position)
+            items.extend(self._projection_items(
+                scope, query, store, rank_of, seen_memory, seen_source,
+            ))
+        for hit in raw:
+            content = (f"[{_stamp(hit.occurred_at)}] {hit.content}"
+                       if self.policy.stamp_raw_hits else hit.content)
+            items.append(EvidenceItem(hit.item_id, "raw", content, hit.score, hit.occurred_at))
 
     def _projection_items(
         self,
@@ -309,17 +367,16 @@ class PathAReader:
             }
             for key, score in self._select(query, candidates, rank_of, self.policy.thread_limit):
                 t = threads[key]
-                summary = (
-                    f" | Current understanding: {t.working_summary}" if t.working_summary else ""
-                )
+                summary = f" | So far: {t.working_summary}" if t.working_summary else ""
+                latest = newest_evidence(t.handoff_memory_ids)
                 items.append(EvidenceItem(
                     f"thread:{t.thread_id}", "thread",
-                    f"[Open line of thought | updated {_stamp(t.updated_at)}] "
-                    f"Question: {t.open_question}{summary}",
-                    score, t.updated_at,
+                    f"[Ongoing matter, not concluded | last update {_stamp(latest)}] "
+                    f"{t.open_question}{summary}",
+                    score, latest,
                 ))
                 items.extend(self._support_items(
                     store, f"thread:{t.thread_id}", t.handoff_memory_ids, rank_of,
-                    seen_memory, seen_source, score,
+                    seen_memory, seen_source, score, trajectory=True,
                 ))
         return items
