@@ -7,8 +7,8 @@ and ``open_lce_thread_handoff``; ADR-0033 2026-09-28 addendum):
 
 plus one scoped extension recorded in docs/PATH_A.md: cognition the semantic
 authority marks as already complete at its first appearance is handed to the
-same Baseline lineage without first passing through Thread maturity. The
-Thread two-interaction rule itself is unchanged.
+same Baseline lineage without first passing through Thread maturity. Thread
+maturity itself is the compiler's "this matter has ended" signal (2026-10-14).
 
 MR-Mem stays the factual authority. LCE owns only derived Draft/Baseline
 state. No model is called here; summaries were already reasoned upstream.

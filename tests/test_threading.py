@@ -16,13 +16,14 @@ class Event:
     evidence_refs: tuple[str, ...]
 
 
-def event(scope, ref, summary):
+def event(scope, ref, summary, *, mature=False):
     return Event(
         scope=scope,
         attributes=(
             ("thread_action", "track"),
             ("thread_question", "Will I replace my laptop?"),
             ("thread_summary", summary),
+            *((("thread_mature", "true"),) if mature else ()),
         ),
         evidence_refs=(ref,),
     )
@@ -37,7 +38,7 @@ class Compiler:
         return "baseline-1"
 
 
-def test_thread_accepts_structural_semantic_events_and_matures_cross_turn(tmp_path):
+def test_thread_matures_when_the_compiler_says_the_matter_has_ended(tmp_path):
     path = tmp_path / "memory.sqlite"
     canonical = CanonicalMemoryStore(path)
     first = memory("m1", content="I want a new laptop.", interaction_id="turn-1")
@@ -53,10 +54,20 @@ def test_thread_accepts_structural_semantic_events_and_matures_cross_turn(tmp_pa
     )[0]
     assert not opened.mature
 
-    matured = service.apply(
+    still_open = service.apply(
         scope=first.scope,
         accepted_events=(
             event(first.scope, "evidence-m2", "Performance pressure keeps it active."),
+        ),
+        at=NOW,
+    )[0]
+    # new support alone is not maturity: the matter is still developing
+    assert not still_open.mature
+
+    matured = service.apply(
+        scope=first.scope,
+        accepted_events=(
+            event(first.scope, "evidence-m2", "Decided to replace it now.", mature=True),
         ),
         at=NOW,
     )[0]
@@ -66,7 +77,9 @@ def test_thread_accepts_structural_semantic_events_and_matures_cross_turn(tmp_pa
     service.close()
 
 
-def test_same_interaction_support_cannot_fake_maturity(tmp_path):
+def test_one_interaction_can_settle_a_matter(tmp_path):
+    """Maturity no longer counts interactions (ADR-0033 two-interaction rule
+    replaced): "want it" -> "no budget, not buying" in one turn has ended."""
     path = tmp_path / "memory.sqlite"
     canonical = CanonicalMemoryStore(path)
     first = memory("m1", content="first", interaction_id="same-turn")
@@ -82,10 +95,12 @@ def test_same_interaction_support_cannot_fake_maturity(tmp_path):
     )
     updated = service.apply(
         scope=first.scope,
-        accepted_events=(event(first.scope, "evidence-m2", "second row same turn"),),
+        accepted_events=(
+            event(first.scope, "evidence-m2", "Not buying: no budget.", mature=True),
+        ),
         at=NOW,
     )[0]
-    assert not updated.mature
+    assert updated.mature
     service.close()
 
 
@@ -110,7 +125,9 @@ def test_accepted_higher_projection_retires_temporary_thread(tmp_path):
     )[0]
     service.apply(
         scope=first.scope,
-        accepted_events=(event(first.scope, "evidence-m2", "Replacement logic is now explicit."),),
+        accepted_events=(
+            event(first.scope, "evidence-m2", "Replacement logic is now explicit.", mature=True),
+        ),
         at=NOW,
     )
     assert len(compiler.calls) == 1

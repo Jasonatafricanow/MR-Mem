@@ -146,7 +146,11 @@ def test_semantic_thread_and_retrieval_use_native_provenance(tmp_path):
         admission = service(core, host)
         one = admission.admit(replace(candidate(first), attributes=attrs))
         duplicate = admission.admit(replace(candidate(first, "second-fragment"), attributes=attrs))
-        two = admission.admit(replace(candidate(second), attributes=attrs))
+        # Maturity is the compiler's "this matter has ended" signal, not a count
+        # of interactions: new support alone does not mature the line.
+        two = admission.admit(
+            replace(candidate(second), attributes=(*attrs, ("thread_mature", "true")))
+        )
         threads = ThreadAutoUpdateService(canonical=core.canonical, product=core.products)
         opened = threads.apply(scope=SCOPE, accepted_events=(one,), at=KNOWN)[0]
         repeated = threads.apply(scope=SCOPE, accepted_events=(duplicate,), at=KNOWN)[0]
