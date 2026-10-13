@@ -149,3 +149,34 @@ def fetch_fastembed_model(model: str, target_dir: str | Path) -> Path:
             else:
                 shutil.copyfile(item.resolve(), destination)
     return target
+
+
+class ArkEmbedding:
+    """Volcengine Ark multimodal embedding (e.g. doubao-embedding-vision), text only.
+
+    One request per text (the endpoint fuses every input into one vector), rate
+    limited, with a persistent SQLite cache keyed by (model, dimensions, text) so
+    reruns and other processes sharing the cache pay nothing (see ark_embed.py).
+    """
+
+    def __init__(self, *, model: str, dimension: int, cache_path: str | Path,
+                 base_url: str | None = None, requests_per_second: float = 4.0,
+                 concurrency: int = 16) -> None:
+        from mr_mem_aml.ark_embed import ArkEmbedder
+
+        self._client = ArkEmbedder(
+            model, dimensions=dimension, concurrency=concurrency, cache_path=Path(cache_path),
+            base_url=base_url, requests_per_second=requests_per_second,
+        )
+        self._identity = EmbeddingIdentity("ark", model, dimension, "v1")
+
+    @property
+    def identity(self) -> EmbeddingIdentity:
+        return self._identity
+
+    def embed(self, text: str) -> tuple[float, ...]:
+        return tuple(float(v) for v in self._client.embed([text])[0])
+
+    def embed_many(self, texts: list[str]):
+        """Batch (parallel) embedding; numpy array, rows in input order."""
+        return self._client.embed(texts)

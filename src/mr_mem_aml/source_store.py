@@ -236,6 +236,13 @@ class AmlSourceStore:
             for r in rows
         )
 
+    def all_request_messages(self) -> dict[str, tuple[RawMessage, ...]]:
+        """Every stored message grouped by request, each request in message order."""
+        grouped: dict[str, list[RawMessage]] = {}
+        for message in self._select("ORDER BY seq", ()):
+            grouped.setdefault(message.request_id, []).append(message)
+        return {rid: tuple(sorted(ms, key=lambda m: m.index)) for rid, ms in grouped.items()}
+
     def message_by_record(self, record_id: str) -> RawMessage | None:
         found = self._select("WHERE record_id=?", (record_id,))
         return found[0] if found else None

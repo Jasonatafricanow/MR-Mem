@@ -117,7 +117,7 @@ def test_open_thread_is_read_before_maturity(tmp_path):
         add(rt, "r1", "Thinking about moving to Lisbon || track:Move to Lisbon?|Exploring")
         data = rt.search({"query": "Lisbon move", "user_id": "u1", "top_k": 10})["data"]
         assert data[0]["id"].startswith("thread:")
-        assert "Question: Move to Lisbon?" in data[0]["content"]
+        assert "Move to Lisbon? | So far:" in data[0]["content"]
     finally:
         rt.close()
 
@@ -439,5 +439,24 @@ def test_compiler_sees_recent_cued_and_due_lines(tmp_path):
 
         lines = shown("Small talk again", 1_690_470_000_000)  # 2023-07-27 15:20
         assert "Tokyo flight" in lines  # due: the plan's time has come
+    finally:
+        rt.close()
+
+
+def test_raw_base_reads_projections_over_raw_message_hits(tmp_path):
+    rt, _ = runtime(tmp_path, raw_base=True)
+    try:
+        add(rt, "r1", "No money, not buying that laptop || commit:Buy the laptop?|Not buying: no budget",
+            "Makes sense.")
+        add(rt, "r2", "Went hiking at the lake", start=1_690_100_000_000)
+        query = {"query": "did I buy the laptop", "user_id": "u1", "top_k": 10}
+        baseline = rt.search(query, mode="baseline")["data"]
+        assert set(ids({"data": baseline})) == {"raw"}
+        assert baseline[0]["content"].startswith("User: No money")  # P1 unit text
+        path_a = ids(rt.search(query))
+        assert path_a[0] == "lce" and "raw" in path_a
+        rt.close()
+        rt, _ = runtime(tmp_path, raw_base=True)  # raw index rebuilds from stored messages
+        assert ids({"data": rt.search(query, mode="baseline")["data"]})[0] == "raw"
     finally:
         rt.close()

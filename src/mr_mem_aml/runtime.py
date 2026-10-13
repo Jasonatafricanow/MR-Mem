@@ -31,7 +31,7 @@ from mr_mem.integrations.path_a_ingest import (
     apply_block_signals,
 )
 from mr_mem.integrations.path_a_lines import LineCard, select_known_lines
-from mr_mem.integrations.path_a_read import PathAReader
+from mr_mem.integrations.path_a_read import PathAReader, RawHit
 from mr_mem.memory.providers.bm25 import BM25RetrievalProvider
 from mr_mem.memory.providers.hybrid import (
     HybridRRFProvider,
@@ -126,7 +126,15 @@ def build_embedding(spec: dict | None):
             api_key_env=spec.get("api_key_env"), send_dimensions=spec.get("send_dimensions", False),
             headers=spec.get("headers"),
         )
-    raise ValueError("embedding.type must be fastembed, openai or gemini")
+    if kind == "ark":
+        from mr_mem_aml.embedding import ArkEmbedding
+
+        return ArkEmbedding(
+            model=spec["model"], dimension=spec["dimension"], cache_path=spec["cache_path"],
+            base_url=spec.get("base_url"),
+            requests_per_second=spec.get("requests_per_second", 4.0),
+        )
+    raise ValueError("embedding.type must be fastembed, openai, gemini or ark")
 
 
 def _text_content(content: object) -> str:
@@ -207,6 +215,23 @@ class MemoryRuntime:
         self._generation = 0
         self._vectors: dict[str, tuple[float, ...]] = {}
         self.thread_failures = 0
+        # upward link raw record -> Blocks compiled from it
+        self._blocks_by_record: dict[str, list[str]] = {}
+        for memory in self.core.canonical.load_all():
+            self._link_blocks(memory)
+        self.raw = None
+        if config.raw_base:
+            from mr_mem_aml.raw_arm import RawArm, units_for
+
+            self.raw = RawArm(self.embedding)
+            for rid, messages in self.source.all_request_messages().items():
+                self.raw.add(units_for(rid, messages))
+
+    def _link_blocks(self, memory) -> None:
+        for ref in memory.provenance.source_refs:
+            linked = self._blocks_by_record.setdefault(ref.record_id, [])
+            if memory.memory_id not in linked:
+                linked.append(memory.memory_id)
 
     def _embed_cached(self, text: str) -> tuple[float, ...]:
         """Projection texts are re-ranked per query; embed each text once."""
@@ -288,6 +313,10 @@ class MemoryRuntime:
         if status == "done":
             return {**_echo(request), "replayed": True}
         messages = self.source.request_messages(rid)
+        if self.raw is not None:  # raw evidence is searchable before any compile
+            from mr_mem_aml.raw_arm import units_for
+
+            self.raw.add(units_for(rid, messages))
         compiled = self.source.compiled(rid)
         if compiled is not None:  # journaled earlier: never pay inference twice
             return AddJob(request, messages, (), (), compiled)
@@ -388,6 +417,7 @@ class MemoryRuntime:
                 semantic_id=f"aml:{rid}:{index}", scope=scope, content=block.content,
                 source_refs=tuple(refs), compiler_version=PROMPT_VERSION,
             )))
+            self._link_blocks(committed[-1])
         return committed
 
     def _project(self) -> None:
@@ -468,15 +498,28 @@ class MemoryRuntime:
         if selected not in ("path_a", "baseline"):
             raise InvalidRequest("mode must be path_a or baseline")
         scope = user_scope(user_id)
+        text = query.strip()
+        if self.config.append_options and options:
+            text = text + "\n" + "\n".join(str(o) for o in options)
+        raw_search = None
+        if self.raw is not None:
+            raw = self.raw
+
+            def raw_search(scope, q, limit):
+                return [RawHit(u.unit_id, u.text, score, u.occurred_at, (u.record_id,))
+                        for u, score in raw.search(scope.user_id or "", q, limit)]
+
         reader = PathAReader(
             canonical_path=self.canonical_path,
-            retrieval=self._retrieval(),
+            retrieval=None if raw_search is not None else self._retrieval(),
             lce=self.lce_for(scope) if selected == "path_a" else None,
             policy=self.config.read_policy,
             render_source=self.source.render,
             embed=None if self.embedding is None else self._embed_cached,
+            raw_search=raw_search,
+            blocks_for_record=lambda record_id: self._blocks_by_record.get(record_id, ()),
         )
-        items = reader.search(scope, query[:4096], limit=top_k, mode=selected)
+        items = reader.search(scope, text[:4096], limit=top_k, mode=selected)
         return {
             "data": [
                 {

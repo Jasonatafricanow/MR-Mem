@@ -25,6 +25,10 @@ class RuntimeConfig:
     port: int = 8765
     auth_token_env: str | None = None
     compile_concurrency: int = 4  # parallel model calls across different user_ids
+    # Search reads on top of raw-message retrieval (the P1 baseline protocol,
+    # raw_arm.py); off = the older Block-retrieval base list.
+    raw_base: bool = False
+    append_options: bool = True  # multiple-choice options appended to the query (P1)
     # existing lines shown to the compiler per batch (path_a_lines.select_known_lines)
     line_policy: dict[str, int] = field(
         default_factory=lambda: {"recent": 10, "cued": 10, "due": 10})
@@ -38,8 +42,8 @@ class RuntimeConfig:
             raise ValueError("compiler.type must be 'command' or 'openai'")
         if type(self.compile_concurrency) is not int or not 1 <= self.compile_concurrency <= 64:
             raise ValueError("compile_concurrency must be an integer in [1, 64]")
-        if self.embedding and self.embedding.get("type") not in ("fastembed", "openai", "gemini"):
-            raise ValueError("embedding.type must be fastembed, openai or gemini")
+        if self.embedding and self.embedding.get("type") not in ("fastembed", "openai", "gemini", "ark"):
+            raise ValueError("embedding.type must be fastembed, openai, gemini or ark")
         if type(self.context_messages) is not int or not 0 <= self.context_messages <= 200:
             raise ValueError("context_messages must be an integer in [0, 200]")
 
