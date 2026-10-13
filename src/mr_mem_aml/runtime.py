@@ -17,6 +17,8 @@ left resumable and the caller gets a retryable error.
 from __future__ import annotations
 
 import logging
+import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -66,6 +68,19 @@ class ConflictingReplay(InvalidRequest):
     """Same request_id, different payload: permanent, never worth retrying."""
 
 
+class CompileFailed(RetryableError):
+    """The model call failed; raw text is stored and the request can be retried."""
+
+
+@dataclass(frozen=True)
+class AddJob:
+    request: dict
+    messages: tuple
+    context: tuple
+    known_lines: tuple
+    compiled: str | None = None
+
+
 class _SystemClock:
     def now(self) -> datetime:
         return datetime.now(UTC)
@@ -75,27 +90,42 @@ def build_backend(spec: dict):
     if spec["type"] == "command":
         return CommandBackend(spec["argv"], timeout=spec.get("timeout", 600))
     return OpenAICompatibleBackend(
-        base_url=spec["base_url"], model=spec["model"], api_key_env=spec["api_key_env"],
-        timeout=spec.get("timeout", 600),
+        base_url=spec["base_url"], model=spec["model"], api_key_env=spec.get("api_key_env"),
+        timeout=spec.get("timeout", 600), json_mode=spec.get("json_mode", False),
+        max_tokens=spec.get("max_tokens"), temperature=spec.get("temperature", 0),
+        headers=spec.get("headers"), extra_body=spec.get("extra_body"),
     )
 
 
 def build_embedding(spec: dict | None):
+    """``null`` (BM25 only), ``fastembed`` (local ONNX, e.g. BAAI/bge-small-en-v1.5),
+    ``openai`` (any OpenAI-compatible /embeddings: OpenAI, SiliconFlow bge, TEI,
+    Ollama, vLLM, ...), or ``gemini``."""
     if not spec:
         return None
-    from mr_mem_aml.embedding import GeminiEmbedding, OpenAICompatibleEmbedding
+    from mr_mem_aml.embedding import (
+        GeminiEmbedding,
+        OpenAICompatibleEmbedding,
+        open_fastembed,
+    )
 
-    if spec["type"] == "gemini":
+    kind = spec["type"]
+    if kind == "fastembed":
+        return open_fastembed(
+            model=spec["model"], dimension=spec["dimension"], model_dir=spec["model_dir"],
+        )
+    if kind == "gemini":
         return GeminiEmbedding(
             model=spec["model"], dimension=spec["dimension"],
             api_key_env=spec.get("api_key_env", "GEMINI_API_KEY"),
         )
-    if spec["type"] == "openai":
+    if kind == "openai":
         return OpenAICompatibleEmbedding(
             base_url=spec["base_url"], model=spec["model"], dimension=spec["dimension"],
-            api_key_env=spec["api_key_env"],
+            api_key_env=spec.get("api_key_env"), send_dimensions=spec.get("send_dimensions", False),
+            headers=spec.get("headers"),
         )
-    raise ValueError("embedding.type must be 'gemini' or 'openai'")
+    raise ValueError("embedding.type must be fastembed, openai or gemini")
 
 
 def _text_content(content: object) -> str:
@@ -235,8 +265,21 @@ class MemoryRuntime:
     # -- Add ------------------------------------------------------------
 
     def add(self, payload: object) -> dict:
+        """Synchronous Add: prepare, compile, finish in the calling thread."""
+        job = self.prepare_add(payload)
+        if isinstance(job, dict):
+            return job
+        try:
+            compiled = self.compile_job(job)
+        except CompileFailed as exc:
+            self.fail_add(job, str(exc))
+            raise
+        return self.finish_add(job, compiled)
+
+    def prepare_add(self, payload: object) -> AddJob | dict:
+        """Owner thread: persist raw text once; return a response or a compile job."""
         request = validate_add(payload)
-        rid, scope = request["request_id"], user_scope(request["user_id"])
+        rid = request["request_id"]
         try:
             status = self.source.put_request(request, received_at=datetime.now(UTC))
         except RequestConflict as exc:
@@ -245,20 +288,38 @@ class MemoryRuntime:
             return {**_echo(request), "replayed": True}
         messages = self.source.request_messages(rid)
         compiled = self.source.compiled(rid)
-        if compiled is None:
-            try:
-                blocks = self.compiler.compile(
-                    messages,
-                    self.source.context_before(messages[0], self.config.context_messages),
-                    self.source.questions(request["user_id"]),
-                )
-            except CompileError as exc:
-                self.source.set_error(rid, str(exc))
-                raise RetryableError(f"semantic compilation failed: {exc}") from exc
-            compiled = blocks_to_json(blocks)
+        if compiled is not None:  # journaled earlier: never pay inference twice
+            return AddJob(request, messages, (), (), compiled)
+        return AddJob(
+            request, messages,
+            self.source.context_before(messages[0], self.config.context_messages),
+            self.source.questions(request["user_id"]),
+        )
+
+    def compile_job(self, job: AddJob) -> str:
+        """Any thread: the model call. Touches no store."""
+        if job.compiled is not None:
+            return job.compiled
+        try:
+            started = time.monotonic()
+            blocks = self.compiler.compile(job.messages, job.context, job.known_lines)
+            log.info("compiled %s: %d messages -> %d blocks in %.1fs", job.request["request_id"],
+                     len(job.messages), len(blocks), time.monotonic() - started)
+        except CompileError as exc:
+            raise CompileFailed(str(exc)) from exc
+        return blocks_to_json(blocks)
+
+    def fail_add(self, job: AddJob, error: str) -> None:
+        """Owner thread: record a failed compile so the request stays resumable."""
+        self.source.set_error(job.request["request_id"], error)
+
+    def finish_add(self, job: AddJob, compiled: str) -> dict:
+        """Owner thread: journal, admit, project, derive Path A."""
+        request = job.request
+        rid, scope = request["request_id"], user_scope(request["user_id"])
+        if self.source.compiled(rid) is None:
             self.source.set_compiled(rid, compiled)
-            compiled = self.source.compiled(rid)  # first journal entry wins
-        blocks = blocks_from_json(compiled)
+        blocks = blocks_from_json(self.source.compiled(rid))  # first journal entry wins
         try:
             committed = self._admit(scope, rid, blocks)
             self._project()

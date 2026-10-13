@@ -24,6 +24,7 @@ class RuntimeConfig:
     host: str = "127.0.0.1"
     port: int = 8765
     auth_token_env: str | None = None
+    compile_concurrency: int = 4  # parallel model calls across different user_ids
 
     def __post_init__(self) -> None:
         if self.search_mode not in ("path_a", "baseline"):
@@ -32,6 +33,10 @@ class RuntimeConfig:
             raise ValueError("hyde must be off, fallback or augmented")
         if self.compiler.get("type") not in ("command", "openai"):
             raise ValueError("compiler.type must be 'command' or 'openai'")
+        if type(self.compile_concurrency) is not int or not 1 <= self.compile_concurrency <= 64:
+            raise ValueError("compile_concurrency must be an integer in [1, 64]")
+        if self.embedding and self.embedding.get("type") not in ("fastembed", "openai", "gemini"):
+            raise ValueError("embedding.type must be fastembed, openai or gemini")
         if type(self.context_messages) is not int or not 0 <= self.context_messages <= 200:
             raise ValueError("context_messages must be an integer in [0, 200]")
 

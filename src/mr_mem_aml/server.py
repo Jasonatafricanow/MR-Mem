@@ -1,9 +1,18 @@
 """AML-style HTTP surface: POST /add, POST /search, POST /admin/flush, GET /health.
 
-Single-threaded on purpose: one writer owns the canonical database, and
-requests are served in arrival order. ``X-MRMem-Search-Mode: baseline|path_a``
-overrides the configured read mode per request, so one compiled dataset can be
-evaluated in both modes.
+Concurrency model:
+
+- One owner thread holds the runtime: every store (canonical SQLite, raw source,
+  LCE, Qdrant) is only ever touched from that thread, in arrival order.
+- HTTP requests are served by a thread pool. Add is split in three phases:
+  prepare (owner) -> model compile (request thread, in parallel) -> finish (owner).
+  The model call dominates Add latency, so different users compile concurrently,
+  bounded by ``compile_concurrency``.
+- Requests of one ``user_id`` are serialized end to end, so each chunk compiles
+  with the context and known lines its predecessors produced.
+
+``X-MRMem-Search-Mode: baseline|path_a`` overrides the configured read mode per
+request, so one compiled dataset can be evaluated in both modes.
 """
 
 from __future__ import annotations
@@ -12,9 +21,13 @@ import hmac
 import json
 import logging
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from mr_mem_aml.config import RuntimeConfig
 from mr_mem_aml.runtime import (
+    CompileFailed,
     ConflictingReplay,
     InvalidRequest,
     MemoryRuntime,
@@ -25,7 +38,66 @@ log = logging.getLogger("mr_mem_aml.http")
 MAX_BODY = 64 * 1024 * 1024
 
 
-def make_handler(runtime: MemoryRuntime, token: str | None):
+class RuntimeHost:
+    """Owns a MemoryRuntime on one dedicated thread and serializes store access."""
+
+    def __init__(self, factory) -> None:
+        self._owner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mr-mem-owner")
+        self.runtime: MemoryRuntime = self._owner.submit(factory).result()
+        concurrency = getattr(self.runtime.config, "compile_concurrency", 1)
+        self._compile_slots = threading.Semaphore(max(1, concurrency))
+        self._user_locks: dict[str, threading.Lock] = {}
+        self._guard = threading.Lock()
+
+    def call(self, fn, *args, **kwargs):
+        return self._owner.submit(fn, *args, **kwargs).result()
+
+    def _user_lock(self, payload: object) -> threading.Lock:
+        user = str(payload.get("user_id")) if isinstance(payload, dict) else ""
+        with self._guard:
+            return self._user_locks.setdefault(user, threading.Lock())
+
+    def add(self, payload: object) -> dict:
+        runtime = self.runtime
+        with self._user_lock(payload):
+            job = self.call(runtime.prepare_add, payload)
+            if isinstance(job, dict):
+                return job
+            try:
+                with self._compile_slots:
+                    compiled = runtime.compile_job(job)
+            except CompileFailed as exc:
+                self.call(runtime.fail_add, job, str(exc))
+                raise
+            return self.call(runtime.finish_add, job, compiled)
+
+    def search(self, payload: object, mode: str | None) -> dict:
+        return self.call(self.runtime.search, payload, mode=mode)
+
+    def flush(self) -> dict:
+        return self.call(self.runtime.flush)
+
+    def health(self) -> dict:
+        runtime = self.runtime
+        config = runtime.config
+        return {
+            "status": "ok",
+            "search_mode": config.search_mode,
+            "lce_enabled": config.lce_enabled,
+            "dense": runtime.index is not None,
+            "hyde": config.hyde,
+            "compile_concurrency": config.compile_concurrency,
+            "thread_failures": runtime.thread_failures,
+        }
+
+    def close(self) -> None:
+        try:
+            self.call(self.runtime.close)
+        finally:
+            self._owner.shutdown(wait=True)
+
+
+def make_handler(host: RuntimeHost, token: str | None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -55,15 +127,7 @@ def make_handler(runtime: MemoryRuntime, token: str | None):
         def do_GET(self):  # noqa: N802
             if self.path.rstrip("/") != "/health":
                 return self._send(404, {"error": "not found"})
-            config = runtime.config
-            self._send(200, {
-                "status": "ok",
-                "search_mode": config.search_mode,
-                "lce_enabled": config.lce_enabled,
-                "dense": runtime.index is not None,
-                "hyde": config.hyde,
-                "thread_failures": runtime.thread_failures,
-            })
+            self._send(200, host.health())
 
         def do_POST(self):  # noqa: N802
             if not self._authorized():
@@ -78,12 +142,13 @@ def make_handler(runtime: MemoryRuntime, token: str | None):
             route = self.path.rstrip("/")
             try:
                 if route == "/add":
-                    return self._send(200, runtime.add(payload))
+                    return self._send(200, host.add(payload))
                 if route == "/search":
-                    mode = self.headers.get("X-MRMem-Search-Mode")
-                    return self._send(200, runtime.search(payload, mode=mode))
+                    return self._send(
+                        200, host.search(payload, self.headers.get("X-MRMem-Search-Mode"))
+                    )
                 if route == "/admin/flush":
-                    return self._send(200, runtime.flush())
+                    return self._send(200, host.flush())
                 return self._send(404, {"error": "not found"})
             except ConflictingReplay as exc:
                 # 409 is retried by AML; a payload conflict is permanent.
@@ -100,21 +165,28 @@ def make_handler(runtime: MemoryRuntime, token: str | None):
     return Handler
 
 
-class _QueuedHTTPServer(HTTPServer):
-    # Concurrent AML callers wait in the listen backlog and are served in order.
-    request_queue_size = 128
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 256
 
 
-def serve(runtime: MemoryRuntime) -> None:
-    config = runtime.config
+def build_server(config: RuntimeConfig, host: RuntimeHost) -> _Server:
     token = os.environ.get(config.auth_token_env) if config.auth_token_env else None
-    server = _QueuedHTTPServer((config.host, config.port), make_handler(runtime, token))
-    log.info("MR-Mem Path A listening on http://%s:%s (mode=%s, lce=%s)",
-             config.host, config.port, config.search_mode, config.lce_enabled)
+    return _Server((config.host, config.port), make_handler(host, token))
+
+
+def serve(config: RuntimeConfig) -> None:
+    host = RuntimeHost(lambda: MemoryRuntime(config))
+    server = build_server(config, host)
+    log.info(
+        "MR-Mem Path A listening on http://%s:%s (mode=%s, lce=%s, compile_concurrency=%s)",
+        config.host, config.port, config.search_mode, config.lce_enabled,
+        config.compile_concurrency,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
-        runtime.close()
+        host.close()

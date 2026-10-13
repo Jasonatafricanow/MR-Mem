@@ -45,12 +45,17 @@ python -m pytest -q                        # 必须全部通过；失败就停�
 
 已经检出过的，用 `git fetch && git checkout feat/aml-20261013 && git pull` 更新到最新。`git status --short` 必须为空。之后所有命令都在激活了 `.venv` 的 shell 里执行。
 
-**编译器。** 用服务器上可用的编译器：命令行（`grok`、`agy`，必须在 PATH 上，否则 `argv` 第一项写完整路径）或 OpenAI 兼容端点。参考 `examples/runtime.grok.json`、`examples/runtime.agy.json`、`examples/runtime.openai-compatible.json`。一个数据集从头到尾只能用同一个编译器和模型。
+**编译器。** 使用用户指定的 LLM，通过 OpenAI 兼容端点接入（`compiler.type = "openai"`，支持的服务和写法见 [AML.md](AML.md) 第 4 节）。**用户没有指定用哪个 LLM、端点或 API key 环境变量时，停止并询问。** 不要用 `agy`、`grok` 这类命令行 agent 跑数据集：它们每次调用都有十几秒固定启动开销，小测试集就要十几个小时。一个数据集从头到尾只能用同一个编译器和模型。
+
+**向量模型。** 必须和用户基线（D0）完全一致：
+- 基线用的是 MR-Mem 本地 FastEmbed（如 `BAAI/bge-small-en-v1.5`）时，配置 `{"type": "fastembed", "model": <同一模型名>, "dimension": <同一维度>, "model_dir": <模型文件目录>}`。优先直接用基线所用的那份模型文件目录；没有的话用 `mr-mem-aml fetch-model --model <模型名> --dir <目录>` 下载。
+- 基线用的是某个 HTTP 向量服务时，用 `{"type": "openai", ...}` 指向同一个服务和模型。
+- 基线没用向量时，`"embedding": null`。
 
 记录以下版本信息，写进最终报告：
 - `git -C "$REPO" rev-parse HEAD`
 - `src/mr_mem_aml/compiler.py` 里的 `PROMPT_VERSION`
-- 编译器与模型（例如 `grok`，或 `agy --model gemini-3.8-flash-low`）
+- 编译器端点与模型（例如 `https://api.openai.com/v1` + `gpt-4o-mini`），`compile_concurrency`
 - embedding 模型与维度（或"无，仅 BM25"）、HyDE 设置
 - 服务器操作系统、Python 版本
 
@@ -58,21 +63,29 @@ python -m pytest -q                        # 必须全部通过；失败就停�
 
 在 `$RUN` 下建 5 个配置文件。它们**除 `search_mode` 和 `read_policy` 外必须完全相同**。
 
-**第一步：确定基线设置。** 向用户确认（或从用户之前跑基线的记录里读出）：embedding 用的是什么（模型、维度、API key 环境变量），HyDE 是 `off` / `fallback` / `augmented`。**确认不了就停止，问用户。** 设置不一致时，A 组就不等于用户已有的基线。
+**第一步：确定基线设置。** 向用户确认（或从用户之前跑基线 D0 的记录里读出）：embedding 用的是什么（类型、模型、维度、模型文件或服务地址），HyDE 是 `off` / `fallback` / `augmented`。**确认不了就停止，问用户。** 设置不一致时，A 组就不等于用户已有的基线。
 
-`$RUN/ingest.json`（以 agy、无 embedding 为例；`compiler` 换成服务器上的编译器，按基线设置修改 `embedding` 和 `hyde`）：
+`$RUN/ingest.json`（以 gpt-4o-mini + 本地 bge-small 为例；`compiler` 换成用户指定的 LLM，`embedding` 和 `hyde` 按基线设置）：
 
 ```json
 {
   "data_dir": "data",
   "compiler": {
-    "type": "command",
-    "timeout": 600,
-    "argv": ["agy", "--model", "gemini-3.8-flash-low",
-             "--dangerously-skip-permissions", "--output-format", "text"]
+    "type": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "api_key_env": "OPENAI_API_KEY",
+    "json_mode": true,
+    "timeout": 300
   },
-  "embedding": null,
+  "embedding": {
+    "type": "fastembed",
+    "model": "BAAI/bge-small-en-v1.5",
+    "dimension": 384,
+    "model_dir": "/path/to/the/baseline/bge-small-model-files"
+  },
   "hyde": "off",
+  "compile_concurrency": 8,
   "search_mode": "path_a",
   "lce_enabled": true,
   "assistant_policy": "attributed",
@@ -100,7 +113,7 @@ python -m pytest -q                        # 必须全部通过；失败就停�
 mr-mem-aml check --config $RUN/ingest.json
 ```
 
-`lce` 必须是 `importable`，`compiler` 必须是 `ok`，配置了 embedding 时必须是 `ok (N dims)` 且维度正确。任何一项失败：停止，报告原文输出。
+`lce` 必须是 `importable`，`compiler` 必须以 `ok` 开头（括号里是一次最简调用的耗时，记进报告），配置了 embedding 时必须是 `ok (N dims)` 且维度正确。任何一项失败：停止，报告原文输出。
 
 ## 3. 测试集
 
@@ -121,7 +134,7 @@ mr-mem-aml check --config $RUN/ingest.json
    确认 `GET http://127.0.0.1:8765/health` 返回 200，且 `lce_enabled` 为 `true`。
 
 2. 用用户现有的 AML 式测试管路发送全部 Add 请求到 `http://127.0.0.1:8765/add`。要求：
-   - **并发 = 1**，同一用户/会话的分块按时间顺序发送。
+   - **不同用户可以并发，同一用户必须串行。** 管路并发数设为与 `compile_concurrency` 相同（例如 8）；同一 `user_id` 的分块按时间顺序发送，上一块返回 200 之后再发下一块。
    - **按 AML 标准分块，一次 Add 发一块，每块 20 条消息。** 具体做法：
      - 每个会话（`session_id`）单独分块，一块不跨会话；
      - 按消息顺序依次装入当前块，装满 20 条就封块发送；
@@ -229,7 +242,7 @@ python "$REPO"/scripts/aml_eval/compare_arms.py --arm A=$RUN/results/A.judged.js
 ## 9. 停止条件汇总
 
 遇到以下任何一项，停止并向用户报告，不要自行处理：
-- 预检失败；无法确定基线的 embedding / HyDE 设置。
+- 预检失败；用户未指定编译用的 LLM；无法确定基线的 embedding / HyDE 设置。
 - Add 返回 `400` 或 `422`；重跑 3 遍后仍有失败。
 - `lce_lines` 为 0。
 - 四组的 `judged` 文件 `id` 集合不一致。

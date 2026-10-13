@@ -1,7 +1,13 @@
-"""HTTP embedding providers for the dense retrieval arm (no new dependencies).
+"""Embedding providers for the dense retrieval arm.
 
-They implement ``mr_mem.memory.embedding.EmbeddingProvider``; vectors stay a
+All implement ``mr_mem.memory.embedding.EmbeddingProvider``; vectors stay a
 rebuildable derived index under MR-Mem's existing Qdrant projection.
+
+- ``open_fastembed``: MR-Mem's own local ONNX provider (e.g. BAAI/bge-small-en-v1.5),
+  the same class the MR-Mem baseline uses, so a baseline run is reproduced exactly.
+- ``OpenAICompatibleEmbedding``: any ``/embeddings`` endpoint (OpenAI, SiliconFlow,
+  Hugging Face TEI, Ollama, vLLM, ...), key optional for local servers.
+- ``GeminiEmbedding``: Gemini ``embedContent``.
 """
 
 from __future__ import annotations
@@ -9,7 +15,9 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.error
 import urllib.request
+from pathlib import Path
 
 from mr_mem.memory.embedding import EmbeddingIdentity
 
@@ -24,9 +32,14 @@ def _post(url: str, body: dict, headers: dict[str, str], timeout: float, attempt
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            last = f"HTTP {exc.code}: {exc.read()[:300].decode('utf-8', 'replace')}"
+            if exc.code in (400, 401, 403, 404, 422):
+                break
         except Exception as exc:  # noqa: BLE001 - transport retry boundary
             last = f"{type(exc).__name__}: {exc}"
-        time.sleep(min(2**attempt, 30))
+        if attempt < attempts:
+            time.sleep(min(2**attempt, 30))
     raise RuntimeError(f"embedding endpoint failed: {last}")
 
 
@@ -70,12 +83,14 @@ class GeminiEmbedding:
 
 class OpenAICompatibleEmbedding:
     def __init__(
-        self, *, base_url: str, model: str, dimension: int, api_key_env: str,
+        self, *, base_url: str, model: str, dimension: int, api_key_env: str | None = None,
+        send_dimensions: bool = False, headers: dict[str, str] | None = None,
         timeout: float = 60, attempts: int = 4,
     ) -> None:
         self._identity = EmbeddingIdentity("openai-compatible-http", model, dimension, "api")
         self.url = base_url.rstrip("/") + "/embeddings"
         self.model, self.api_key_env = model, api_key_env
+        self.send_dimensions, self.headers = send_dimensions, dict(headers or {})
         self.timeout, self.attempts = timeout, attempts
 
     @property
@@ -83,9 +98,54 @@ class OpenAICompatibleEmbedding:
         return self._identity
 
     def embed(self, text: str) -> tuple[float, ...]:
-        data = _post(
-            self.url, {"model": self.model, "input": text},
-            {"Authorization": f"Bearer {_key(self.api_key_env)}"},
-            self.timeout, self.attempts,
-        )
-        return tuple(float(v) for v in data["data"][0]["embedding"])
+        headers = dict(self.headers)
+        if self.api_key_env:
+            headers["Authorization"] = f"Bearer {_key(self.api_key_env)}"
+        body: dict = {"model": self.model, "input": text}
+        if self.send_dimensions:  # only models that support shortening (e.g. text-embedding-3)
+            body["dimensions"] = self._identity.dimension
+        data = _post(self.url, body, headers, self.timeout, self.attempts)
+        vector = tuple(float(v) for v in data["data"][0]["embedding"])
+        if len(vector) != self._identity.dimension:
+            raise RuntimeError(
+                f"embedding endpoint returned {len(vector)} dims, configured "
+                f"{self._identity.dimension}"
+            )
+        return vector
+
+
+def open_fastembed(*, model: str, dimension: int, model_dir: str | Path):
+    """MR-Mem's local FastEmbed provider over verified model files in ``model_dir``."""
+    from mr_mem.memory.providers.fastembed import FastEmbedEmbedding, model_revision
+
+    path = Path(model_dir).expanduser().resolve()
+    identity = EmbeddingIdentity("fastembed", model, dimension, model_revision(path))
+    return FastEmbedEmbedding(identity, model_dir=path)
+
+
+def fetch_fastembed_model(model: str, target_dir: str | Path) -> Path:
+    """Download a FastEmbed model once and flatten its files into ``target_dir``."""
+    import shutil
+    import tempfile
+
+    from fastembed import TextEmbedding
+
+    target = Path(target_dir).expanduser().resolve()
+    if target.exists() and any(target.rglob("*.onnx")):
+        return target
+    with tempfile.TemporaryDirectory() as tmp:
+        TextEmbedding(model_name=model, cache_dir=tmp)
+        onnx = sorted(Path(tmp).rglob("*.onnx"))
+        if not onnx:
+            raise RuntimeError(f"no ONNX artifacts downloaded for {model}")
+        source = onnx[0].parent
+        target.mkdir(parents=True, exist_ok=True)
+        for item in source.iterdir():
+            if item.name.startswith("."):
+                continue
+            destination = target / item.name
+            if item.is_dir():
+                shutil.copytree(item.resolve(), destination, dirs_exist_ok=True)
+            else:
+                shutil.copyfile(item.resolve(), destination)
+    return target

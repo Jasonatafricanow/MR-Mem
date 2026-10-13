@@ -198,27 +198,16 @@ def test_context_only_policy_drops_assistant_blocks():
 
 
 def test_http_surface(tmp_path):
-    from http.server import HTTPServer
+    from mr_mem_aml.server import RuntimeHost, build_server
 
-    from mr_mem_aml.server import make_handler
-
-    # The runtime owns SQLite connections, so it lives in the serving thread,
-    # exactly as ``mr_mem_aml.server.serve`` runs it.
-    ready = threading.Event()
-    holder = {}
-
-    def run():
-        holder["rt"], _ = runtime(tmp_path)
-        holder["server"] = HTTPServer(("127.0.0.1", 0), make_handler(holder["rt"], None))
-        ready.set()
-        holder["server"].serve_forever()
-        holder["server"].server_close()
-        holder["rt"].close()
-
-    thread = threading.Thread(target=run, daemon=True)
+    # The owner thread holds every store; HTTP requests run on their own threads.
+    host = RuntimeHost(lambda: runtime(tmp_path)[0])
+    config = host.runtime.config
+    server = build_server(
+        RuntimeConfig(**{**config.__dict__, "port": 0}), host,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    assert ready.wait(30)
-    server = holder["server"]
     base = f"http://127.0.0.1:{server.server_address[1]}"
 
     def post(path, body, headers=None):
@@ -244,7 +233,9 @@ def test_http_surface(tmp_path):
             assert json.loads(response.read())["lce_enabled"] is True
     finally:
         server.shutdown()
+        server.server_close()
         thread.join(30)
+        host.close()
 
 
 def test_only_projections_with_relevant_support_are_read(tmp_path):
@@ -340,3 +331,78 @@ def test_auth_accepts_aml_schemes_and_search_accepts_options(tmp_path):
             rt.search({"query": "seat", "user_id": "u1", "top_k": 5, "options": "window"})
     finally:
         rt.close()
+
+
+class SlowBackend(ScriptedBackend):
+    """Records overlapping model calls to prove cross-user compile concurrency."""
+
+    def __init__(self, delay):
+        super().__init__()
+        self.delay, self.active, self.peak, self.order = delay, 0, 0, []
+        self.lock = threading.Lock()
+
+    def complete(self, prompt):
+        import time
+
+        with self.lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        time.sleep(self.delay)
+        out = super().complete(prompt)
+        with self.lock:
+            self.active -= 1
+            new = prompt.split("INPUT:" + chr(10), 1)[1]
+            material = json.loads(new.split(chr(10) * 2 + "Your previous", 1)[0])
+            self.order.append(material["NEW"][0]["text"])
+        return out
+
+
+def test_compiles_run_in_parallel_across_users_and_in_order_within_a_user(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from mr_mem_aml.server import RuntimeHost
+
+    backend = SlowBackend(0.3)
+    host = RuntimeHost(lambda: runtime(tmp_path, backend=backend, compile_concurrency=4)[0])
+
+    def send(user, index):
+        return host.add({
+            "request_id": f"{user}-{index}", "user_id": user, "session_id": "s",
+            "messages": [{"role": "user", "content": f"{user} note {index}",
+                          "timestamp": 1_690_000_000_000 + index * 60_000}],
+        })
+
+    try:
+        with ThreadPoolExecutor(8) as pool:
+            # Like an AML client: chunks of one user are sent one after another,
+            # different users are sent concurrently.
+            jobs = [
+                pool.submit(lambda u: [send(u, i) for i in range(3)], user)
+                for user in ("u1", "u2", "u3", "u4")
+            ]
+            assert all(r["success"] for job in jobs for r in job.result())
+        assert backend.peak >= 2  # different users overlapped
+        for user in ("u1", "u2", "u3", "u4"):
+            mine = [text for text in backend.order if text.startswith(user)]
+            assert mine == [f"{user} note {i}" for i in range(3)]  # per-user order kept
+        found = host.search({"query": "note", "user_id": "u3", "top_k": 10}, None)
+        assert len(found["data"]) == 3
+    finally:
+        host.close()
+
+
+def test_compile_failure_through_host_is_retryable(tmp_path):
+    from mr_mem_aml.runtime import CompileFailed
+    from mr_mem_aml.server import RuntimeHost
+
+    backend = ScriptedBackend()
+    host = RuntimeHost(lambda: runtime(tmp_path, backend=backend)[0])
+    payload = {"request_id": "r1", "user_id": "u1", "session_id": "s",
+               "messages": [{"role": "user", "content": "I keep bees"}]}
+    try:
+        backend.fail_next = 3
+        with pytest.raises(CompileFailed):
+            host.add(payload)
+        assert host.add(payload)["blocks"] == 1  # same request resumes
+    finally:
+        host.close()

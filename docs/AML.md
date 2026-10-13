@@ -10,7 +10,7 @@
 |---|---|
 | `source_store` | 原文按 request_id 只写一次；按 SourceRef 回查原文 |
 | `compiler` | 一次模型调用产出 SemanticBlock、Thread 信号和首次即成熟信号；`PROMPT_VERSION` 标记提示词版本 |
-| `embedding` | Gemini 或 OpenAI 兼容 embedding（可选） |
+| `embedding` | 本地 FastEmbed（如 bge）、任意 OpenAI 兼容 `/embeddings` 端点或 Gemini（可选） |
 | `runtime` | Add / Search 管路：准入 Canonical → 向量投影 → 交给核心 `apply_block_signals`；检索交给核心 `PathAReader` |
 | `server` | HTTP 服务，对齐 AML 官方契约 |
 | `__main__` | `mr-mem-aml check / serve` |
@@ -60,13 +60,19 @@ mr-mem-aml check --config runtime.json        # 预检：LCE、编译器、embed
 mr-mem-aml serve --config runtime.json
 ```
 
-`examples/` 目录下有 agy、grok 和 OpenAI 兼容端点三种编译器配置。示例里的 `agy` / `grok` 要求命令在 PATH 上；不在的话，把 `argv` 第一项换成可执行文件的完整路径。主要字段：
+`examples/` 目录下的配置：
+- `runtime.openai-compatible.json`：在线 LLM（gpt-4o-mini）+ 本地 bge-small 向量。**数据集评测推荐用这一类。**
+- `runtime.local-llm.json`：本机 Ollama / vLLM 一类的 OpenAI 兼容服务，编译和向量都走本地。
+- `runtime.agy.json`、`runtime.grok.json`：命令行 agent。每次调用都有固定启动开销（agy 实测约 16 秒，回一个 `{"ok": true}` 也要这么久），只适合小规模冒烟测试。命令需在 PATH 上，否则 `argv` 第一项写完整路径。
+
+主要字段：
 
 | 字段 | 说明 |
 |---|---|
 | `data_dir` | 数据目录；相对路径以配置文件所在目录为基准 |
-| `compiler` | `{"type":"command","argv":[...]}`：默认用 stdin 传提示词；argv 中可用 `{prompt}` 或 `{prompt_file}` 占位。或 `{"type":"openai","base_url","model","api_key_env"}` |
-| `embedding` | `null` 表示只用 BM25；`{"type":"gemini","model","dimension","api_key_env"}`；或 `{"type":"openai",...}` |
+| `compiler` | **OpenAI 兼容端点**：`{"type":"openai","base_url","model","api_key_env"?,"json_mode"?,"max_tokens"?,"temperature"?,"headers"?,"extra_body"?,"timeout"?}`。适用于 OpenAI、DeepSeek（`https://api.deepseek.com`）、硅基流动（`https://api.siliconflow.cn/v1`）、OpenRouter（`https://openrouter.ai/api/v1`）、xAI（`https://api.x.ai/v1`）、Gemini（`https://generativelanguage.googleapis.com/v1beta/openai`）、Ollama（`http://127.0.0.1:11434/v1`）、vLLM、LM Studio 等。`api_key_env` 省略时不发鉴权头（本地服务）；`json_mode: true` 请求 JSON 输出（端点支持时打开）；`extra_body` 原样并入请求体。429 按 `Retry-After` 退避，400/401/403/404/422 直接失败不重试。**命令行**：`{"type":"command","argv":[...]}`，默认用 stdin 传提示词，argv 中可用 `{prompt}` 或 `{prompt_file}` 占位 |
+| `embedding` | `null`：只用 BM25。**`{"type":"fastembed","model","dimension","model_dir"}`**：MR-Mem 自带的本地 ONNX 向量（与 MR-Mem 基线用的是同一个实现），如 `BAAI/bge-small-en-v1.5`（384 维）；模型文件用 `mr-mem-aml fetch-model --model <名称> --dir <目录>` 下载一次。`{"type":"openai","base_url","model","dimension","api_key_env"?,"send_dimensions"?}`：任意 OpenAI 兼容 `/embeddings`（OpenAI、硅基流动的 bge、Hugging Face TEI、Ollama、vLLM），返回维度与 `dimension` 不符时报错。`{"type":"gemini","model","dimension","api_key_env"}` |
+| `compile_concurrency` | 同时进行的模型调用数（不同 `user_id` 之间并行），默认 4，范围 1–64。按端点的限流设置 |
 | `hyde` | `off` / `fallback` / `augmented`，使用编译器同一个后端 |
 | `search_mode` | 默认读取模式：`path_a` 或 `baseline` |
 | `lce_enabled` | `false` 时不写 LCE（纯基线运行） |
@@ -77,7 +83,9 @@ mr-mem-aml serve --config runtime.json
 
 注意：
 - **基线配置要和你之前跑基线时保持一致**，特别是 embedding 模型和 HyDE 开关，否则 A 组不等于你已有的基线。
-- 服务是单线程的。Add 会阻塞在模型调用上，评测时建议先完成全部 Add，再做 Search。
+- **并发模型。** 所有存储（Canonical、原文、LCE、向量索引）只由一个线程读写，保证顺序和一致性；耗时的模型调用在请求线程里并行，上限为 `compile_concurrency`。同一 `user_id` 的请求整体串行，保证每块编译时拿到前一块产生的上下文和认知线。客户端可以对不同用户并发发送，同一用户的分块仍需按顺序、等上一块返回再发下一块。
+- **吞吐。** 编译阶段（模型调用）随并发线性提升；提交阶段（准入、向量、Thread/LCE）在单线程上串行。实测每个 Block 的提交约 60–80 毫秒（Windows，核心存储每次提交都刷盘，`synchronous=FULL`），即一块 20 条消息、出 5–10 个 Block 时约 0.5–0.8 秒。
+- 评测时建议先完成全部 Add，再做 Search。
 
 ## 5. 与 AML 官方接口契约的对齐
 
@@ -92,11 +100,11 @@ mr-mem-aml serve --config runtime.json
 | Search 请求 `query / user_id / top_k`，可选 `options`（选择题选项） | 一致；`options` 接受但不参与检索，两组对照一致 |
 | Search 返回 `{"data": [{id, content, score, created_at}]}`，按相关度排序，不超过 `top_k`，`content` 非空 | 一致 |
 | 鉴权 `Token` / `Bearer` / `X-Api-Key`，health 为不鉴权 GET | 一致 |
-| 单次请求最长 30 分钟 | agy 每次 Add 约 15 秒，grok 37–132 秒 |
+| 单次请求最长 30 分钟 | 在线 LLM 每次 Add 通常几秒到十几秒；命令行 agent 另加十几秒启动开销 |
 | 回答模型输入上限约 117,760 token，超出时平台按排名保留前缀 | Path A 模式下投影排在最前，不会被截掉；附带原文时总长度会变大，排在最后的 Canonical 结果可能被截掉 |
 
 注意：
-- **并发。** 服务是单线程顺序处理的，并发请求在监听队列里排队（队列长度 128）。评测表单里的 Add 并发建议设为 1：同一会话的分块必须按顺序写入，否则编译时拿到的上下文和 Thread 演进顺序会错。
+- **并发。** 评测表单里的 Add 并发可以设为 `compile_concurrency`。AML 按会话顺序推送分块；不同对话之间并行编译，同一 `user_id` 内由服务端串行。
 - **正式提交需要公网 HTTPS。** AML 不接受回环、内网地址，也不接受 URL 里带凭据。正式评测前需要在服务前面加 HTTPS 反向代理或隧道，并设置 `auth_token_env`。
 - **官方回答提示词**把记忆称为"episodic raw observations"，冲突时"prefer the most recent"。已接受认知带有 `revision N | as of <时间>` 标注，`created_at` 是其支撑证据中最新一条的时间，因此时间上和原文一样可比。
 - **双说话人数据集**（LoCoMo、CL-Bench）的官方管路按两个说话人分别检索、分别拼接。按 `user_id` 隔离已经覆盖这种用法；如果平台对两个说话人各 Add 一遍，编译成本会翻倍。

@@ -17,6 +17,7 @@ import re
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,38 +87,72 @@ class CommandBackend:
 
 
 class OpenAICompatibleBackend:
-    """``/chat/completions`` of any OpenAI-compatible endpoint (e.g. xAI, OpenAI)."""
+    """``/chat/completions`` of any OpenAI-compatible endpoint.
+
+    Covers hosted APIs (OpenAI, DeepSeek, SiliconFlow, OpenRouter, xAI, Gemini's
+    OpenAI endpoint, ...) and local servers (Ollama, vLLM, LM Studio, llama.cpp).
+    ``api_key_env=None`` sends no Authorization header (typical for local
+    servers). ``json_mode`` asks for ``response_format: json_object`` where the
+    endpoint supports it; ``extra_body`` is merged into the request verbatim.
+    """
 
     def __init__(
-        self, *, base_url: str, model: str, api_key_env: str,
-        timeout: float = 600, attempts: int = 4,
+        self, *, base_url: str, model: str, api_key_env: str | None = None,
+        timeout: float = 600, attempts: int = 6, json_mode: bool = False,
+        max_tokens: int | None = None, temperature: float = 0,
+        headers: dict[str, str] | None = None, extra_body: dict | None = None,
     ) -> None:
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.model, self.api_key_env = model, api_key_env
         self.timeout, self.attempts = timeout, attempts
+        self.json_mode, self.max_tokens, self.temperature = json_mode, max_tokens, temperature
+        self.headers, self.extra_body = dict(headers or {}), dict(extra_body or {})
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json", **self.headers}
+        if self.api_key_env:
+            key = os.environ.get(self.api_key_env)
+            if not key:
+                raise CompileError(f"environment variable {self.api_key_env} is not set")
+            headers["Authorization"] = f"Bearer {key}"
+        return headers
 
     def complete(self, prompt: str) -> str:
-        key = os.environ.get(self.api_key_env)
-        if not key:
-            raise CompileError(f"environment variable {self.api_key_env} is not set")
-        body = json.dumps({
+        payload: dict = {
             "model": self.model,
-            "temperature": 0,
+            "temperature": self.temperature,
             "messages": [{"role": "user", "content": prompt}],
-        }).encode("utf-8")
+        }
+        if self.json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        if self.max_tokens:
+            payload["max_tokens"] = self.max_tokens
+        payload.update(self.extra_body)
+        body = json.dumps(payload).encode("utf-8")
+        headers = self._headers()
         last = ""
         for attempt in range(1, self.attempts + 1):
-            request = urllib.request.Request(
-                self.url, data=body, method="POST",
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-            )
+            request = urllib.request.Request(self.url, data=body, method="POST", headers=headers)
+            wait = min(2**attempt, 60)
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     data = json.loads(response.read().decode("utf-8"))
-                return data["choices"][0]["message"]["content"]
+                content = data["choices"][0]["message"]["content"]
+                if isinstance(content, str) and content.strip():
+                    return content
+                last = "empty completion"
+            except urllib.error.HTTPError as exc:
+                detail = exc.read()[:500].decode("utf-8", "replace")
+                last = f"HTTP {exc.code}: {detail}"
+                if exc.code in (400, 401, 403, 404, 422):
+                    raise CompileError(f"compiler endpoint rejected the request: {last}") from exc
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                if retry_after and retry_after.strip().isdigit():
+                    wait = min(int(retry_after), 120)
             except Exception as exc:  # noqa: BLE001 - transport retry boundary
                 last = f"{type(exc).__name__}: {exc}"
-            time.sleep(min(2**attempt, 30))
+            if attempt < self.attempts:
+                time.sleep(wait)
         raise CompileError(f"compiler endpoint failed: {last}")
 
 

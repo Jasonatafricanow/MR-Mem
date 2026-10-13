@@ -4,12 +4,23 @@
     "type": "openai",
     "base_url": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
-    "api_key_env": "OPENAI_API_KEY"
+    "api_key_env": "OPENAI_API_KEY",
+    "json_mode": true,
+    "timeout": 300
   },
-  "embedding": {"type": "gemini", "model": "gemini-embedding-001", "dimension": 768,
-                "api_key_env": "GEMINI_API_KEY"},
+  "embedding": {
+    "type": "fastembed",
+    "model": "BAAI/bge-small-en-v1.5",
+    "dimension": 384,
+    "model_dir": "models/bge-small-en-v1.5"
+  },
   "hyde": "off",
   "search_mode": "path_a",
   "lce_enabled": true,
+  "assistant_policy": "attributed",
+  "context_messages": 20,
+  "compile_concurrency": 8,
+  "read_policy": {"source_text_for_hits": false},
+  "host": "127.0.0.1",
   "port": 8765
 }
