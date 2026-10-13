@@ -152,6 +152,7 @@ class ThreadAutoUpdateService:
         product: MemoryProductStore,
         minimum_match: float = 0.30,
         projection_compiler: ThreadProjectionCompiler | None = None,
+        exact_question_only: bool = False,
     ) -> None:
         if (
             isinstance(minimum_match, bool)
@@ -163,6 +164,10 @@ class ThreadAutoUpdateService:
         self._product = product
         self._minimum_match = float(minimum_match)
         self._projection_compiler = projection_compiler
+        # True when the semantic compiler itself decides line identity (it sees
+        # the existing lines and reuses their exact question): word overlap would
+        # merge different matters ("laptop purchase" vs "phone purchase").
+        self._exact_question_only = exact_question_only
 
     def close(self) -> None:
         self._product.close()
@@ -349,6 +354,8 @@ class ThreadAutoUpdateService:
         for thread in threads:
             if normalized_question == _normalized(thread.open_question):
                 score = 1.0
+            elif self._exact_question_only:
+                continue
             else:
                 supporting_text = " ".join(
                     memory.content
