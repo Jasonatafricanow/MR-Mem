@@ -1,0 +1,46 @@
+"""Runtime configuration (JSON file). Fields: docs/AML.md; full configs: examples/."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from mr_mem.integrations.path_a_read import ReadPolicy
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    data_dir: Path
+    compiler: dict[str, Any]
+    search_mode: str = "path_a"  # path_a | baseline
+    lce_enabled: bool = True
+    context_messages: int = 20
+    assistant_policy: str = "attributed"  # attributed | context_only
+    embedding: dict[str, Any] | None = None
+    hyde: str = "off"  # off | fallback | augmented
+    read_policy: ReadPolicy = field(default_factory=ReadPolicy)
+    host: str = "127.0.0.1"
+    port: int = 8765
+    auth_token_env: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.search_mode not in ("path_a", "baseline"):
+            raise ValueError("search_mode must be 'path_a' or 'baseline'")
+        if self.hyde not in ("off", "fallback", "augmented"):
+            raise ValueError("hyde must be off, fallback or augmented")
+        if self.compiler.get("type") not in ("command", "openai"):
+            raise ValueError("compiler.type must be 'command' or 'openai'")
+        if type(self.context_messages) is not int or not 0 <= self.context_messages <= 200:
+            raise ValueError("context_messages must be an integer in [0, 200]")
+
+    @classmethod
+    def load(cls, path: Path | str) -> RuntimeConfig:
+        source = Path(path)
+        data = json.loads(source.read_text(encoding="utf-8"))
+        data_dir = Path(data.pop("data_dir"))
+        if not data_dir.is_absolute():
+            data_dir = (source.parent / data_dir).resolve()
+        policy = ReadPolicy(**data.pop("read_policy", {}))
+        return cls(data_dir=data_dir, read_policy=policy, **data)

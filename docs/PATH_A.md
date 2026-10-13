@@ -4,7 +4,7 @@
 
 依据：Mind-Runtime ADR-0033（`e12ec94`）、MEMORY_ARCHITECTURE_V1、lce-binding.md、MR-Mem ADR-0001/0002、LCE `SEMANTIC_BLOCK_DESIGN_FREEZE_2026-09-25`。LCE 锁定在 `5228475`。
 
-> AML 评测适配层（`mr_mem_aml`：原文存储、语义编译器、Add/Search HTTP 服务、AML 官方契约）不在本分支，见专属分支 **`feat/aml-20261013`**。
+> AML 评测适配层（`mr_mem_aml`）只在专属分支 **`feat/aml-20261013`** 上，说明见 [AML.md](AML.md)。核心分支不含这部分。
 
 ## 1. 组成
 

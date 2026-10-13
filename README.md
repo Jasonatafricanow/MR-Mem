@@ -152,4 +152,5 @@ routes compiled Block signals in one place, and provides one unified read path
 (accepted cognition with its evidence, then active Threads, then canonical
 Memory). It is host-neutral: the host keeps raw text (ADR-0001) and supplies the
 semantic compiler and retrieval stack. See [docs/PATH_A.md](docs/PATH_A.md).
-The AML evaluation adapter lives on the dedicated `feat/aml-20261013` branch.
+The AML evaluation adapter (`mr_mem_aml`, this branch only) is described in
+[docs/AML.md](docs/AML.md).

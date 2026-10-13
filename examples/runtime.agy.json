@@ -1,0 +1,18 @@
+{
+  "data_dir": "data",
+  "compiler": {
+    "type": "command",
+    "timeout": 600,
+    "argv": ["C:/Users/Temp/AppData/Local/agy/bin/agy.exe", "--model", "gemini-3.8-flash-low",
+             "--dangerously-skip-permissions", "--output-format", "text"]
+  },
+  "embedding": null,
+  "hyde": "off",
+  "search_mode": "path_a",
+  "lce_enabled": true,
+  "assistant_policy": "attributed",
+  "context_messages": 20,
+  "read_policy": {"source_text_for_hits": false},
+  "host": "127.0.0.1",
+  "port": 8765
+}

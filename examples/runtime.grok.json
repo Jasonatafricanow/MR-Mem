@@ -1,0 +1,12 @@
+{
+  "data_dir": "data",
+  "compiler": {
+    "type": "command",
+    "timeout": 600,
+    "argv": ["C:/Users/Temp/.grok/bin/grok", "-p", "Read the file {prompt_file} and follow its instructions exactly. Output only the JSON it asks for."]
+  },
+  "embedding": null,
+  "search_mode": "path_a",
+  "lce_enabled": true,
+  "port": 8765
+}

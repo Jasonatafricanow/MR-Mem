@@ -1,0 +1,15 @@
+{
+  "data_dir": "data",
+  "compiler": {
+    "type": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "api_key_env": "OPENAI_API_KEY"
+  },
+  "embedding": {"type": "gemini", "model": "gemini-embedding-001", "dimension": 768,
+                "api_key_env": "GEMINI_API_KEY"},
+  "hyde": "off",
+  "search_mode": "path_a",
+  "lce_enabled": true,
+  "port": 8765
+}

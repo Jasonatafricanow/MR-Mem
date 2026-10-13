@@ -24,6 +24,9 @@ dev = [
     "ruff>=0.11",
 ]
 
+[project.scripts]
+mr-mem-aml = "mr_mem_aml.__main__:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
