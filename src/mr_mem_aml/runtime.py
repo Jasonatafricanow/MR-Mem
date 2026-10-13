@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from mr_mem import MemoryCore, SemanticMemoryCandidate
+from mr_mem import MemoryCore, SemanticMemoryCandidate, ThreadStatus
 from mr_mem.contracts import Scope
 from mr_mem.integrations.path_a_ingest import (
     BlockSignals,
@@ -30,6 +30,7 @@ from mr_mem.integrations.path_a_ingest import (
     ThreadSignal,
     apply_block_signals,
 )
+from mr_mem.integrations.path_a_lines import LineCard, select_known_lines
 from mr_mem.integrations.path_a_read import PathAReader
 from mr_mem.memory.providers.bm25 import BM25RetrievalProvider
 from mr_mem.memory.providers.hybrid import (
@@ -293,7 +294,40 @@ class MemoryRuntime:
         return AddJob(
             request, messages,
             self.source.context_before(messages[0], self.config.context_messages),
-            self.source.questions(request["user_id"]),
+            self.known_lines(request["user_id"], messages),
+        )
+
+    def known_lines(self, user_id: str, messages) -> tuple[dict, ...]:
+        """Owner thread: the existing lines the compiler sees for this batch."""
+        scope = user_scope(user_id)
+        lce = self.lce_for(scope)
+        threads = {t.open_question: t for t in self.core.products.list_threads(scope)}
+        cards = []
+        for question, last_active in self.source.lines(user_id):
+            thread = threads.get(question)
+            summary, settled, support = None, True, ()
+            if thread is not None and thread.status is ThreadStatus.OPEN:
+                summary, settled, support = (thread.working_summary, False,
+                                             thread.current_support_ids)
+            elif lce is not None and (head := lce.lineage_head(question)) is not None:
+                summary, support = head.content, head.supporting_memory_ids
+            elif thread is not None:
+                summary, support = thread.working_summary, thread.current_support_ids
+            blocks = [m.content for mid in support[-3:]
+                      if (m := self.core.canonical.get(mid)) is not None]
+            cards.append(LineCard(question, summary, settled, last_active,
+                                  "\n".join([question, summary or "", *blocks])))
+        policy = self.config.line_policy
+        selection = select_known_lines(
+            cards, batch_text="\n".join(m.content for m in messages)[:8000],
+            now=max(m.occurred_at for m in messages),
+            recent=policy["recent"], cued=policy["cued"], due=policy["due"],
+            embed=None if self.embedding is None else self._embed_cached,
+        )
+        return tuple(
+            {"question": c.question, "state": "settled" if c.settled else "open",
+             **({"summary": c.summary} if c.summary else {})}
+            for c in selection.lines
         )
 
     def compile_job(self, job: AddJob) -> str:
@@ -324,7 +358,10 @@ class MemoryRuntime:
             committed = self._admit(scope, rid, blocks)
             self._project()
             self._generation += 1
-            commit_failures = self._derive(scope, request["user_id"], blocks, committed)
+            commit_failures = self._derive(
+                scope, request["user_id"], blocks, committed,
+                max(m.occurred_at for m in job.messages),
+            )
         except RetryableError as exc:
             self.source.set_error(rid, str(exc))
             raise
@@ -368,10 +405,11 @@ class MemoryRuntime:
             if not succeeded:
                 return
 
-    def _derive(self, scope, user_id, blocks, committed) -> int:
+    def _derive(self, scope, user_id, blocks, committed, at: datetime) -> int:
+        # ``at`` is message time: line activity must replay the same way
         result = apply_block_signals(
             canonical=self.core.canonical, products=self.core.products,
-            lce=self.lce_for(scope), scope=scope, at=datetime.now(UTC),
+            lce=self.lce_for(scope), scope=scope, at=at,
             blocks=tuple(
                 BlockSignals(
                     memory.memory_id, block.content,
@@ -386,9 +424,8 @@ class MemoryRuntime:
                 for block, memory in zip(blocks, committed, strict=True)
             ),
         )
-        now = datetime.now(UTC)
         for question in result.questions:
-            self.source.remember_question(user_id, question, now)
+            self.source.remember_question(user_id, question, at)
         if result.thread_failed:
             self.thread_failures += 1
         return result.promotion_failures

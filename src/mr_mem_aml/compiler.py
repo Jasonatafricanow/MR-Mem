@@ -25,7 +25,7 @@ from typing import Literal, Protocol
 
 from mr_mem_aml.source_store import RawMessage
 
-PROMPT_VERSION = "mr-mem-aml-block-compiler-v2"
+PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
 AssistantPolicy = Literal["attributed", "context_only"]
 
 
@@ -196,8 +196,9 @@ Block rules:
    (fact, plan, intention, wish, question, possibility, reported claim,
    correction, refusal), and every concrete specific (names, numbers, amounts,
    dates and times, places, titles, items). Resolve relative time ("yesterday",
-   "next Friday") against the message time when unambiguous and keep the
-   original expression as well.
+   "next Friday", "this afternoon") against the message time when unambiguous,
+   write it as YYYY-MM-DD or YYYY-MM-DD HH:MM, and keep the original expression
+   as well ("this afternoon (2024-05-06 15:00)").
 3. Time-local: record the state at that moment. Never add later outcomes.
 4. Keep what is unknown unknown; do not guess or generalize.
 5. Useful granularity: neither one giant block nor atomized fragments.
@@ -207,30 +208,41 @@ Block rules:
    third-person sentences ("The user ...", "The assistant ...").
 
 Line-of-thought signals (optional, per block; never both on one block):
-- "thread": the block advances an explicit, still-developing line the user is
-  working through across turns (a pending decision, plan, problem, changing
-  preference or situation). "action": "track" (opens or continues the line) or
-  "resolve" (the line is settled or closed). "question": short stable phrasing
-  of the line; reuse the exact text from KNOWN_LINES when it is the same line.
-  "summary": the current understanding of the line after this block, concise
-  and specific. "mature": true only when the line has reached a settled
-  understanding worth keeping as long-term cognition.
+- "thread": the block belongs to a matter the user is living through across
+  turns: a decision being weighed, a plan, a trip, a problem, a changing
+  situation or preference. One matter usually spans several blocks (what was
+  done, why, what was observed, what was thought, what may follow): attach each
+  of them to the same line instead of packing the whole matter into one block or
+  opening a second line for it.
+  "question": short stable phrasing of the matter; when KNOWN_LINES has the same
+  matter (open or settled), reuse its question text exactly.
+  "action": "track" while the matter is still developing; "resolve" when, at
+  this message time, the matter has ended: a decision was made, a plan was
+  carried out or dropped, a problem was solved.
+  "summary": the current understanding of the whole matter after this block,
+  concise and specific, with dates in the format above.
+  - Decisions and opinions are settled when made ("no budget, not buying it":
+    resolve). If the user later reconsiders the same matter, continue that line
+    (same question) and say in the summary what changed against the earlier
+    reasons.
+  - Time-bound real-world plans (a flight this afternoon, a meeting tomorrow)
+    stay open until the messages report what actually happened; then record that
+    and continue with what follows. Never assume a plan happened because its time
+    has passed, and never invent outcomes or alternatives that were not stated.
 - "commit": only when the cited NEW messages already contain a complete,
   self-contained reasoned judgment of the user at that time (for example a
-  decision together with its reasons, or a worked-out principle or conclusion),
-  so that no further turns are needed to understand it. "question": the stable
-  question it answers (reuse KNOWN_LINES when it is the same line). "summary":
-  the judgment with its key reasons and conditions, faithful to the user's own
-  words. Never commit casual facts, bare preferences without reasoning, or the
-  assistant's views.
-- If a block settles or continues a line already listed in KNOWN_LINES, use
-  "thread" with that exact question ("resolve", or "track" with "mature": true
-  when settled) instead of "commit". "commit" is only for complete judgments
-  that do not continue a known line.
+  decision together with its reasons, or a worked-out principle or conclusion)
+  that does not continue a line in KNOWN_LINES. "question": the stable question
+  it answers. "summary": the judgment with its key reasons and conditions,
+  faithful to the user's own words. Never commit casual facts, bare preferences
+  without reasoning, or the assistant's views.
+- KNOWN_LINES lists existing lines relevant now: {{"question", "state": open |
+  settled, "summary"}}. A block that continues one of them uses "thread" with its
+  exact question, never "commit".
 
 Return only JSON, no prose:
 {{"blocks": [{{"content": "...", "sources": ["m1"],
-  "thread": {{"action": "track", "question": "...", "summary": "...", "mature": false}} or null,
+  "thread": {{"action": "track", "question": "...", "summary": "..."}} or null,
   "commit": {{"question": "...", "summary": "..."}} or null}}]}}
 """
 
@@ -282,10 +294,14 @@ class SemanticCompiler:
         self,
         new: tuple[RawMessage, ...],
         context: tuple[RawMessage, ...],
-        known_lines: tuple[str, ...],
+        known_lines: tuple,
     ) -> str:
         material = {
-            "KNOWN_LINES": list(known_lines),
+            # str entries (older journals) or {"question", "state", "summary"}
+            "KNOWN_LINES": [
+                line if isinstance(line, (str, dict)) else line.__dict__
+                for line in known_lines
+            ],
             "CONTEXT": [
                 {"role": m.role, "time": m.occurred_at.isoformat(), "text": m.content}
                 for m in context

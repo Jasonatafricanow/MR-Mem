@@ -25,6 +25,9 @@ class RuntimeConfig:
     port: int = 8765
     auth_token_env: str | None = None
     compile_concurrency: int = 4  # parallel model calls across different user_ids
+    # existing lines shown to the compiler per batch (path_a_lines.select_known_lines)
+    line_policy: dict[str, int] = field(
+        default_factory=lambda: {"recent": 10, "cued": 10, "due": 10})
 
     def __post_init__(self) -> None:
         if self.search_mode not in ("path_a", "baseline"):

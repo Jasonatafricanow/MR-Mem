@@ -102,6 +102,10 @@ class AmlSourceStore:
             );
             """
         )
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(lineage_questions)")}
+        if "last_active" not in columns:  # message time of the latest Block on the line
+            self._conn.execute("ALTER TABLE lineage_questions ADD COLUMN last_active TEXT")
+            self._conn.execute("UPDATE lineage_questions SET last_active=first_seen")
         self._conn.commit()
 
     def close(self) -> None:
@@ -164,10 +168,14 @@ class AmlSourceStore:
             )
 
     def remember_question(self, user_id: str, question: str, at: datetime) -> None:
+        """Record that a line was touched at message time ``at``."""
+        stamp = at.isoformat()
         with self._lock, self._conn:
             self._conn.execute(
-                "INSERT OR IGNORE INTO lineage_questions VALUES (?,?,?)",
-                (user_id, question, at.isoformat()),
+                "INSERT INTO lineage_questions(user_id,question,first_seen,last_active) "
+                "VALUES (?,?,?,?) ON CONFLICT(user_id,question) DO UPDATE SET "
+                "last_active=MAX(COALESCE(last_active,''), excluded.last_active)",
+                (user_id, question, stamp, stamp),
             )
 
     # -- read ---------------------------------------------------------
@@ -195,6 +203,16 @@ class AmlSourceStore:
             (message.user_id, message.session_id, seq, limit),
         )
         return tuple(reversed(rows))
+
+    def lines(self, user_id: str) -> tuple[tuple[str, datetime], ...]:
+        """Every line of a user with the message time it was last touched."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT question, COALESCE(last_active, first_seen) FROM lineage_questions "
+                "WHERE user_id=?",
+                (user_id,),
+            ).fetchall()
+        return tuple((q, datetime.fromisoformat(t)) for q, t in rows)
 
     def questions(self, user_id: str, limit: int = 50) -> tuple[str, ...]:
         with self._lock:

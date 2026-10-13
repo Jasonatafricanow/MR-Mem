@@ -406,3 +406,38 @@ def test_compile_failure_through_host_is_retryable(tmp_path):
         assert host.add(payload)["blocks"] == 1  # same request resumes
     finally:
         host.close()
+
+
+def test_compiler_sees_recent_cued_and_due_lines(tmp_path):
+    """Dormant lines are not shown by default but come back when new messages
+    recall them or when their stated time arrives (message time, not wall clock)."""
+    rt, backend = runtime(tmp_path, line_policy={"recent": 1, "cued": 1, "due": 1})
+    try:
+        add(rt, "r1", "Trip to Portugal next year || track:Portugal trip|Plans to visit Lisbon")
+        add(rt, "r2", "Flight to Tokyo || track:Tokyo flight|Flight at 2023-07-27 15:00",
+            start=1_690_100_000_000)
+        add(rt, "r3", "New laptop maybe || track:Laptop purchase|Comparing models",
+            start=1_690_200_000_000)
+        add(rt, "r4", "New phone maybe || track:Phone purchase|Comparing phones",
+            start=1_690_250_000_000)
+
+        def shown(text, start):
+            job = rt.prepare_add({"request_id": f"probe-{start}", "user_id": "u1",
+                                  "session_id": "s1",
+                                  "messages": [{"role": "user", "content": text,
+                                                "timestamp": start}]})
+            return {line["question"]: line for line in job.known_lines}
+
+        lines = shown("Small talk about the weather", 1_690_260_000_000)  # 2023-07-25 04:40
+        assert lines["Phone purchase"]["state"] == "open"  # most recent, its own line
+        assert "Portugal trip" not in lines  # dormant
+        assert "Tokyo flight" not in lines  # its time has not come yet
+
+        lines = shown("Booked a hotel in Portugal for the trip", 1_690_270_000_000)
+        assert "Portugal trip" in lines and lines["Portugal trip"]["state"] == "open"
+        assert lines["Portugal trip"]["summary"] == "Plans to visit Lisbon"
+
+        lines = shown("Small talk again", 1_690_470_000_000)  # 2023-07-27 15:20
+        assert "Tokyo flight" in lines  # due: the plan's time has come
+    finally:
+        rt.close()
