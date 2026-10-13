@@ -58,7 +58,7 @@ mr-mem-aml check --config runtime.json        # 预检：LCE、编译器、embed
 mr-mem-aml serve --config runtime.json
 ```
 
-`examples/` 目录下有 agy、grok 和 OpenAI 兼容端点三种编译器配置。主要字段：
+`examples/` 目录下有 agy、grok 和 OpenAI 兼容端点三种编译器配置。示例里的 `agy` / `grok` 要求命令在 PATH 上；不在的话，把 `argv` 第一项换成可执行文件的完整路径。主要字段：
 
 | 字段 | 说明 |
 |---|---|

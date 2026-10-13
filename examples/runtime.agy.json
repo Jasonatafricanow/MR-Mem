@@ -3,7 +3,7 @@
   "compiler": {
     "type": "command",
     "timeout": 600,
-    "argv": ["C:/Users/Temp/AppData/Local/agy/bin/agy.exe", "--model", "gemini-3.8-flash-low",
+    "argv": ["agy", "--model", "gemini-3.8-flash-low",
              "--dangerously-skip-permissions", "--output-format", "text"]
   },
   "embedding": null,
