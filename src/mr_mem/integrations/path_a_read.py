@@ -250,7 +250,15 @@ class PathAReader:
     ) -> list[EvidenceItem]:
         items: list[EvidenceItem] = []
         heads = tuple(self.lce.accepted()) if self.lce is not None else ()
-        head_at = {u.region_id: u.created_at for u in heads}
+
+        def newest_evidence(memory_ids) -> datetime | None:
+            times = [m.occurred_at for mid in memory_ids
+                     if (m := store.get(mid)) is not None and m.occurred_at is not None]
+            return max(times) if times else None
+
+        # Compare by evidence (message) time on both sides: LCE records its own
+        # acceptance clock, Threads the host's activity time; neither is comparable.
+        head_at = {u.region_id: newest_evidence(u.supporting_memory_ids) for u in heads}
         if heads and self.policy.lce_limit:
             accepted = {u.baseline_id: u for u in heads}
             candidates = {
@@ -286,7 +294,8 @@ class PathAReader:
                     )
                     if not (
                         (at := head_at.get(THREAD_REGION_PREFIX + t.thread_id)) is not None
-                        and at >= t.updated_at
+                        and (mine := newest_evidence(t.handoff_memory_ids)) is not None
+                        and at >= mine
                     )
                 }
             finally:

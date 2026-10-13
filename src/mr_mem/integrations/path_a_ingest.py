@@ -122,6 +122,7 @@ def apply_block_signals(
         ThreadAutoUpdateService(
             canonical=canonical, product=products,
             projection_compiler=None if lce is None else SafeProjectionCompiler(lce),
+            exact_question_only=True,  # the compiler chose the line from KNOWN_LINES
         ).apply(scope=scope, accepted_events=tuple(events), at=at)
     except Exception:  # noqa: BLE001 - Thread is a derived projection
         thread_failed = True
