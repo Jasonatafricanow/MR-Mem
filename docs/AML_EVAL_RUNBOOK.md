@@ -25,41 +25,42 @@
 2. 不得为任何一组重新编译。`data_dir` 在 Add 完成后只读。
 3. 不得同时运行两个服务指向同一个 `data_dir`。
 4. 不得更换或新增 embedding 模型、不得新增依赖。需要时停止并问用户。
-5. 数据集、评测结果、`data_dir` 只放在本机，不得提交到任何 git 仓库、不得上传。
+5. 数据集、评测结果、`data_dir` 只放在评测服务器本地，不得提交到任何 git 仓库、不得上传。
 6. 不得推送分支、不得开 PR。
 
 ## 1. 环境准备
 
-工作目录：`C:\projects\MR-Mem-pathA`。评测运行目录放在仓库外：`C:\projects\mrmem-eval-runs\<YYYYMMDD>-<数据集名>\`（下文记作 `RUN`）。
+下文命令以 Linux shell 为准。`$REPO` 是 MR-Mem 仓库检出目录，`$RUN` 是本次评测的运行目录，必须在仓库外，例如 `~/mrmem-eval-runs/<YYYYMMDD>-<数据集名>`。Windows 上把 `.venv/bin/` 换成 `.venv\Scripts\`，路径分隔符换成 `\`。
+
+需要 Python ≥ 3.12 和 git（安装 LCE 依赖时要从 GitHub 拉取）。
 
 ```bash
-git -C C:\projects\MR-Mem-pathA checkout feat/aml-20261013
-```
-```bash
-git -C C:\projects\MR-Mem-pathA status --short
-```
-
-`status` 必须为空（干净工作区）。然后安装：
-
-```bash
-C:\projects\MR-Mem-pathA\.venv\Scripts\python -m pip install -e "C:\projects\MR-Mem-pathA[lce]"
+git clone https://github.com/Jasonatafricanow/MR-Mem.git "$REPO"
+cd "$REPO" && git checkout feat/aml-20261013 && git status --short
+python3.12 -m venv .venv && . .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[lce]"          # 基线用了向量召回时改为 ".[lce,vector]"
+python -m pytest -q                        # 必须全部通过；失败就停止并报告
 ```
 
-如果基线用了向量召回，改装 `[lce,vector]`。
+已经检出过的，用 `git fetch && git checkout feat/aml-20261013 && git pull` 更新到最新。`git status --short` 必须为空。之后所有命令都在激活了 `.venv` 的 shell 里执行。
+
+**编译器。** 用服务器上可用的编译器：命令行（`grok`、`agy`，必须在 PATH 上，否则 `argv` 第一项写完整路径）或 OpenAI 兼容端点。参考 `examples/runtime.grok.json`、`examples/runtime.agy.json`、`examples/runtime.openai-compatible.json`。一个数据集从头到尾只能用同一个编译器和模型。
 
 记录以下版本信息，写进最终报告：
-- `git -C C:\projects\MR-Mem-pathA rev-parse HEAD`
+- `git -C "$REPO" rev-parse HEAD`
 - `src/mr_mem_aml/compiler.py` 里的 `PROMPT_VERSION`
-- 编译器模型（例如 `agy --model gemini-3.8-flash-low`）
+- 编译器与模型（例如 `grok`，或 `agy --model gemini-3.8-flash-low`）
 - embedding 模型与维度（或"无，仅 BM25"）、HyDE 设置
+- 服务器操作系统、Python 版本
 
 ## 2. 配置文件
 
-在 `RUN` 下建 5 个配置文件。它们**除 `search_mode` 和 `read_policy` 外必须完全相同**。
+在 `$RUN` 下建 5 个配置文件。它们**除 `search_mode` 和 `read_policy` 外必须完全相同**。
 
 **第一步：确定基线设置。** 向用户确认（或从用户之前跑基线的记录里读出）：embedding 用的是什么（模型、维度、API key 环境变量），HyDE 是 `off` / `fallback` / `augmented`。**确认不了就停止，问用户。** 设置不一致时，A 组就不等于用户已有的基线。
 
-`RUN\ingest.json`（以 agy、无 embedding 为例；按基线设置修改 `embedding` 和 `hyde`）：
+`$RUN/ingest.json`（以 agy、无 embedding 为例；`compiler` 换成服务器上的编译器，按基线设置修改 `embedding` 和 `hyde`）：
 
 ```json
 {
@@ -86,17 +87,17 @@ C:\projects\MR-Mem-pathA\.venv\Scripts\python -m pip install -e "C:\projects\MR-
 
 | 文件 | `search_mode` | `read_policy` |
 |---|---|---|
-| `RUN\arm-A.json` | `"baseline"` | `{"source_text_for_hits": false}` |
-| `RUN\arm-C0.json` | `"path_a"` | `{"source_text_for_hits": false}` |
-| `RUN\arm-Aplus.json` | `"baseline"` | `{"source_text_for_hits": true}` |
-| `RUN\arm-C.json` | `"path_a"` | `{"source_text_for_hits": true}` |
+| `$RUN/arm-A.json` | `"baseline"` | `{"source_text_for_hits": false}` |
+| `$RUN/arm-C0.json` | `"path_a"` | `{"source_text_for_hits": false}` |
+| `$RUN/arm-Aplus.json` | `"baseline"` | `{"source_text_for_hits": true}` |
+| `$RUN/arm-C.json` | `"path_a"` | `{"source_text_for_hits": true}` |
 
-`data_dir` 是相对路径，以配置文件所在目录为基准，所以 5 个文件都指向同一个 `RUN\data`。
+`data_dir` 是相对路径，以配置文件所在目录为基准，所以 5 个文件都指向同一个 `$RUN/data`。
 
 预检：
 
 ```bash
-C:\projects\MR-Mem-pathA\.venv\Scripts\mr-mem-aml.exe check --config RUN\ingest.json
+mr-mem-aml check --config $RUN/ingest.json
 ```
 
 `lce` 必须是 `importable`，`compiler` 必须是 `ok`，配置了 embedding 时必须是 `ok (N dims)` 且维度正确。任何一项失败：停止，报告原文输出。
@@ -105,7 +106,7 @@ C:\projects\MR-Mem-pathA\.venv\Scripts\mr-mem-aml.exe check --config RUN\ingest.
 
 完整数据集的编译可能要几十到上百小时（agy 每次 Add 约 15 秒，grok 约 37–132 秒）。先用一个小子集试跑：
 
-1. 从数据集里取约 **20 个问题**（LongMemEval 这类每题独立历史的数据集，就是 20 个问题；LoCoMo 这类共享对话的，取 1–2 段对话及其全部问题）。用一个单独的运行目录 `RUN-pilot`，配置同上。
+1. 从数据集里取约 **20 个问题**（LongMemEval 这类每题独立历史的数据集，就是 20 个问题；LoCoMo 这类共享对话的，取 1–2 段对话及其全部问题）。用一个单独的运行目录 `$RUN-pilot`，配置同上。
 2. 按第 4、5、6、7 节完整跑一遍。
 3. 报告给用户：
    - Add 请求总数、平均/最长耗时、失败与重试次数；
@@ -119,7 +120,7 @@ C:\projects\MR-Mem-pathA\.venv\Scripts\mr-mem-aml.exe check --config RUN\ingest.
 1. 启动服务（前台占用一个终端，或作为后台进程，记下进程以便停止）：
 
    ```bash
-   C:\projects\MR-Mem-pathA\.venv\Scripts\mr-mem-aml.exe serve --config RUN\ingest.json
+   mr-mem-aml serve --config $RUN/ingest.json
    ```
 
    确认 `GET http://127.0.0.1:8765/health` 返回 200，且 `lce_enabled` 为 `true`。
@@ -145,16 +146,16 @@ C:\projects\MR-Mem-pathA\.venv\Scripts\mr-mem-aml.exe check --config RUN\ingest.
    然后 `GET /health`，记录 `thread_failures`（非 0 要写进报告）。**停止服务**，再统计：
 
    ```bash
-   C:\projects\MR-Mem-pathA\.venv\Scripts\python C:\projects\MR-Mem-pathA\scripts\aml_eval\lce_stats.py RUN\ingest.json
+   python "$REPO"/scripts/aml_eval/lce_stats.py $RUN/ingest.json
    ```
 
-   保存输出到 `RUN\lce_stats.json`。如果 `lce_lines` 为 0，说明编译器没产出任何认知线，后面的对照没有意义：**停止，报告。**
+   保存输出到 `$RUN/lce_stats.json`。如果 `lce_lines` 为 0，说明编译器没产出任何认知线，后面的对照没有意义：**停止，报告。**
 
-6. 快照：把 `RUN\data` 整个复制为 `RUN\data.snapshot`。之后只读。
+6. 快照：把 `$RUN/data` 整个复制为 `$RUN/data.snapshot`。之后只读。
 
 ## 5. Search 阶段（四组）
 
-准备 `RUN\questions.jsonl`，每行一个问题：
+准备 `$RUN/questions.jsonl`，每行一个问题：
 
 ```json
 {"id": "q_001", "query": "原始问题文本", "user_id": "与 Add 时一致", "options": ["选择题才有"]}
@@ -165,20 +166,20 @@ C:\projects\MR-Mem-pathA\.venv\Scripts\mr-mem-aml.exe check --config RUN\ingest.
 对每一组，**依次**执行：启动该组配置的服务 → 跑检索 → 停止服务。四组用同一个端口，同一时间只有一个服务。
 
 ```bash
-C:\projects\MR-Mem-pathA\.venv\Scripts\mr-mem-aml.exe serve --config RUN\arm-A.json
+mr-mem-aml serve --config $RUN/arm-A.json
 ```
 ```bash
-C:\projects\MR-Mem-pathA\.venv\Scripts\python C:\projects\MR-Mem-pathA\scripts\aml_eval\search_arm.py --arm A --mode baseline --questions RUN\questions.jsonl --out RUN\results\A.search.jsonl
+python "$REPO"/scripts/aml_eval/search_arm.py --arm A --mode baseline --questions $RUN/questions.jsonl --out $RUN/results/A.search.jsonl
 ```
 
 停止服务后换下一组：
 
 | 组 | 配置 | `--arm` | `--mode` | 输出 |
 |---|---|---|---|---|
-| A | `arm-A.json` | `A` | `baseline` | `results\A.search.jsonl` |
-| C0 | `arm-C0.json` | `C0` | `path_a` | `results\C0.search.jsonl` |
-| A+ | `arm-Aplus.json` | `A+` | `baseline` | `results\A+.search.jsonl` |
-| C | `arm-C.json` | `C` | `path_a` | `results\C.search.jsonl` |
+| A | `arm-A.json` | `A` | `baseline` | `results/A.search.jsonl` |
+| C0 | `arm-C0.json` | `C0` | `path_a` | `results/C0.search.jsonl` |
+| A+ | `arm-Aplus.json` | `A+` | `baseline` | `results/A+.search.jsonl` |
+| C | `arm-C.json` | `C` | `path_a` | `results/C.search.jsonl` |
 
 说明：
 - `search_arm.py` 固定 `top_k=100`，可断点续跑（已写入的 `id` 会跳过）。
@@ -189,8 +190,8 @@ C:\projects\MR-Mem-pathA\.venv\Scripts\python C:\projects\MR-Mem-pathA\scripts\a
 
 使用**和用户基线完全相同**的回答模型、回答提示词、评审模型、评审提示词和检索结果拼接方式。参考：AML 官方仓库 `AML-memory/agent-memory-leaderboard` 的 `data/<数据集>/pipeline.py`，按 `data` 的顺序把每条 `content` 拼成记忆文本（`created_at` 的用法与基线一致）。
 
-输入：每组的 `results\<组>.search.jsonl` 里的 `data`。
-输出：每组一个 `results\<组>.judged.jsonl`，每行至少包含：
+输入：每组的 `results/<组>.search.jsonl` 里的 `data`。
+输出：每组一个 `results/<组>.judged.jsonl`，每行至少包含：
 
 ```json
 {"id": "q_001", "is_correct": true, "category": "题型（数据集提供时）"}
@@ -201,7 +202,7 @@ C:\projects\MR-Mem-pathA\.venv\Scripts\python C:\projects\MR-Mem-pathA\scripts\a
 ## 7. 比较
 
 ```bash
-C:\projects\MR-Mem-pathA\.venv\Scripts\python C:\projects\MR-Mem-pathA\scripts\aml_eval\compare_arms.py --arm A=RUN\results\A.judged.jsonl --arm C0=RUN\results\C0.judged.jsonl --arm A+=RUN\results\A+.judged.jsonl --arm C=RUN\results\C.judged.jsonl --search A=RUN\results\A.search.jsonl --search C0=RUN\results\C0.search.jsonl --search A+=RUN\results\A+.search.jsonl --search C=RUN\results\C.search.jsonl --pair C:A+ --pair A+:A --pair C0:A --pair C:A --out RUN\report.json
+python "$REPO"/scripts/aml_eval/compare_arms.py --arm A=$RUN/results/A.judged.jsonl --arm C0=$RUN/results/C0.judged.jsonl --arm A+=$RUN/results/A+.judged.jsonl --arm C=$RUN/results/C.judged.jsonl --search A=$RUN/results/A.search.jsonl --search C0=$RUN/results/C0.search.jsonl --search A+=$RUN/results/A+.search.jsonl --search C=$RUN/results/C.search.jsonl --pair C:A+ --pair A+:A --pair C0:A --pair C:A --out $RUN/report.json
 ```
 
 输出包括：
@@ -211,7 +212,7 @@ C:\projects\MR-Mem-pathA\.venv\Scripts\python C:\projects\MR-Mem-pathA\scripts\a
 
 ## 8. 报告（交给用户）
 
-写 `RUN\REPORT.md`，包含：
+写 `$RUN/REPORT.md`，包含：
 
 1. **版本**：第 1 节记录的全部版本信息，数据集名称和规模，是否试跑后获批。
 2. **Add 阶段**：请求数、总耗时、平均/最长单次耗时、重试和最终失败数、`thread_failures`、`lce_stats.json` 全文。
