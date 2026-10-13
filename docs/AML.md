@@ -50,6 +50,8 @@ GET  /health
 
 如果 C 只比 A 好、不比 A+ 好，说明提升来自原文证据，而不是 LCE。
 
+完整执行步骤（配置、试跑、Add、四组检索、回答评审、比较、报告）见 [AML_EVAL_RUNBOOK.md](AML_EVAL_RUNBOOK.md)，配套脚本在 `scripts/aml_eval/`。
+
 ## 4. 配置与启动
 
 ```bash
