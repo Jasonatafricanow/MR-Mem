@@ -215,6 +215,7 @@ class MemoryRuntime:
         self._generation = 0
         self._vectors: dict[str, tuple[float, ...]] = {}
         self.thread_failures = 0
+        self.compile_rejected = 0
         # upward link raw record -> Blocks compiled from it
         self._blocks_by_record: dict[str, list[str]] = {}
         for memory in self.core.canonical.load_all():
@@ -397,6 +398,14 @@ class MemoryRuntime:
             log.info("compiled %s: %d messages -> %d blocks in %.1fs", job.request["request_id"],
                      len(job.messages), len(blocks), time.monotonic() - started)
         except CompileError as exc:
+            if self.config.skip_rejected_compiles and "rejected the request" in str(exc):
+                # The provider permanently refuses this input (e.g. content
+                # moderation). Raw evidence stays stored and searchable; this
+                # request just yields no compiled Blocks. Counted, never silent.
+                log.warning("compile rejected, kept raw only: %s: %s",
+                            job.request["request_id"], str(exc)[:300])
+                self.compile_rejected += 1
+                return blocks_to_json(())
             raise CompileFailed(str(exc)) from exc
         return blocks_to_json(blocks)
 

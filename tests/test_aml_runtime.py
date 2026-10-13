@@ -460,3 +460,19 @@ def test_raw_base_reads_projections_over_raw_message_hits(tmp_path):
         assert ids({"data": rt.search(query, mode="baseline")["data"]})[0] == "raw"
     finally:
         rt.close()
+
+
+def test_rejected_compile_keeps_raw_evidence_when_configured(tmp_path):
+    class Rejecting:
+        def complete(self, prompt):
+            raise CompileError("compiler endpoint rejected the request: HTTP 400: moderation")
+
+    rt, _ = runtime(tmp_path, backend=Rejecting(), raw_base=True, skip_rejected_compiles=True)
+    try:
+        assert add(rt, "r1", "Something the provider refuses")["success"]
+        assert rt.compile_rejected == 1
+        data = rt.search({"query": "provider refuses", "user_id": "u1", "top_k": 5},
+                         mode="baseline")["data"]
+        assert data and data[0]["content"].startswith("User: Something")
+    finally:
+        rt.close()

@@ -29,6 +29,9 @@ class RuntimeConfig:
     # raw_arm.py); off = the older Block-retrieval base list.
     raw_base: bool = False
     append_options: bool = True  # multiple-choice options appended to the query (P1)
+    # A request the compiler endpoint permanently rejects (HTTP 4xx, e.g. content
+    # moderation) keeps its raw evidence but yields no Blocks instead of failing Add.
+    skip_rejected_compiles: bool = False
     # existing lines shown to the compiler per batch (path_a_lines.select_known_lines)
     line_policy: dict[str, int] = field(
         default_factory=lambda: {"recent": 10, "cued": 10, "due": 10})
