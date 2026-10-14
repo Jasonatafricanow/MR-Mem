@@ -12,6 +12,10 @@ Design v6 4.4-4.5 (docs/LCE_PORT.md):
   frozen then is "this was the plan", whether or not it was carried out), or a
   later message settled it. Day side (Thread): still going on, can still
   change. The side is computed from the current message time, never moved.
+  Only the two time axes exist (message time, known time): a time the user
+  stated is content. The compiler writes it into the Block in the fixed format
+  ("tomorrow evening (2024-05-07 19:00)"), and "has its time passed" compares
+  that text with the current message time; no third time is stored.
 - A matter has no name: its identity is a code id (``MemoryThread``), its
   meaning lives in its summary, which follows the matter as it changes, and it
   points (``anchor_node_id``) at its latest step.
@@ -25,6 +29,7 @@ Every write uses the message time of the batch, so replay is deterministic.
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -41,6 +46,7 @@ from mr_mem.memory.store import CanonicalMemoryStore, scope_json
 from mr_mem.memory.threading import _thread_identity
 
 EvidenceTime = Callable[[CommittedMemory], "datetime | None"]
+_STATED = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?\b")
 Embed = Callable[[str], Sequence[float]]
 PAST, DAY = "happened", "in progress"
 
@@ -53,7 +59,6 @@ class Attachment:
     after: str | None  # the step it builds on: "N<k>", "T<k>", "b<k>" or None
     happened: bool  # already happened when said (else: still going on)
     summary: str | None
-    due: datetime | None = None  # stated time of something not yet happened
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,24 +88,28 @@ def scope_root(root: Path | str, scope: Scope) -> Path:
     return Path(root) / hashlib.sha256(scope_json(scope).encode("utf-8")).hexdigest()
 
 
-def parse_due(value: object) -> datetime | None:
-    """"YYYY-MM-DD" or "YYYY-MM-DD HH:MM" (read as UTC, like message times)."""
-    if not isinstance(value, str) or not value.strip():
-        return None
-    text = value.strip()
-    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+def stated_end(content: str) -> datetime | None:
+    """The latest time the content states in the fixed format, read like message time.
+
+    A bare date passes at the end of that day. This reads content; it is not a
+    third time axis.
+    """
+    ends = []
+    for match in _STATED.finditer(content or ""):
+        year, month, day, hour, minute = match.groups()
         try:
-            parsed = datetime.strptime(text[:16] if fmt.endswith("%M") else text[:10], fmt)
+            if hour is None:
+                ends.append(datetime(int(year), int(month), int(day), 23, 59, tzinfo=UTC))
+            else:
+                ends.append(datetime(int(year), int(month), int(day), int(hour), int(minute),
+                                     tzinfo=UTC))
         except ValueError:
             continue
-        if fmt == "%Y-%m-%d":  # a whole day passes at its end
-            parsed = parsed.replace(hour=23, minute=59)
-        return parsed.replace(tzinfo=UTC)
-    return None
+    return max(ends) if ends else None
 
 
 class TenseStore:
-    """How each Block was said (happened or not, stated time) and when it was settled."""
+    """How each Block was said (happened or not) and when a later Block settled it."""
 
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,7 +117,7 @@ class TenseStore:
         self.conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS said (
-                memory_id TEXT PRIMARY KEY, happened INTEGER NOT NULL, due TEXT,
+                memory_id TEXT PRIMARY KEY, happened INTEGER NOT NULL,
                 known_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS settled (
                 memory_id TEXT NOT NULL, settled_at TEXT NOT NULL, by_memory_id TEXT NOT NULL,
@@ -120,14 +129,12 @@ class TenseStore:
     def close(self) -> None:
         self.conn.close()
 
-    def record(self, memory_id: str, *, happened: bool, due: datetime | None,
-               known_at: datetime) -> None:
+    def record(self, memory_id: str, *, happened: bool, known_at: datetime) -> None:
         """First statement wins: how it was said does not change later."""
         with self.conn:
             self.conn.execute(
-                "INSERT OR IGNORE INTO said VALUES (?, ?, ?, ?)",
-                (memory_id, int(happened), None if due is None else due.isoformat(),
-                 known_at.isoformat()),
+                "INSERT OR IGNORE INTO said(memory_id, happened, known_at) VALUES (?, ?, ?)",
+                (memory_id, int(happened), known_at.isoformat()),
             )
 
     def settle(self, memory_id: str, *, at: datetime, by: str) -> None:
@@ -135,25 +142,20 @@ class TenseStore:
             self.conn.execute("INSERT OR IGNORE INTO settled VALUES (?, ?, ?)",
                               (memory_id, at.isoformat(), by))
 
-    def side(self, memory_id: str, now: datetime) -> str | None:
-        """Which side of the terminator at ``now``; None when not on any line."""
+    def side(self, memory_id: str, now: datetime, content: str) -> str | None:
+        """Which side of the terminator at message time ``now``; None when not on a line."""
         row = self.conn.execute(
-            "SELECT happened, due FROM said WHERE memory_id = ?", (memory_id,)
+            "SELECT happened FROM said WHERE memory_id = ?", (memory_id,)
         ).fetchone()
         if row is None:
             return None
-        if row[0] or (row[1] is not None and datetime.fromisoformat(row[1]) <= now):
+        if row[0] or ((end := stated_end(content)) is not None and end <= now):
             return PAST
         settled = self.conn.execute(
             "SELECT 1 FROM settled WHERE memory_id = ? AND settled_at <= ? LIMIT 1",
             (memory_id, now.isoformat()),
         ).fetchone()
         return PAST if settled else DAY
-
-    def due(self, memory_id: str) -> datetime | None:
-        row = self.conn.execute("SELECT due FROM said WHERE memory_id = ?",
-                                (memory_id,)).fetchone()
-        return None if row is None or row[0] is None else datetime.fromisoformat(row[0])
 
 
 class PathATree:
@@ -211,7 +213,9 @@ class PathATree:
         return out
 
     def side(self, node_id: str, now: datetime) -> str | None:
-        return self.tense.side(self.lines.get_node(node_id).block_id, now)
+        block_id = self.lines.get_node(node_id).block_id
+        memory = self.canonical.get(block_id)
+        return self.tense.side(block_id, now, "" if memory is None else memory.content)
 
     # -- compile input -----------------------------------------------------
 
@@ -260,11 +264,9 @@ class PathATree:
             state = state_of[node_id]
             memory = self.canonical.get(state.state_id)
             said = None if memory is None else self.evidence_time(memory)
-            due = self.tense.due(self.lines.get_node(node_id).block_id)
             payload_steps.append({
                 "ref": ref, "text": state.content[:snippet], "state": self.side(node_id, now),
                 **({"time": said.strftime("%Y-%m-%d %H:%M")} if said else {}),
-                **({"due": due.strftime("%Y-%m-%d %H:%M")} if due else {}),
             })
         payload_threads = []
         for i, card in enumerate(chosen, 1):
@@ -379,7 +381,7 @@ class PathATree:
         )
         if parent is not None and parent != node.node_id:
             self.lines.add_edge(line_id, parent, node.node_id, knowledge_at=at)
-        self.tense.record(memory.memory_id, happened=line.happened, due=line.due, known_at=at)
+        self.tense.record(memory.memory_id, happened=line.happened, known_at=at)
         result.attached += 1
         if matter is None:
             # a new matter: its id comes from the Block that started it, never from words

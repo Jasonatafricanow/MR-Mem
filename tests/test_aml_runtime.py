@@ -511,7 +511,8 @@ def test_tree_schema_parses_tense_time_and_settles():
            ' "summary": "s"}, {"thread": null, "after": null, "happened": true}]}]}')
     (block,) = SemanticCompiler(None, schema="tree").parse(raw, (msg,))
     first, second = block.lines
-    assert (first.thread, first.committed, first.due) == ("T1", False, "2026-05-02 19:00")
+    # a stated time is content (two time axes only): no separate field is kept
+    assert (first.thread, first.committed, first.due) == ("T1", False, None)
     assert (second.thread, second.committed, second.due) == (None, True, None)
     assert block.settles == ("N2",)
     assert blocks_from_json(blocks_to_json((block,)))[0] == block

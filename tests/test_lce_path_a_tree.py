@@ -95,17 +95,17 @@ def env(tmp_path):
     value.close()
 
 
-def A(thread=None, after=None, happened=True, summary="s", due=None):  # noqa: N802
-    return Attachment(thread, after, happened, summary, due)
+def A(thread=None, after=None, happened=True, summary="s"):  # noqa: N802
+    return Attachment(thread, after, happened, summary)
 
 
 WANT = "The user wants to go to Portugal."
 BOOKED = "The user booked a flight to Lisbon for 2026-05-02 09:00."
 TRAFFIC = "The user is stuck in traffic on the way to the airport."
-MAY_MISS = "The user may miss the 09:00 flight."
+MAY_MISS = "The user may miss the 2026-05-02 09:00 flight."
 ARRIVED = "The user arrived in Lisbon."
 AGREED = "Ana and the user agreed to have dinner tomorrow."
-DINNER = "The user and Ana will have dinner tomorrow at 19:00."
+DINNER = "The user and Ana will have dinner tomorrow (2026-05-03 19:00)."
 SHOPPING = "The user went shopping on Rua Augusta."
 
 
@@ -118,16 +118,17 @@ def test_every_connected_block_is_on_its_line_and_time_moves_the_terminator(env)
     env.look(24)
     t = env.ref(trip)
     env.step(24, (TRAFFIC, [A(t)]),
-             (MAY_MISS, [A(t, after="b1", happened=False, due=at(25))]))
+             (MAY_MISS, [A(t, after="b1", happened=False)]))
     assert env.tree.side(env.node(MAY_MISS), at(24.5)) == DAY
-    # the flight time passed: frozen is "this was feared then", whatever happened next
+    # the time stated in the content passed (two time axes only: the stated time is
+    # content): frozen is "this was feared then", whatever happened next
     assert env.tree.side(env.node(MAY_MISS), at(25.5)) == PAST
     env.look(30)
     env.step(30, (ARRIVED, [A(env.ref(trip), after=env.ref(node_id=env.node(MAY_MISS)))]))
     env.look(31, "dinner with Ana")
     arrived = env.ref(node_id=env.node(ARRIVED))
     env.step(31, (AGREED, [A(after=arrived)]),
-             (DINNER, [A("b1", after="b1", happened=False, due=at(24 + 35))]),
+             (DINNER, [A("b1", after="b1", happened=False)]),
              (SHOPPING, [A(after=arrived)]))
     # dinner and shopping are parallel branches under "arrived"
     assert set(env.tree.lines.children_at(env.node(ARRIVED), at(32))) == {
@@ -147,7 +148,7 @@ def test_an_intention_without_time_grows_several_branches_and_is_settled_by_mean
     env.step(5, *[(b, [A(env.ref(laptop), after=w)]) for b in branches])
     assert set(env.tree.lines.children_at(env.node(want), at(6))) == {
         env.node(b) for b in branches}
-    # no due time: still on the day side however much time passes...
+    # no stated time: still on the day side however much time passes...
     assert env.tree.side(env.node(want), at(24 * 60)) == DAY
     # ...until a block settles it by meaning
     env.look(24 * 61, "laptop")

@@ -562,11 +562,11 @@ class MemoryRuntime:
 
     def _grow(self, scope, blocks, committed, refs: dict, at: datetime) -> int:
         """Tree engine: compiler signals -> Threads and committed Path A steps."""
-        from mr_mem.lce.path_a import Attachment, BlockLines, parse_due
+        from mr_mem.lce.path_a import Attachment, BlockLines
 
         result = self.tree_for(scope).apply(
             [BlockLines(memory.memory_id, tuple(
-                Attachment(x.thread, x.after, x.committed, x.summary, parse_due(x.due))
+                Attachment(x.thread, x.after, x.committed, x.summary)
                 for x in block.lines), block.settles)
              for block, memory in zip(blocks, committed, strict=True)],
             refs, at,
