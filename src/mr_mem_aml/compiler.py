@@ -26,7 +26,7 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
-TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v1"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v2"
 AssistantPolicy = Literal["attributed", "context_only"]
 Schema = Literal["flat", "tree"]
 
@@ -279,7 +279,9 @@ to (empty when it belongs to none). One block may belong to several matters of
 different kinds (a dinner in Lisbon belongs to the trip and to food tastes).
 Each entry:
   "thread": the matter's short stable question. To continue a thread in LINES,
-  copy its question exactly; otherwise write a new one.
+  copy its question exactly; otherwise write a new one. Keep a thread's question
+  unchanged when later details become known (the project gets a name, a date is
+  added); the summary carries the new details.
   "after": the step this block directly follows: a step ref ("N3"), a thread ref
   ("T2") for its current branch point, "b<k>" for the k-th block of this output
   (1-based), or null when nothing known comes before it. A new matter that grows
@@ -293,7 +295,10 @@ Each entry:
   "summary": the current state of the whole matter after this block: how it
   started, the key steps so far and where it stands now; concise, with dates
   in the format above.
-  "done": true when nothing in this matter is still in progress.
+  "done": true when this thread is frozen at this message time: what it was about
+  has happened or been settled and nothing in it is still open. The rule is the
+  same at every level: a finished sub-task is a finished branch, so mark it done;
+  a later follow-up opens a new thread whose "after" is the step it builds on.
 - When the user later takes up a matter that had ended (wants the laptop again
   after deciding not to buy it), that is a new thread whose "after" is the old
   step; compare against the old reasons in the summary. Never rewrite the old

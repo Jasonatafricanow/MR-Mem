@@ -291,6 +291,7 @@ class MemoryRuntime:
                               if not tree.lines.nodes_for_state(mid)
                               and (m := self.core.canonical.get(mid)) is not None]
                 threads.append({
+                    "thread_id": t.thread_id, "anchor_node_id": t.anchor_node_id,
                     "question": t.open_question, "status": t.status.value,
                     "summary": t.working_summary,
                     "after": None if t.anchor_node_id is None else text(t.anchor_node_id),
