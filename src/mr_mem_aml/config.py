@@ -35,8 +35,15 @@ class RuntimeConfig:
     # existing lines shown to the compiler per batch (path_a_lines.select_known_lines)
     line_policy: dict[str, int] = field(
         default_factory=lambda: {"recent": 10, "cued": 10, "due": 10})
+    # LCE engine: "flat" = Thread handoff into per-Thread Baselines (older);
+    # "tree" = Thread + Path A Line trees ported from LCE (design v6 4.4-4.5).
+    path_a_engine: str = "flat"
+    # committed steps shown to the tree compiler per batch
+    step_policy: dict[str, int] = field(default_factory=lambda: {"recent": 10, "cued": 10})
 
     def __post_init__(self) -> None:
+        if self.path_a_engine not in ("flat", "tree"):
+            raise ValueError("path_a_engine must be 'flat' or 'tree'")
         if self.search_mode not in ("path_a", "baseline"):
             raise ValueError("search_mode must be 'path_a' or 'baseline'")
         if self.hyde not in ("off", "fallback", "augmented"):

@@ -198,8 +198,11 @@ class MemoryRuntime:
         self.source = AmlSourceStore(data / "aml_source.sqlite")
         self.backend = None if compiler is not None else build_backend(config.compiler)
         self.compiler = compiler or SemanticCompiler(
-            self.backend, assistant_policy=config.assistant_policy
+            self.backend, assistant_policy=config.assistant_policy,
+            schema="tree" if config.path_a_engine == "tree" else "flat",
         )
+        self._trees: dict[str, object] = {}
+        self.tree_failures: list[str] = []
         self.embedding = build_embedding(config.embedding)
         self.index = None
         if self.embedding is not None:
@@ -256,6 +259,47 @@ class MemoryRuntime:
                 })
         return out
 
+    def tree_report(self) -> list[dict]:
+        """Tree engine: every user's Line trees (nested) and Threads, for inspection."""
+        cutoff = datetime(9999, 1, 1, tzinfo=UTC)
+        out = []
+        users = {m.user_id for ms in self.source.all_request_messages().values() for m in ms}
+        for user_id in sorted(users):
+            scope = user_scope(user_id)
+            tree = self.tree_for(scope)
+
+            def text(node_id, tree=tree):
+                state = tree.view.state_for_node_at_cutoff(node_id, cutoff=cutoff)
+                return "" if state is None else state.content
+
+            def nest(node_id, seen, tree=tree):
+                seen.add(node_id)
+                return {"step": text(node_id), "then": [
+                    nest(child, seen) for child in tree.lines.children_at(node_id, cutoff)
+                    if child not in seen]}
+
+            lines = []
+            for line in tree.lines.list_lines():
+                nodes = tree.view.visible_node_ids(line.line_id, cutoff=cutoff)
+                roots = [n for n in nodes if not tree.lines.parents_at(n, cutoff)]
+                seen: set[str] = set()
+                lines.append({"line_id": line.line_id, "steps": len(nodes),
+                              "tree": [nest(r, seen) for r in roots]})
+            threads = []
+            for t in self.core.products.list_threads(scope):
+                open_steps = [m.content for mid in t.current_support_ids
+                              if not tree.lines.nodes_for_state(mid)
+                              and (m := self.core.canonical.get(mid)) is not None]
+                threads.append({
+                    "question": t.open_question, "status": t.status.value,
+                    "summary": t.working_summary,
+                    "after": None if t.anchor_node_id is None else text(t.anchor_node_id),
+                    "open_steps": open_steps,
+                })
+            out.append({"user_id": user_id, "lines": lines, "threads": threads,
+                        "relations_refused": [f for f in self.tree_failures]})
+        return out
+
     def _evidence_time(self, memory):
         """Newest message time the source actually gave for this Block, else None."""
         times = [ref.occurred_at for ref in memory.provenance.source_refs
@@ -279,7 +323,22 @@ class MemoryRuntime:
             self._vectors[text] = vector
         return vector
 
+    def tree_for(self, scope: Scope):
+        """LCE Thread + Path A trees of one Scope (path_a_engine="tree")."""
+        key = scope.user_id or ""
+        if key not in self._trees:
+            from mr_mem.lce.path_a import PathATree
+
+            self._trees[key] = PathATree(
+                Path(self.config.data_dir) / "lce_tree", scope,
+                canonical=self.core.canonical, products=self.core.products,
+                fingerprint=self.compiler.version, evidence_time=self._evidence_time,
+            )
+        return self._trees[key]
+
     def close(self) -> None:
+        for tree in self._trees.values():
+            tree.close()
         for session in self._lce.values():
             session.close()
         if self.index is not None:
@@ -358,8 +417,20 @@ class MemoryRuntime:
         return AddJob(
             request, messages,
             self.source.context_before(messages[0], self.config.context_messages),
-            self.known_lines(request["user_id"], messages),
+            (self.known_steps(request["user_id"], messages)
+             if self.config.path_a_engine == "tree"
+             else self.known_lines(request["user_id"], messages)),
         )
+
+    def known_steps(self, user_id: str, messages) -> dict:
+        """Owner thread: threads, committed steps and denials the tree compiler sees."""
+        known = self.tree_for(user_scope(user_id)).known(
+            batch_text="\n".join(m.content for m in messages)[:8000],
+            now=max(m.occurred_at for m in messages),
+            threads_policy=self.config.line_policy, steps_policy=self.config.step_policy,
+            embed=None if self.embedding is None else self._embed_cached,
+        )
+        return {**known.payload, "_refs": known.refs}  # refs are journaled, never prompted
 
     def known_lines(self, user_id: str, messages) -> tuple[dict, ...]:
         """Owner thread: the existing lines the compiler sees for this batch."""
@@ -411,9 +482,15 @@ class MemoryRuntime:
                 log.warning("compile rejected, kept raw only: %s: %s",
                             job.request["request_id"], str(exc)[:300])
                 self.compile_rejected += 1
-                return blocks_to_json(())
+                return self._journal(job, ())
             raise CompileFailed(str(exc)) from exc
-        return blocks_to_json(blocks)
+        return self._journal(job, blocks)
+
+    def _journal(self, job: AddJob, blocks) -> dict:
+        data = blocks_to_json(blocks, self.compiler.version)
+        if isinstance(job.known_lines, dict):  # tree: how the prompt's refs resolve
+            data["refs"] = dict(job.known_lines.get("_refs", {}))
+        return data
 
     def fail_add(self, job: AddJob, error: str) -> None:
         """Owner thread: record a failed compile so the request stays resumable."""
@@ -430,10 +507,12 @@ class MemoryRuntime:
             committed = self._admit(scope, rid, blocks)
             self._project()
             self._generation += 1
-            commit_failures = self._derive(
-                scope, request["user_id"], blocks, committed,
-                max(m.occurred_at for m in job.messages),
-            )
+            at = max(m.occurred_at for m in job.messages)
+            if self.config.path_a_engine == "tree":
+                commit_failures = self._grow(
+                    scope, blocks, committed, self.source.compiled(rid).get("refs", {}), at)
+            else:
+                commit_failures = self._derive(scope, request["user_id"], blocks, committed, at)
         except RetryableError as exc:
             self.source.set_error(rid, str(exc))
             raise
@@ -478,6 +557,22 @@ class MemoryRuntime:
             if not succeeded:
                 return
 
+    def _grow(self, scope, blocks, committed, refs: dict, at: datetime) -> int:
+        """Tree engine: compiler signals -> Threads and committed Path A steps."""
+        from mr_mem.lce.path_a import Attachment, BlockLines
+
+        result = self.tree_for(scope).apply(
+            [BlockLines(memory.memory_id, tuple(
+                Attachment(x.thread, x.after, x.committed, x.summary, x.done)
+                for x in block.lines))
+             for block, memory in zip(blocks, committed, strict=True)],
+            refs, at,
+        )
+        if result.failures:  # a refused relation never loses a Block; counted, logged
+            self.tree_failures.extend(result.failures)
+            log.warning("Path A relation(s) refused: %s", "; ".join(result.failures)[:500])
+        return 0
+
     def _derive(self, scope, user_id, blocks, committed, at: datetime) -> int:
         # ``at`` is message time: line activity must replay the same way
         result = apply_block_signals(
@@ -505,6 +600,8 @@ class MemoryRuntime:
 
     def flush(self) -> dict:
         """Rescan every user Scope and retry pending mature-Thread handoffs."""
+        if self.config.path_a_engine == "tree":  # commits happen inside Add; nothing pends
+            return {"status": "ok", "scopes": 0}
         scopes = {m.scope for m in self.core.load_all()}
         handled = 0
         for scope in scopes:
@@ -557,7 +654,8 @@ class MemoryRuntime:
         reader = PathAReader(
             canonical_path=self.canonical_path,
             retrieval=None if raw_search is not None else self._retrieval(),
-            lce=self.lce_for(scope) if selected == "path_a" else None,
+            lce=(self.lce_for(scope)
+                 if selected == "path_a" and self.config.path_a_engine == "flat" else None),
             policy=self.config.read_policy,
             render_source=self.source.render,
             embed=None if self.embedding is None else self._embed_cached,

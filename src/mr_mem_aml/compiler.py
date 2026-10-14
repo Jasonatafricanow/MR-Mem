@@ -26,7 +26,9 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v1"
 AssistantPolicy = Literal["attributed", "context_only"]
+Schema = Literal["flat", "tree"]
 
 
 class CompileError(RuntimeError):
@@ -171,11 +173,23 @@ class CommitOut:
 
 
 @dataclass(frozen=True, slots=True)
+class LineOut:
+    """Tree schema: this block's place in one matter (design v6 4.4-4.5)."""
+
+    thread: str  # the matter's short stable question
+    after: str | None  # "N<k>" known step, "T<k>" a thread's branch point, "b<k>" block k
+    committed: bool  # it happened and can no longer change at this message time
+    summary: str | None
+    done: bool = False  # nothing left in progress in this matter
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledBlock:
     content: str
     source_record_ids: tuple[str, ...]
     thread: ThreadSignalOut | None
     commit: CommitOut | None
+    lines: tuple[LineOut, ...] = ()
 
 
 INSTRUCTIONS = """You are the semantic compiler of a long-term memory system.
@@ -246,6 +260,52 @@ Return only JSON, no prose:
   "commit": {{"question": "...", "summary": "..."}} or null}}]}}
 """
 
+TREE_INSTRUCTIONS = INSTRUCTIONS[: INSTRUCTIONS.index("Line-of-thought signals")] + """\
+9. When one message holds something that already happened and something still
+   open ("we agreed to have dinner tomorrow": the agreement happened, the dinner
+   has not), make them two blocks.
+
+Matters (optional, per block, as "lines"): the user's life is made of matters
+(a trip, a purchase being weighed, a project, a problem). A matter grows step by
+step; steps that have happened are fixed, the step in progress can still change.
+LINES shows what is relevant now:
+- "threads": matters in progress, {{"ref": "T1", "question", "summary", "after":
+  the step it currently hangs from}}.
+- "steps": steps that already happened, {{"ref": "N1", "text", "time"}}.
+- "rejected": understandings the user denied; never produce them again from the
+  same evidence.
+For each block give "lines": a list with one entry per matter the block belongs
+to (empty when it belongs to none). One block may belong to several matters of
+different kinds (a dinner in Lisbon belongs to the trip and to food tastes).
+Each entry:
+  "thread": the matter's short stable question. To continue a thread in LINES,
+  copy its question exactly; otherwise write a new one.
+  "after": the step this block directly follows: a step ref ("N3"), a thread ref
+  ("T2") for its current branch point, "b<k>" for the k-th block of this output
+  (1-based), or null when nothing known comes before it. A new matter that grows
+  out of an earlier step (dinner plans after arriving in Lisbon) gives that step.
+  Parallel matters may follow the same step.
+  "committed": true when what the block states has actually happened and cannot
+  change any more at this message time (a booking made, a flight taken, an
+  arrival, a decision made with its reasons); false while it is still open (a
+  plan, an intention, an outcome not yet known). A plan's time passing is not
+  evidence that it happened.
+  "summary": the current state of the whole matter after this block: how it
+  started, the key steps so far and where it stands now; concise, with dates
+  in the format above.
+  "done": true when nothing in this matter is still in progress.
+- When the user later takes up a matter that had ended (wants the laptop again
+  after deciding not to buy it), that is a new thread whose "after" is the old
+  step; compare against the old reasons in the summary. Never rewrite the old
+  step.
+- Never invent outcomes or alternatives that were not stated.
+
+Return only JSON, no prose:
+{{"blocks": [{{"content": "...", "sources": ["m1"],
+  "lines": [{{"thread": "...", "after": "N1", "committed": true, "summary": "...",
+  "done": false}}]}}]}}
+"""
+
 ASSISTANT_RULES = {
     "attributed": (
         "Assistant messages may be compiled when they carry information the user "
@@ -290,12 +350,17 @@ class SemanticCompiler:
         *,
         assistant_policy: AssistantPolicy = "attributed",
         attempts: int = 3,
+        schema: Schema = "flat",
     ) -> None:
         if assistant_policy not in ASSISTANT_RULES:
             raise ValueError("assistant_policy must be 'attributed' or 'context_only'")
+        if schema not in ("flat", "tree"):
+            raise ValueError("schema must be 'flat' or 'tree'")
         self.backend = backend
         self.assistant_policy = assistant_policy
         self.attempts = attempts
+        self.schema = schema
+        self.version = TREE_PROMPT_VERSION if schema == "tree" else PROMPT_VERSION
 
     def prompt(
         self,
@@ -303,12 +368,17 @@ class SemanticCompiler:
         context: tuple[RawMessage, ...],
         known_lines: tuple,
     ) -> str:
-        material = {
+        if self.schema == "tree":  # {"threads": [...], "steps": [...], "rejected": [...]}
+            lines = dict(known_lines) if isinstance(known_lines, dict) else {}
+            head = {"LINES": {k: v for k, v in lines.items() if v and not k.startswith("_")}}
+        else:
             # str entries (older journals) or {"question", "state", "summary"}
-            "KNOWN_LINES": [
+            head = {"KNOWN_LINES": [
                 line if isinstance(line, (str, dict)) else line.__dict__
                 for line in known_lines
-            ],
+            ]}
+        material = {
+            **head,
             "CONTEXT": [
                 {"role": m.role, **_time(m), "text": m.content}
                 for m in context
@@ -318,7 +388,8 @@ class SemanticCompiler:
                 for i, m in enumerate(new)
             ],
         }
-        rules = INSTRUCTIONS.format(assistant_rule=ASSISTANT_RULES[self.assistant_policy])
+        template = TREE_INSTRUCTIONS if self.schema == "tree" else INSTRUCTIONS
+        rules = template.format(assistant_rule=ASSISTANT_RULES[self.assistant_policy])
         return rules + "\nINPUT:\n" + json.dumps(material, ensure_ascii=False, indent=1)
 
     def parse(self, raw: str, new: tuple[RawMessage, ...]) -> tuple[CompiledBlock, ...]:
@@ -343,8 +414,9 @@ class SemanticCompiler:
             out.append(CompiledBlock(
                 content=content,
                 source_record_ids=tuple(m.record_id for m in cited),
-                thread=_thread(item.get("thread")),
-                commit=_commit(item.get("commit"), cited),
+                thread=None if self.schema == "tree" else _thread(item.get("thread")),
+                commit=None if self.schema == "tree" else _commit(item.get("commit"), cited),
+                lines=_lines(item.get("lines")) if self.schema == "tree" else (),
             ))
         return tuple(out)
 
@@ -384,6 +456,25 @@ def _thread(value: object) -> ThreadSignalOut | None:
     return ThreadSignalOut(action, question.strip()[:2000], summary, value.get("mature") is True)
 
 
+def _lines(value: object) -> tuple[LineOut, ...]:
+    """Malformed entries are dropped; the block itself is kept."""
+    if not isinstance(value, list):
+        return ()
+    out: list[LineOut] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        thread, after = entry.get("thread"), entry.get("after")
+        if not isinstance(thread, str) or not thread.strip():
+            continue
+        after = after.strip() if isinstance(after, str) and after.strip() else None
+        summary = entry.get("summary")
+        summary = summary.strip()[:4000] if isinstance(summary, str) and summary.strip() else None
+        out.append(LineOut(thread.strip()[:2000], after, entry.get("committed") is True,
+                           summary, entry.get("done") is True))
+    return tuple(out)
+
+
 def _commit(value: object, cited: list[RawMessage]) -> CommitOut | None:
     if not isinstance(value, dict) or not any(m.role == "user" for m in cited):
         return None
@@ -393,9 +484,9 @@ def _commit(value: object, cited: list[RawMessage]) -> CommitOut | None:
     return CommitOut(question.strip()[:2000], summary.strip()[:4000])
 
 
-def blocks_to_json(blocks: tuple[CompiledBlock, ...]) -> dict:
+def blocks_to_json(blocks: tuple[CompiledBlock, ...], version: str = PROMPT_VERSION) -> dict:
     return {
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": version,
         "blocks": [
             {
                 "content": b.content,
@@ -407,6 +498,11 @@ def blocks_to_json(blocks: tuple[CompiledBlock, ...]) -> dict:
                 "commit": None if b.commit is None else {
                     "question": b.commit.question, "summary": b.commit.summary,
                 },
+                **({"lines": [
+                    {"thread": x.thread, "after": x.after, "committed": x.committed,
+                     "summary": x.summary, "done": x.done}
+                    for x in b.lines
+                ]} if b.lines else {}),
             }
             for b in blocks
         ],
@@ -420,6 +516,7 @@ def blocks_from_json(data: dict) -> tuple[CompiledBlock, ...]:
             source_record_ids=tuple(b["sources"]),
             thread=None if b["thread"] is None else ThreadSignalOut(**b["thread"]),
             commit=None if b["commit"] is None else CommitOut(**b["commit"]),
+            lines=tuple(LineOut(**x) for x in b.get("lines", ())),
         )
         for b in data["blocks"]
     )
