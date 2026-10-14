@@ -42,7 +42,7 @@ Embed = Callable[[str], Sequence[float]]
 class Attachment:
     """One compiler signal: this Block's place in one matter."""
 
-    thread: str
+    thread: str | None  # "T<k>" a known thread, "b<k>" the thread block k opened, None = new
     after: str | None
     committed: bool
     summary: str | None
@@ -67,6 +67,7 @@ class Known:
 class ApplyResult:
     committed_nodes: int = 0
     opened_threads: int = 0
+    opened: list[str] = field(default_factory=list)  # thread ids, in order
     done_threads: int = 0
     failures: list[str] = field(default_factory=list)
 
@@ -144,10 +145,11 @@ class PathATree:
         threads = {t.thread_id: t for t in self.open_threads()}
         thread_cards = []
         for t in threads.values():
+            # a thread has no name: what it is about lives in its summary (design v6 4.5)
             anchor = self._anchor_text(t, now)
             thread_cards.append(LineCard(
                 t.thread_id, t.working_summary, False, t.updated_at,
-                "\n".join(x for x in (t.open_question, t.working_summary or "", anchor) if x),
+                "\n".join(x for x in (t.working_summary or "", anchor) if x),
             ))
         chosen_threads = select_known_lines(
             thread_cards, batch_text=batch_text, now=now, embed=embed, **threads_policy,
@@ -183,9 +185,7 @@ class PathATree:
         for i, card in enumerate(chosen_threads, 1):
             t = threads[card.question]
             refs[f"T{i}"] = t.thread_id
-            entry = {"ref": f"T{i}", "question": t.open_question}
-            if t.working_summary:
-                entry["summary"] = t.working_summary
+            entry = {"ref": f"T{i}", "summary": t.working_summary or t.open_question}
             if t.anchor_node_id in step_ref:
                 entry["after"] = step_ref[t.anchor_node_id]
             payload_threads.append(entry)
@@ -216,14 +216,16 @@ class PathATree:
         """Commit happened steps onto their branch; keep open steps on their Thread."""
         result = ApplyResult()
         nodes_of_block: dict[int, list[str]] = {}
+        opened_by_block: dict[int, list[str]] = {}
         for index, block in enumerate(blocks, 1):
             memory = self.canonical.get(block.memory_id)
             if memory is None:
                 result.failures.append(f"block {block.memory_id} not in canonical Memory")
                 continue
-            for line in block.lines:
+            for k, line in enumerate(block.lines):
                 try:
-                    node = self._apply_one(line, memory, refs, nodes_of_block, at, result)
+                    node = self._apply_one(line, memory, refs, nodes_of_block, opened_by_block,
+                                           index, k, at, result)
                 except ValueError as exc:  # a rejected relation never loses the Block
                     result.failures.append(f"{block.memory_id}: {exc}")
                     continue
@@ -231,11 +233,17 @@ class PathATree:
                     nodes_of_block.setdefault(index, []).append(node)
         return result
 
-    def _thread_for(self, name: str, refs: dict[str, str]) -> MemoryThread | None:
-        if name in refs and name.startswith("T"):
-            thread = self.products.get_thread(refs[name])
-        else:
-            thread = next((t for t in self.open_threads() if t.open_question == name), None)
+    def _thread_for(
+        self, ref: str | None, refs: dict[str, str], opened_by_block: dict[int, list[str]]
+    ) -> MemoryThread | None:
+        """Identity is the code id behind a ref, never a name or wording."""
+        thread_id = None
+        if ref and ref.startswith("T"):
+            thread_id = refs.get(ref)
+        elif ref and ref.startswith("b") and ref[1:].isdigit():
+            opened = opened_by_block.get(int(ref[1:]), [])
+            thread_id = opened[0] if opened else None
+        thread = None if thread_id is None else self.products.get_thread(thread_id)
         return thread if thread is not None and thread.status is ThreadStatus.OPEN else None
 
     def _parent(
@@ -264,9 +272,10 @@ class PathATree:
 
     def _apply_one(
         self, line: Attachment, memory: CommittedMemory, refs: dict[str, str],
-        nodes_of_block: dict[int, list[str]], at: datetime, result: ApplyResult,
+        nodes_of_block: dict[int, list[str]], opened_by_block: dict[int, list[str]],
+        index: int, k: int, at: datetime, result: ApplyResult,
     ) -> str | None:
-        thread = self._thread_for(line.thread, refs)
+        thread = self._thread_for(line.thread, refs, opened_by_block)
         parent = self._parent(line.after, thread, refs, nodes_of_block, at)
         node_id = None
         anchor = thread.anchor_node_id if thread is not None else None
@@ -296,14 +305,16 @@ class PathATree:
         support = tuple(dict.fromkeys((*pending, memory.memory_id)))[-8:]
         when = at if thread is None else max(at, thread.updated_at)
         if thread is None:
-            thread_id = _thread_identity(self.scope, line.thread)
-            if self.products.get_thread(thread_id) is not None:  # an ended matter taken up again
-                thread_id = _thread_identity(self.scope, f"{line.thread}\n{at.isoformat()}")
+            # a new thread: its id comes from the Block that opened it, never from words
+            thread_id = _thread_identity(self.scope, f"{memory.memory_id}\n{k}")
+            label = (line.summary or memory.content)[:2048]  # display only, not identity
             thread = self.products.open_thread(
-                thread_id=thread_id, scope=self.scope, open_question=line.thread,
+                thread_id=thread_id, scope=self.scope, open_question=label,
                 supporting_memory_ids=support, at=at, working_summary=line.summary,
                 anchor_node_id=anchor,
             )
+            opened_by_block.setdefault(index, []).append(thread.thread_id)
+            result.opened.append(thread.thread_id)
             result.opened_threads += 1
         else:
             thread = self.products.update_thread(

@@ -26,7 +26,7 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
-TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v2"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v3"
 AssistantPolicy = Literal["attributed", "context_only"]
 Schema = Literal["flat", "tree"]
 
@@ -176,7 +176,7 @@ class CommitOut:
 class LineOut:
     """Tree schema: this block's place in one matter (design v6 4.4-4.5)."""
 
-    thread: str  # the matter's short stable question
+    thread: str | None  # "T<k>" known thread, "b<k>" thread opened by block k, None = new
     after: str | None  # "N<k>" known step, "T<k>" a thread's branch point, "b<k>" block k
     committed: bool  # it happened and can no longer change at this message time
     summary: str | None
@@ -269,8 +269,9 @@ Matters (optional, per block, as "lines"): the user's life is made of matters
 (a trip, a purchase being weighed, a project, a problem). A matter grows step by
 step; steps that have happened are fixed, the step in progress can still change.
 LINES shows what is relevant now:
-- "threads": matters in progress, {{"ref": "T1", "question", "summary", "after":
-  the step it currently hangs from}}.
+- "threads": matters in progress, {{"ref": "T1", "summary", "after": the step it
+  currently hangs from}}. A thread has no name; its summary says what it is
+  about now.
 - "steps": steps that already happened, {{"ref": "N1", "text", "time"}}.
 - "rejected": understandings the user denied; never produce them again from the
   same evidence.
@@ -278,10 +279,12 @@ For each block give "lines": a list with one entry per matter the block belongs
 to (empty when it belongs to none). One block may belong to several matters of
 different kinds (a dinner in Lisbon belongs to the trip and to food tastes).
 Each entry:
-  "thread": the matter's short stable question. To continue a thread in LINES,
-  copy its question exactly; otherwise write a new one. Keep a thread's question
-  unchanged when later details become known (the project gets a name, a date is
-  added); the summary carries the new details.
+  "thread": which matter: a thread ref from LINES ("T2") to continue it, "b<k>"
+  to continue the matter that block k of this output started, or null to start
+  a new matter. Continue a thread only when it is really the same matter, not
+  merely similar words (two different plans are two matters). A matter that
+  changed course (new deadline, narrower scope, a different destination) is
+  still the same matter: continue it.
   "after": the step this block directly follows: a step ref ("N3"), a thread ref
   ("T2") for its current branch point, "b<k>" for the k-th block of this output
   (1-based), or null when nothing known comes before it. A new matter that grows
@@ -292,9 +295,11 @@ Each entry:
   arrival, a decision made with its reasons); false while it is still open (a
   plan, an intention, an outcome not yet known). A plan's time passing is not
   evidence that it happened.
-  "summary": the current state of the whole matter after this block: how it
-  started, the key steps so far and where it stands now; concise, with dates
-  in the format above.
+  "summary": the current state of the whole matter after this block: what it is
+  about now, how it started, the key steps so far and where it stands; concise,
+  with dates in the format above. The summary is how this matter is found later,
+  so it follows the matter as it changes (a superseded plan is described as
+  superseded, not as current).
   "done": true when this thread is frozen at this message time: what it was about
   has happened or been settled and nothing in it is still open. The rule is the
   same at every level: a finished sub-task is a finished branch, so mark it done;
@@ -307,7 +312,7 @@ Each entry:
 
 Return only JSON, no prose:
 {{"blocks": [{{"content": "...", "sources": ["m1"],
-  "lines": [{{"thread": "...", "after": "N1", "committed": true, "summary": "...",
+  "lines": [{{"thread": "T1", "after": "N1", "committed": true, "summary": "...",
   "done": false}}]}}]}}
 """
 
@@ -470,12 +475,13 @@ def _lines(value: object) -> tuple[LineOut, ...]:
         if not isinstance(entry, dict):
             continue
         thread, after = entry.get("thread"), entry.get("after")
-        if not isinstance(thread, str) or not thread.strip():
-            continue
+        thread = thread.strip() if isinstance(thread, str) and thread.strip() else None
+        if thread is not None and thread.lower() in ("null", "none", "new"):
+            thread = None
         after = after.strip() if isinstance(after, str) and after.strip() else None
         summary = entry.get("summary")
         summary = summary.strip()[:4000] if isinstance(summary, str) and summary.strip() else None
-        out.append(LineOut(thread.strip()[:2000], after, entry.get("committed") is True,
+        out.append(LineOut(thread, after, entry.get("committed") is True,
                            summary, entry.get("done") is True))
     return tuple(out)
 

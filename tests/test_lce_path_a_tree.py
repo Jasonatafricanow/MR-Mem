@@ -1,4 +1,9 @@
-"""LCE Thread + Path A tree driven by compiler signals (design v6 4.4-4.5)."""
+"""LCE Thread + Path A tree driven by compiler signals (design v6 4.4-4.5).
+
+A thread has no name: its identity is a code id the compiler reaches through a
+ref ("T1", or "b<k>" for a thread opened earlier in the same batch); what it is
+about lives in its summary, which follows the matter as it changes.
+"""
 
 from datetime import UTC, datetime, timedelta
 
@@ -10,8 +15,8 @@ from mr_mem.memory.product import ThreadStatus
 from tests.test_native_semantics import SCOPE
 
 T0 = datetime(2026, 5, 1, 8, tzinfo=UTC)
-TRIP = "Trip to Portugal"
-DINNER = "Dinner with Ana in Lisbon"
+POLICY = {"threads_policy": {"recent": 9, "cued": 9, "due": 9},
+          "steps_policy": {"recent": 20, "cued": 20}}
 
 
 class Host:
@@ -33,7 +38,7 @@ class Env:
         self.host = Host()
         self.tree = PathATree(tmp_path / "lce", SCOPE, canonical=self.core.canonical,
                               products=self.core.products, fingerprint="test")
-        self.hour = 0
+        self.known = None
 
     def block(self, content, hours):
         ref = SourceRef("host", "s1", f"r{hours}-{len(self.host.refs)}",
@@ -46,14 +51,24 @@ class Env:
             compiler_version="test",
         ))
 
-    def step(self, hours, *items, refs=None):
+    def look(self, hours, text=""):
+        """What the compiler would see before a batch at ``hours``."""
+        self.known = self.tree.known(batch_text=text, now=T0 + timedelta(hours=hours), **POLICY)
+        return self.known
+
+    def ref(self, thread_id=None, node_id=None):
+        target = thread_id or node_id
+        return next(r for r, v in self.known.refs.items() if v == target)
+
+    def step(self, hours, *items):
         """items: (content, [Attachment, ...]) compiled in one batch at ``hours``."""
         blocks = [BlockLines(self.block(c, hours).memory_id, tuple(lines)) for c, lines in items]
-        return self.tree.apply(blocks, refs or {}, T0 + timedelta(hours=hours))
+        refs = self.known.refs if self.known else {}
+        self.known = None
+        return self.tree.apply(blocks, refs, T0 + timedelta(hours=hours))
 
-    def thread(self, question):
-        threads = self.core.products.list_threads(SCOPE)
-        return next(t for t in threads if t.open_question == question)
+    def thread(self, thread_id):
+        return self.core.products.get_thread(thread_id)
 
     def close(self):
         self.tree.close()
@@ -67,100 +82,108 @@ def env(tmp_path):
     value.close()
 
 
-def A(thread, after=None, committed=True, summary=None, done=False):  # noqa: N802
-    return Attachment(thread, after, committed, summary or thread, done)
+def A(thread=None, after=None, committed=True, summary="s", done=False):  # noqa: N802
+    return Attachment(thread, after, committed, summary, done)
 
 
 def test_portugal_trip_grows_a_tree_with_parallel_branches(env):
     # an intention: nothing has happened yet, so no tree, only a Thread
-    env.step(0, ("The user wants to go to Portugal.", [A(TRIP, committed=False)]))
-    trip = env.thread(TRIP)
-    assert trip.anchor_node_id is None and env.tree.lines.list_lines() == ()
+    trip = env.step(0, ("The user wants to go to Portugal.",
+                        [A(committed=False, summary="Wants to go to Portugal")])).opened[0]
+    assert env.thread(trip).anchor_node_id is None and env.tree.lines.list_lines() == ()
     # booked: the first committed step roots a Line; the Thread hangs from it
-    env.step(1, ("The user booked a flight to Lisbon.", [A(TRIP)]))
-    booked = env.thread(TRIP).anchor_node_id
+    env.look(1)
+    env.step(1, ("The user booked a flight to Lisbon.", [A(env.ref(trip))]))
+    booked = env.thread(trip).anchor_node_id
     assert booked is not None and len(env.tree.lines.list_lines()) == 1
     # traffic happened (committed), missing the flight is still open (uncommitted)
-    env.step(5, ("The user is stuck in traffic on the way to the airport.", [A(TRIP)]),
-             ("The user may miss the flight.", [A(TRIP, after="b1", committed=False)]))
-    traffic = env.thread(TRIP).anchor_node_id
+    env.look(5)
+    t = env.ref(trip)
+    env.step(5, ("The user is stuck in traffic on the way to the airport.", [A(t)]),
+             ("The user may miss the flight.", [A(t, after="b1", committed=False)]))
+    traffic = env.thread(trip).anchor_node_id
     assert env.tree.lines.parents_at(traffic, T0 + timedelta(hours=6)) == (booked,)
-    assert len(env.thread(TRIP).current_support_ids) == 1  # the open step waits on the Thread
-    env.step(6, ("The user made the flight; it took off.", [A(TRIP)]))
-    env.step(9, ("The user arrived in Lisbon.", [A(TRIP)]))
-    arrived = env.thread(TRIP).anchor_node_id
+    assert len(env.thread(trip).current_support_ids) == 1  # the open step waits on the Thread
+    env.look(6)
+    env.step(6, ("The user made the flight; it took off.", [A(env.ref(trip))]))
+    env.look(9)
+    env.step(9, ("The user arrived in Lisbon.", [A(env.ref(trip))]))
+    arrived = env.thread(trip).anchor_node_id
     # "agreed to have dinner tomorrow": the agreement happened; the dinner has not
-    known = env.tree.known(batch_text="dinner with Ana", now=T0 + timedelta(hours=10),
-                           threads_policy={"recent": 5, "cued": 5, "due": 5},
-                           steps_policy={"recent": 5, "cued": 5})
-    n_arrived = next(ref for ref, node in known.refs.items() if node == arrived)
-    env.step(10, ("Ana and the user agreed to have dinner tomorrow.",
-                  [A(DINNER, after=n_arrived)]),
-             ("The user and Ana will have dinner tomorrow evening.",
-              [A(DINNER, after="b1", committed=False)]),
-             ("The user went shopping on Rua Augusta.", [A("Shopping in Lisbon", after=n_arrived)]),
-             refs=known.refs)
-    agreed = env.thread(DINNER).anchor_node_id
-    shopping = env.thread("Shopping in Lisbon").anchor_node_id
+    env.look(10, "dinner with Ana")
+    at_arrival = env.ref(node_id=arrived)
+    result = env.step(
+        10,
+        ("Ana and the user agreed to have dinner tomorrow.", [A(after=at_arrival)]),
+        ("The user and Ana will have dinner tomorrow evening.",
+         [A("b1", after="b1", committed=False)]),  # same new thread, opened by block 1
+        ("The user went shopping on Rua Augusta.", [A(after=at_arrival)]),
+    )
+    dinner, shopping_thread = result.opened
+    agreed = env.thread(dinner).anchor_node_id  # the open dinner hangs from "agreed"
+    shopping = env.thread(shopping_thread).anchor_node_id
     now = T0 + timedelta(hours=12)
     # dinner and shopping are parallel branches under "arrived", unrelated to each other
     assert set(env.tree.lines.children_at(arrived, now)) == {agreed, shopping}
-    assert env.tree.view.ancestors(agreed, cutoff=now)[0] == arrived  # background, by index
+    assert env.tree.view.ancestors(shopping, cutoff=now)[0] == arrived  # background, by index
+    env.look(30)
     env.step(30, ("The user and Ana had dinner; the food was great.",
-                  [A(DINNER, done=True)]))
-    dinner = env.core.products.get_thread(env.thread(TRIP).thread_id)
-    assert dinner.status is ThreadStatus.OPEN  # the trip goes on
-    assert not [t for t in env.core.products.list_threads(SCOPE, status=ThreadStatus.OPEN)
-                if t.open_question == DINNER]
-    frontier = set(env.tree.view.frontier(env.tree.lines.list_lines()[0].line_id,
-                                          cutoff=T0 + timedelta(hours=31)))
-    assert shopping in frontier and len(frontier) == 2
+                  [A(env.ref(dinner), done=True)]))
+    assert env.thread(dinner).status is ThreadStatus.RESOLVED
+    assert env.thread(trip).status is ThreadStatus.OPEN  # the trip goes on
+
+
+def test_thread_identity_is_a_code_id_and_its_summary_follows_the_matter(env):
+    """Portugal became Spain and North Africa: same thread, the summary moved with it."""
+    trip = env.step(0, ("The user plans a trip to Portugal.",
+                        [A(committed=False, summary="Trip: Portugal planned")])).opened[0]
+    env.look(5)
+    env.step(5, ("The user decided to go on to Spain and Morocco as well.",
+                 [A(env.ref(trip), summary="Trip: Portugal, then Spain and Morocco")]))
+    assert env.thread(trip).working_summary == "Trip: Portugal, then Spain and Morocco"
+    known = env.look(6, "Morocco")
+    assert known.payload["threads"] == [
+        {"ref": "T1", "summary": "Trip: Portugal, then Spain and Morocco", "after": "N1"}]
+    # a null thread is a new matter even with similar words
+    result = env.step(6, ("The user plans a trip to Portugal next year with family.",
+                          [A(committed=False, summary="Trip: Portugal with family")]))
+    assert result.opened and result.opened[0] != trip
 
 
 def test_one_block_meets_two_trees_of_different_kinds(env):
-    env.step(0, ("The user arrived in Lisbon.", [A(TRIP)]))
-    env.step(1, ("The user likes trying local food.", [A("Food tastes")]))
-    known = env.tree.known(batch_text="bacalhau Lisbon local food", now=T0 + timedelta(hours=2),
-                           threads_policy={"recent": 5, "cued": 5, "due": 5},
-                           steps_policy={"recent": 5, "cued": 5})
+    trip = env.step(0, ("The user arrived in Lisbon.", [A()])).opened[0]
+    env.look(1)
+    food = env.step(1, ("The user likes trying local food.", [A()])).opened[0]
+    env.look(2, "bacalhau Lisbon local food")
     result = env.step(2, ("The user ate bacalhau at a local tasca in Lisbon.",
-                          [A(TRIP, after="T1" if known.refs["T1"] == env.thread(TRIP).thread_id
-                             else "T2"),
-                           A("Food tastes")]), refs=known.refs)
+                          [A(env.ref(trip)), A(env.ref(food))]))
     assert result.committed_nodes == 2 and not result.failures
-    lines = env.tree.lines.list_lines()
-    assert len(lines) == 2
-    meal = env.thread(TRIP).anchor_node_id
+    assert len(env.tree.lines.list_lines()) == 2
+    meal = env.thread(trip).anchor_node_id
     block_id = env.tree.lines.get_node(meal).block_id
     assert len(env.tree.lines.lines_for_block(block_id)) == 2  # the trees meet here
 
 
 def test_taking_up_an_ended_matter_opens_a_new_thread_anchored_on_the_old_step(env):
-    env.step(0, ("The user decided not to buy the laptop: no budget.",
-                 [A("Buy the laptop?", done=True)]))
-    decided = env.tree.lines.nodes_for_line(env.tree.lines.list_lines()[0].line_id)[0].node_id
-    known = env.tree.known(batch_text="laptop again", now=T0 + timedelta(days=30),
-                           threads_policy={"recent": 5, "cued": 5, "due": 5},
-                           steps_policy={"recent": 5, "cued": 5})
-    old = next(ref for ref, node in known.refs.items() if node == decided)
-    env.step(24 * 30, ("The user wants the laptop again after a raise.",
-                       [A("Buy the laptop?", after=old, committed=False)]), refs=known.refs)
-    again = env.thread("Buy the laptop?")
-    assert again.anchor_node_id == decided  # index to the old step, which is unchanged
-    assert len(env.tree.lines.nodes_for_line(env.tree.lines.list_lines()[0].line_id)) == 1
+    old = env.step(0, ("The user decided not to buy the laptop: no budget.",
+                       [A(done=True)])).opened[0]
+    decided = env.thread(old).anchor_node_id
+    env.look(24 * 30, "laptop again")
+    result = env.step(24 * 30, ("The user wants the laptop again after a raise.",
+                                [A(after=env.ref(node_id=decided), committed=False)]))
+    again = env.thread(result.opened[0])
+    assert again.thread_id != old and again.anchor_node_id == decided  # index to the old step
+    assert env.thread(old).status is ThreadStatus.RESOLVED  # the old step is unchanged
 
 
 def test_known_shows_threads_steps_and_rejections_with_refs(env):
-    env.step(0, ("The user arrived in Lisbon.", [A(TRIP)]))
+    trip = env.step(0, ("The user arrived in Lisbon.", [A(summary="Trip to Lisbon")])).opened[0]
     line_id = env.tree.lines.list_lines()[0].line_id
     env.tree.rejections.reject(region_id=line_id, content="The user dislikes Lisbon.",
                                source_refs=("x",), authority_ref="user",
                                rejected_at=T0 + timedelta(hours=1))
-    known = env.tree.known(batch_text="Lisbon", now=T0 + timedelta(hours=2),
-                           threads_policy={"recent": 5, "cued": 5, "due": 5},
-                           steps_policy={"recent": 5, "cued": 5})
-    assert known.payload["threads"][0]["question"] == TRIP
-    assert known.payload["threads"][0]["after"] == "N1"
+    known = env.look(2, "Lisbon")
+    assert known.payload["threads"] == [{"ref": "T1", "summary": "Trip to Lisbon", "after": "N1"}]
     assert known.payload["steps"][0]["text"] == "The user arrived in Lisbon."
     assert known.payload["rejected"] == ["The user dislikes Lisbon."]
-    assert known.refs["T1"] == env.thread(TRIP).thread_id
+    assert known.refs["T1"] == trip
