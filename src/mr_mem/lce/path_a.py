@@ -1,18 +1,23 @@
-"""LCE Thread + Path A over one Scope: compiler signals -> branches and committed steps.
+"""LCE over one Scope: compiler signals -> Lines whose SemanticBlocks carry a tense.
 
 Design v6 4.4-4.5 (docs/LCE_PORT.md):
 
-- A Thread is uncommitted work in progress: a matter the user is living
-  through, with its open steps and an index (``anchor_node_id``) to the
-  committed step it grows from. It is MR-Mem's existing ``MemoryThread``.
-- Path A is what has been committed: Line trees of SemanticBlocks
-  (``line_graph``). There is no main line: every branch is its own direction,
-  branches never merge back, and trees of different kinds meet where they
-  share a Block.
-- Path A is explicit work. Retrieval puts the relevant threads and steps in
-  front of the compiler (``known``); the compiler decides which matter a Block
-  belongs to, which step it follows and whether it has happened. Nothing here
-  decides attachment by similarity (that is Path B).
+- A Line is a git-like tree of SemanticBlocks that belong together by meaning
+  and logic. A Block that connects to nothing stays alone; nothing is forced
+  onto a line. There is no main line, and lines never end: any step can grow
+  further branches, and trees of different kinds meet where they share a Block.
+- Every Block on a line is on it from the moment it is said. Thread and Path A
+  are not containers: they are the two sides of a terminator that moves with
+  time. Past side (Path A): it happened, or its stated time has passed (what is
+  frozen then is "this was the plan", whether or not it was carried out), or a
+  later message settled it. Day side (Thread): still going on, can still
+  change. The side is computed from the current message time, never moved.
+- A matter has no name: its identity is a code id (``MemoryThread``), its
+  meaning lives in its summary, which follows the matter as it changes, and it
+  points (``anchor_node_id``) at its latest step.
+- This is explicit work. Retrieval puts the relevant matters and steps in front
+  of the compiler (``known``); the compiler decides what a Block connects to and
+  in which tense it was said. Nothing here decides by similarity (Path B).
 
 Every write uses the message time of the batch, so replay is deterministic.
 """
@@ -20,9 +25,10 @@ Every write uses the message time of the batch, so replay is deterministic.
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mr_mem.contracts import Scope
@@ -36,23 +42,25 @@ from mr_mem.memory.threading import _thread_identity
 
 EvidenceTime = Callable[[CommittedMemory], "datetime | None"]
 Embed = Callable[[str], Sequence[float]]
+PAST, DAY = "happened", "in progress"
 
 
 @dataclass(frozen=True, slots=True)
 class Attachment:
     """One compiler signal: this Block's place in one matter."""
 
-    thread: str | None  # "T<k>" a known thread, "b<k>" the thread block k opened, None = new
-    after: str | None
-    committed: bool
+    thread: str | None  # "T<k>" a known matter, "b<k>" the matter block k started, None = new
+    after: str | None  # the step it builds on: "N<k>", "T<k>", "b<k>" or None
+    happened: bool  # already happened when said (else: still going on)
     summary: str | None
-    done: bool = False  # ignored: lines never end (design v6 4.4); kept for old journals
+    due: datetime | None = None  # stated time of something not yet happened
 
 
 @dataclass(frozen=True, slots=True)
 class BlockLines:
     memory_id: str
     lines: tuple[Attachment, ...]
+    settles: tuple[str, ...] = ()  # step refs this Block shows are now settled
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,9 +73,9 @@ class Known:
 
 @dataclass
 class ApplyResult:
-    committed_nodes: int = 0
-    opened_threads: int = 0
-    opened: list[str] = field(default_factory=list)  # thread ids, in order
+    attached: int = 0
+    settled: int = 0
+    opened: list[str] = field(default_factory=list)  # new matter (thread) ids, in order
     failures: list[str] = field(default_factory=list)
 
 
@@ -75,8 +83,81 @@ def scope_root(root: Path | str, scope: Scope) -> Path:
     return Path(root) / hashlib.sha256(scope_json(scope).encode("utf-8")).hexdigest()
 
 
+def parse_due(value: object) -> datetime | None:
+    """"YYYY-MM-DD" or "YYYY-MM-DD HH:MM" (read as UTC, like message times)."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(text[:16] if fmt.endswith("%M") else text[:10], fmt)
+        except ValueError:
+            continue
+        if fmt == "%Y-%m-%d":  # a whole day passes at its end
+            parsed = parsed.replace(hour=23, minute=59)
+        return parsed.replace(tzinfo=UTC)
+    return None
+
+
+class TenseStore:
+    """How each Block was said (happened or not, stated time) and when it was settled."""
+
+    def __init__(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(str(path), check_same_thread=False)
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS said (
+                memory_id TEXT PRIMARY KEY, happened INTEGER NOT NULL, due TEXT,
+                known_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS settled (
+                memory_id TEXT NOT NULL, settled_at TEXT NOT NULL, by_memory_id TEXT NOT NULL,
+                PRIMARY KEY (memory_id, settled_at, by_memory_id));
+            """
+        )
+        self.conn.commit()
+
+    def close(self) -> None:
+        self.conn.close()
+
+    def record(self, memory_id: str, *, happened: bool, due: datetime | None,
+               known_at: datetime) -> None:
+        """First statement wins: how it was said does not change later."""
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO said VALUES (?, ?, ?, ?)",
+                (memory_id, int(happened), None if due is None else due.isoformat(),
+                 known_at.isoformat()),
+            )
+
+    def settle(self, memory_id: str, *, at: datetime, by: str) -> None:
+        with self.conn:
+            self.conn.execute("INSERT OR IGNORE INTO settled VALUES (?, ?, ?)",
+                              (memory_id, at.isoformat(), by))
+
+    def side(self, memory_id: str, now: datetime) -> str | None:
+        """Which side of the terminator at ``now``; None when not on any line."""
+        row = self.conn.execute(
+            "SELECT happened, due FROM said WHERE memory_id = ?", (memory_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        if row[0] or (row[1] is not None and datetime.fromisoformat(row[1]) <= now):
+            return PAST
+        settled = self.conn.execute(
+            "SELECT 1 FROM settled WHERE memory_id = ? AND settled_at <= ? LIMIT 1",
+            (memory_id, now.isoformat()),
+        ).fetchone()
+        return PAST if settled else DAY
+
+    def due(self, memory_id: str) -> datetime | None:
+        row = self.conn.execute("SELECT due FROM said WHERE memory_id = ?",
+                                (memory_id,)).fetchone()
+        return None if row is None or row[0] is None else datetime.fromisoformat(row[0])
+
+
 class PathATree:
-    """Thread + Path A for one Scope. Not thread-safe: the runtime owner thread uses it."""
+    """LCE Lines of one Scope. Not thread-safe: the runtime owner thread uses it."""
 
     def __init__(
         self,
@@ -94,15 +175,17 @@ class PathATree:
         base = scope_root(root, scope)
         self.lines = LineGraphStore(base / "lines.sqlite")
         self.lines.set_derivation_fingerprint(fingerprint)
+        self.tense = TenseStore(base / "tense.sqlite")
         self.rejections = RejectionStore(base / "rejections.sqlite")
         self.view = LineGraphView(store=self.lines, read_state=self._state)
         self.evidence_time = evidence_time or (lambda memory: memory.occurred_at)
 
     def close(self) -> None:
         self.lines.close()
+        self.tense.close()
         self.rejections.close()
 
-    # -- canonical reads ---------------------------------------------------
+    # -- reads -------------------------------------------------------------
 
     def _state(self, state_id: str) -> StateView | None:
         memory = self.canonical.get(state_id)
@@ -114,11 +197,11 @@ class PathATree:
             memory.lifecycle is MemoryLifecycle.ACTIVE,
         )
 
-    def open_threads(self) -> tuple[MemoryThread, ...]:
+    def matters(self) -> tuple[MemoryThread, ...]:
         return self.products.list_threads(self.scope, status=ThreadStatus.OPEN)
 
-    def committed_nodes(self, cutoff: datetime) -> list[tuple[str, str, StateView]]:
-        """(line_id, node_id, state) for every visible committed step."""
+    def nodes(self, cutoff: datetime) -> list[tuple[str, str, StateView]]:
+        """(line_id, node_id, state) for every visible step."""
         out = []
         for line in self.lines.list_lines():
             for node_id in self.view.visible_node_ids(line.line_id, cutoff=cutoff):
@@ -126,6 +209,9 @@ class PathATree:
                 if state is not None:
                     out.append((line.line_id, node_id, state))
         return out
+
+    def side(self, node_id: str, now: datetime) -> str | None:
+        return self.tense.side(self.lines.get_node(node_id).block_id, now)
 
     # -- compile input -----------------------------------------------------
 
@@ -139,70 +225,68 @@ class PathATree:
         embed: Embed | None = None,
         snippet: int = 400,
     ) -> Known:
-        """Threads and committed steps relevant to this batch, with refs for the compiler."""
+        """Matters and steps relevant to this batch, with refs for the compiler.
+
+        Steps still on the day side are shown first (they are what can still
+        change), then recent and content-cued steps, then every chosen matter's
+        latest step, so "after" can name it.
+        """
         refs: dict[str, str] = {}
-        threads = {t.thread_id: t for t in self.open_threads()}
-        thread_cards = []
-        for t in threads.values():
-            # a thread has no name: what it is about lives in its summary (design v6 4.5)
-            anchor = self._anchor_text(t, now)
-            thread_cards.append(LineCard(
-                t.thread_id, t.working_summary, False, t.updated_at,
-                "\n".join(x for x in (t.working_summary or "", anchor) if x),
-            ))
-        chosen_threads = select_known_lines(
-            thread_cards, batch_text=batch_text, now=now, embed=embed, **threads_policy,
-        ).lines
-        steps = self.committed_nodes(now)
-        step_cards = [
-            LineCard(node_id, None, True, state.occurred_at, state.content)
-            for _, node_id, state in steps
+        matters = {t.thread_id: t for t in self.matters()}
+        cards = [
+            LineCard(t.thread_id, t.working_summary, False, t.updated_at,
+                     "\n".join(x for x in (t.working_summary or "", self._text(t, now)) if x))
+            for t in matters.values()
         ]
-        chosen_steps = [c.question for c in select_known_lines(
-            step_cards, batch_text=batch_text, now=now, embed=embed, due=0, **steps_policy,
+        chosen = select_known_lines(cards, batch_text=batch_text, now=now, embed=embed,
+                                    **threads_policy).lines
+        nodes = self.nodes(now)
+        state_of = {node_id: state for _, node_id, state in nodes}
+        line_of = {node_id: line_id for line_id, node_id, _ in nodes}
+        day = sorted((n for _, n, _ in nodes if self.side(n, now) == DAY),
+                     key=lambda n: state_of[n].occurred_at)[-steps_policy.get("recent", 10):]
+        picked = [c.question for c in select_known_lines(
+            [LineCard(n, None, True, s.occurred_at, s.content) for _, n, s in nodes],
+            batch_text=batch_text, now=now, embed=embed, due=0, **steps_policy,
         ).lines]
-        # every chosen thread's branch point is shown, so "after" can name it
-        for card in chosen_threads:
-            anchor = threads[card.question].anchor_node_id
-            if anchor and anchor not in chosen_steps and any(n == anchor for _, n, _ in steps):
-                chosen_steps.append(anchor)
-        state_of = {node_id: state for _, node_id, state in steps}
-        line_of = {node_id: line_id for line_id, node_id, _ in steps}
-        step_ref = {}
+        anchors = [matters[c.question].anchor_node_id for c in chosen]
+        steps = list(dict.fromkeys(
+            n for n in (*day, *picked, *anchors) if n is not None and n in state_of))
+        step_ref: dict[str, str] = {}
         payload_steps = []
-        for node_id in sorted(chosen_steps, key=lambda n: (state_of[n].occurred_at, n)):
+        for node_id in sorted(steps, key=lambda n: (state_of[n].occurred_at, n)):
             ref = f"N{len(step_ref) + 1}"
             step_ref[node_id], refs[ref] = ref, node_id
             state = state_of[node_id]
             memory = self.canonical.get(state.state_id)
-            known_time = None if memory is None else self.evidence_time(memory)
+            said = None if memory is None else self.evidence_time(memory)
+            due = self.tense.due(self.lines.get_node(node_id).block_id)
             payload_steps.append({
-                "ref": ref, "text": state.content[:snippet],
-                **({"time": known_time.strftime("%Y-%m-%d %H:%M")} if known_time else {}),
+                "ref": ref, "text": state.content[:snippet], "state": self.side(node_id, now),
+                **({"time": said.strftime("%Y-%m-%d %H:%M")} if said else {}),
+                **({"due": due.strftime("%Y-%m-%d %H:%M")} if due else {}),
             })
         payload_threads = []
-        for i, card in enumerate(chosen_threads, 1):
-            t = threads[card.question]
+        for i, card in enumerate(chosen, 1):
+            t = matters[card.question]
             refs[f"T{i}"] = t.thread_id
             entry = {"ref": f"T{i}", "summary": t.working_summary or t.open_question}
             if t.anchor_node_id in step_ref:
-                entry["after"] = step_ref[t.anchor_node_id]
+                entry["latest"] = step_ref[t.anchor_node_id]
             payload_threads.append(entry)
         rejected = self.rejections.relevant(
-            region_ids=tuple({line_of[n] for n in chosen_steps if n in line_of}
-                             | {t.thread_id for t in threads.values()}),
-        )
+            region_ids=tuple({line_of[n] for n in steps if n in line_of} | set(matters)))
         return Known(
             {"threads": payload_threads, "steps": payload_steps,
              "rejected": [r.rejected_content for r in rejected]},
             refs,
         )
 
-    def _anchor_text(self, thread: MemoryThread, now: datetime) -> str:
-        if thread.anchor_node_id is None:
+    def _text(self, matter: MemoryThread, now: datetime) -> str:
+        if matter.anchor_node_id is None:
             return ""
         try:
-            state = self.view.state_for_node_at_cutoff(thread.anchor_node_id, cutoff=now)
+            state = self.view.state_for_node_at_cutoff(matter.anchor_node_id, cutoff=now)
         except KeyError:
             return ""
         return "" if state is None else state.content
@@ -212,7 +296,7 @@ class PathATree:
     def apply(
         self, blocks: Sequence[BlockLines], refs: dict[str, str], at: datetime
     ) -> ApplyResult:
-        """Commit happened steps onto their branch; keep open steps on their Thread."""
+        """Put each Block on the lines it connects to, in the tense it was said."""
         result = ApplyResult()
         nodes_of_block: dict[int, list[str]] = {}
         opened_by_block: dict[int, list[str]] = {}
@@ -221,18 +305,28 @@ class PathATree:
             if memory is None:
                 result.failures.append(f"block {block.memory_id} not in canonical Memory")
                 continue
+            for ref in block.settles:  # an earlier open step is settled by this Block
+                node_id = refs.get(ref) if ref.startswith("N") else None
+                try:
+                    target = self.lines.get_node(node_id).block_id if node_id else None
+                except KeyError:
+                    target = None
+                if target is None:
+                    result.failures.append(f"{block.memory_id}: cannot settle {ref}")
+                    continue
+                self.tense.settle(target, at=at, by=memory.memory_id)
+                result.settled += 1
             for k, line in enumerate(block.lines):
                 try:
-                    node = self._apply_one(line, memory, refs, nodes_of_block, opened_by_block,
-                                           index, k, at, result)
-                except ValueError as exc:  # a rejected relation never loses the Block
+                    node = self._attach(line, memory, refs, nodes_of_block, opened_by_block,
+                                        index, k, at, result)
+                except ValueError as exc:  # a refused relation never loses the Block
                     result.failures.append(f"{block.memory_id}: {exc}")
                     continue
-                if node is not None:
-                    nodes_of_block.setdefault(index, []).append(node)
+                nodes_of_block.setdefault(index, []).append(node)
         return result
 
-    def _thread_for(
+    def _matter(
         self, ref: str | None, refs: dict[str, str], opened_by_block: dict[int, list[str]]
     ) -> MemoryThread | None:
         """Identity is the code id behind a ref, never a name or wording."""
@@ -246,8 +340,8 @@ class PathATree:
         return thread if thread is not None and thread.status is ThreadStatus.OPEN else None
 
     def _parent(
-        self, after: str | None, thread: MemoryThread | None, refs: dict[str, str],
-        nodes_of_block: dict[int, list[str]], at: datetime,
+        self, after: str | None, matter: MemoryThread | None, refs: dict[str, str],
+        nodes_of_block: dict[int, list[str]],
     ) -> str | None:
         node_id = None
         if after and after.startswith("N"):
@@ -258,10 +352,8 @@ class PathATree:
         elif after and after.startswith("b") and after[1:].isdigit():
             created = nodes_of_block.get(int(after[1:]), [])
             node_id = created[0] if created else None
-            if node_id is None and thread is not None:
-                node_id = thread.anchor_node_id
-        if node_id is None and after is None and thread is not None:
-            node_id = thread.anchor_node_id
+        if node_id is None and after is None and matter is not None:
+            node_id = matter.anchor_node_id
         if node_id is not None:
             try:
                 self.lines.get_node(node_id)
@@ -269,55 +361,40 @@ class PathATree:
                 return None
         return node_id
 
-    def _apply_one(
+    def _attach(
         self, line: Attachment, memory: CommittedMemory, refs: dict[str, str],
         nodes_of_block: dict[int, list[str]], opened_by_block: dict[int, list[str]],
         index: int, k: int, at: datetime, result: ApplyResult,
-    ) -> str | None:
-        thread = self._thread_for(line.thread, refs, opened_by_block)
-        parent = self._parent(line.after, thread, refs, nodes_of_block, at)
-        node_id = None
-        anchor = thread.anchor_node_id if thread is not None else None
-        if line.committed:
-            if parent is not None:
-                line_id = self.lines.get_node(parent).line_id
-            else:
-                line_id = self.lines.create_line((memory.memory_id,), created_at=at).line_id
-            node, _, _ = self.lines.ensure_node(
-                line_id, block_id=memory.memory_id, state_id=memory.memory_id,
-                occurred_start=memory.occurred_at, occurred_end=memory.occurred_at,
-                knowledge_at=at,
-            )
-            node_id = node.node_id
-            if parent is not None and parent != node_id:
-                self.lines.add_edge(line_id, parent, node_id, knowledge_at=at)
-            result.committed_nodes += 1
-            anchor = node_id
-        elif parent is not None:
-            anchor = parent
-        # The Thread holds the open (uncommitted) steps; a commit moves its branch
-        # point and clears them. With nothing open, the newest commit stands in
-        # as the Thread's support (a Thread always rests on canonical Memory).
-        pending = () if thread is None or line.committed else tuple(
-            mid for mid in thread.current_support_ids if not self.lines.nodes_for_state(mid)
-        )
-        support = tuple(dict.fromkeys((*pending, memory.memory_id)))[-8:]
-        when = at if thread is None else max(at, thread.updated_at)
-        if thread is None:
-            # a new thread: its id comes from the Block that opened it, never from words
-            thread_id = _thread_identity(self.scope, f"{memory.memory_id}\n{k}")
-            label = (line.summary or memory.content)[:2048]  # display only, not identity
-            thread = self.products.open_thread(
-                thread_id=thread_id, scope=self.scope, open_question=label,
-                supporting_memory_ids=support, at=at, working_summary=line.summary,
-                anchor_node_id=anchor,
-            )
-            opened_by_block.setdefault(index, []).append(thread.thread_id)
-            result.opened.append(thread.thread_id)
-            result.opened_threads += 1
+    ) -> str:
+        matter = self._matter(line.thread, refs, opened_by_block)
+        parent = self._parent(line.after, matter, refs, nodes_of_block)
+        if parent is not None:
+            line_id = self.lines.get_node(parent).line_id
         else:
-            thread = self.products.update_thread(
-                thread.thread_id, supporting_memory_ids=support, at=when,
-                working_summary=line.summary, anchor_node_id=anchor,
+            line_id = self.lines.create_line((memory.memory_id,), created_at=at).line_id
+        node, _, _ = self.lines.ensure_node(
+            line_id, block_id=memory.memory_id, state_id=memory.memory_id,
+            occurred_start=memory.occurred_at, occurred_end=memory.occurred_at,
+            knowledge_at=at,
+        )
+        if parent is not None and parent != node.node_id:
+            self.lines.add_edge(line_id, parent, node.node_id, knowledge_at=at)
+        self.tense.record(memory.memory_id, happened=line.happened, due=line.due, known_at=at)
+        result.attached += 1
+        if matter is None:
+            # a new matter: its id comes from the Block that started it, never from words
+            matter = self.products.open_thread(
+                thread_id=_thread_identity(self.scope, f"{memory.memory_id}\n{k}"),
+                scope=self.scope, open_question=(line.summary or memory.content)[:2048],
+                supporting_memory_ids=(memory.memory_id,), at=at,
+                working_summary=line.summary, anchor_node_id=node.node_id,
             )
-        return node_id
+            opened_by_block.setdefault(index, []).append(matter.thread_id)
+            result.opened.append(matter.thread_id)
+        else:
+            self.products.update_thread(
+                matter.thread_id, supporting_memory_ids=(memory.memory_id,),
+                at=max(at, matter.updated_at), working_summary=line.summary,
+                anchor_node_id=node.node_id,
+            )
+        return node.node_id

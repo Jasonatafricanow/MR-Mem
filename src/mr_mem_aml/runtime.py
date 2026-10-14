@@ -260,45 +260,47 @@ class MemoryRuntime:
         return out
 
     def tree_report(self) -> list[dict]:
-        """Tree engine: every user's Line trees (nested) and Threads, for inspection."""
+        """Tree engine: every user's Lines (nested, each step with its side of the
+        terminator at the user's latest message time), matters and lone Blocks."""
         cutoff = datetime(9999, 1, 1, tzinfo=UTC)
         out = []
-        users = {m.user_id for ms in self.source.all_request_messages().values() for m in ms}
-        for user_id in sorted(users):
+        by_user: dict[str, list] = {}
+        for ms in self.source.all_request_messages().values():
+            for m in ms:
+                by_user.setdefault(m.user_id, []).append(m)
+        for user_id in sorted(by_user):
             scope = user_scope(user_id)
             tree = self.tree_for(scope)
+            now = max(m.occurred_at for m in by_user[user_id])
 
             def text(node_id, tree=tree):
                 state = tree.view.state_for_node_at_cutoff(node_id, cutoff=cutoff)
                 return "" if state is None else state.content
 
-            def nest(node_id, seen, tree=tree):
+            def nest(node_id, seen, tree=tree, now=now):
                 seen.add(node_id)
-                return {"step": text(node_id), "then": [
+                return {"step": text(node_id), "side": tree.side(node_id, now), "then": [
                     nest(child, seen) for child in tree.lines.children_at(node_id, cutoff)
                     if child not in seen]}
 
-            lines = []
+            lines, on_lines = [], set()
             for line in tree.lines.list_lines():
                 nodes = tree.view.visible_node_ids(line.line_id, cutoff=cutoff)
+                on_lines.update(tree.lines.get_node(n).block_id for n in nodes)
                 roots = [n for n in nodes if not tree.lines.parents_at(n, cutoff)]
                 seen: set[str] = set()
                 lines.append({"line_id": line.line_id, "steps": len(nodes),
                               "tree": [nest(r, seen) for r in roots]})
-            threads = []
-            for t in self.core.products.list_threads(scope):
-                open_steps = [m.content for mid in t.current_support_ids
-                              if not tree.lines.nodes_for_state(mid)
-                              and (m := self.core.canonical.get(mid)) is not None]
-                threads.append({
-                    "thread_id": t.thread_id, "anchor_node_id": t.anchor_node_id,
-                    "status": t.status.value,
-                    "summary": t.working_summary,
-                    "after": None if t.anchor_node_id is None else text(t.anchor_node_id),
-                    "open_steps": open_steps,
-                })
-            out.append({"user_id": user_id, "lines": lines, "threads": threads,
-                        "relations_refused": [f for f in self.tree_failures]})
+            matters = [{
+                "thread_id": t.thread_id, "anchor_node_id": t.anchor_node_id,
+                "summary": t.working_summary,
+                "latest": None if t.anchor_node_id is None else text(t.anchor_node_id),
+            } for t in self.core.products.list_threads(scope)]
+            lone = [m.content for m in self.core.canonical.load_all()
+                    if m.scope == scope and m.memory_id not in on_lines]
+            out.append({"user_id": user_id, "now": now.isoformat(), "lines": lines,
+                        "threads": matters, "lone_blocks": lone,
+                        "relations_refused": list(self.tree_failures)})
         return out
 
     def _evidence_time(self, memory):
@@ -560,12 +562,12 @@ class MemoryRuntime:
 
     def _grow(self, scope, blocks, committed, refs: dict, at: datetime) -> int:
         """Tree engine: compiler signals -> Threads and committed Path A steps."""
-        from mr_mem.lce.path_a import Attachment, BlockLines
+        from mr_mem.lce.path_a import Attachment, BlockLines, parse_due
 
         result = self.tree_for(scope).apply(
             [BlockLines(memory.memory_id, tuple(
-                Attachment(x.thread, x.after, x.committed, x.summary, x.done)
-                for x in block.lines))
+                Attachment(x.thread, x.after, x.committed, x.summary, parse_due(x.due))
+                for x in block.lines), block.settles)
              for block, memory in zip(blocks, committed, strict=True)],
             refs, at,
         )

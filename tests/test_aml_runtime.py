@@ -496,3 +496,22 @@ def test_message_time_is_only_claimed_when_the_source_gave_it(tmp_path):
     prompt = SemanticCompiler(None).prompt((timed, untimed), (), ())
     assert prompt.count('"time"') == 1  # no invented time for the untimed message
     store.close()
+
+
+def test_tree_schema_parses_tense_time_and_settles():
+    from datetime import UTC, datetime
+
+    from mr_mem_aml.compiler import SemanticCompiler, blocks_from_json, blocks_to_json
+    from mr_mem_aml.source_store import RawMessage
+
+    msg = RawMessage("r:0", "u", "s", "r", 0, "user", "dinner tomorrow at 7",
+                     datetime(2026, 5, 1, tzinfo=UTC), "f")
+    raw = ('{"blocks": [{"content": "c", "sources": ["m1"], "settles": ["N2"], "lines": ['
+           '{"thread": "T1", "after": "N1", "happened": false, "time": "2026-05-02 19:00",'
+           ' "summary": "s"}, {"thread": null, "after": null, "happened": true}]}]}')
+    (block,) = SemanticCompiler(None, schema="tree").parse(raw, (msg,))
+    first, second = block.lines
+    assert (first.thread, first.committed, first.due) == ("T1", False, "2026-05-02 19:00")
+    assert (second.thread, second.committed, second.due) == (None, True, None)
+    assert block.settles == ("N2",)
+    assert blocks_from_json(blocks_to_json((block,)))[0] == block

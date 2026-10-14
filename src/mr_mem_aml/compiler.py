@@ -26,7 +26,7 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
-TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v4"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v5"
 AssistantPolicy = Literal["attributed", "context_only"]
 Schema = Literal["flat", "tree"]
 
@@ -177,10 +177,11 @@ class LineOut:
     """Tree schema: this block's place in one matter (design v6 4.4-4.5)."""
 
     thread: str | None  # "T<k>" known thread, "b<k>" thread opened by block k, None = new
-    after: str | None  # "N<k>" known step, "T<k>" a thread's branch point, "b<k>" block k
-    committed: bool  # it happened and can no longer change at this message time
+    after: str | None  # "N<k>" known step, "T<k>" a matter's latest step, "b<k>" block k
+    committed: bool  # happened when said (prompt v5 "happened"; older journals "committed")
     summary: str | None
     done: bool = False  # ignored since tree prompt v4 (lines never end); older journals
+    due: str | None = None  # stated time of something not yet happened
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +191,7 @@ class CompiledBlock:
     thread: ThreadSignalOut | None
     commit: CommitOut | None
     lines: tuple[LineOut, ...] = ()
+    settles: tuple[str, ...] = ()  # tree schema: earlier open steps this block settles
 
 
 INSTRUCTIONS = """You are the semantic compiler of a long-term memory system.
@@ -262,63 +264,61 @@ Return only JSON, no prose:
 
 TREE_INSTRUCTIONS = INSTRUCTIONS[: INSTRUCTIONS.index("Line-of-thought signals")] + """\
 9. When one message holds something that already happened and something still
-   open ("we agreed to have dinner tomorrow": the agreement happened, the dinner
-   has not), make them two blocks.
+   going on ("we agreed to have dinner tomorrow": the agreement happened, the
+   dinner has not), make them two blocks.
 
-Matters (optional, per block, as "lines"): the user's life is made of matters
-(a trip, a purchase being weighed, a project, a problem). A matter grows step by
-step; steps that have happened are fixed, the step in progress can still change.
+Lines (optional, per block): blocks that belong together by meaning and logic
+form lines, like branches of a git tree: a trip, a purchase being weighed, a
+project and its sub-tasks. Only connect what really connects; a passing remark
+that relates to nothing (a tasty egg mentioned in the middle of coding talk)
+gets no line. One step can grow several branches (wanting a laptop -> prices
+went up / salary not paid yet / nothing appealing / the old one still works),
+and one block can sit on several lines at once (the project timeline and the
+sub-task it serves; the trip and food tastes). Lines never end and are never
+closed: anything can develop further later.
+
 LINES shows what is relevant now:
-- "threads": matters in progress, {{"ref": "T1", "summary", "after": the step it
-  currently hangs from}}. A thread has no name; its summary says what it is
-  about now.
-- "steps": steps that already happened, {{"ref": "N1", "text", "time"}}.
+- "threads": matters, {{"ref": "T1", "summary", "latest": its latest step}}. A
+  matter has no name; its summary says what it is about now.
+- "steps": earlier blocks on lines, {{"ref": "N1", "text", "state": "happened" |
+  "in progress", "time", "due"}}.
 - "rejected": understandings the user denied; never produce them again from the
   same evidence.
-For each block give "lines": a list with one entry per matter the block belongs
-to (empty when it belongs to none). One block may belong to several matters of
-different kinds (a dinner in Lisbon belongs to the trip and to food tastes).
-Each entry:
-  "thread": which matter: a thread ref from LINES ("T2") to continue it, "b<k>"
-  to continue the matter that block k of this output started, or null to start
-  a new matter. Continue a thread only when it is really the same matter, not
-  merely similar words (two different plans are two matters). A matter that
-  changed course (new deadline, narrower scope, a different destination) is
-  still the same matter: continue it.
-  "after": the step this block builds on within this matter: a step ref ("N3"),
-  a thread ref ("T2") for its current branch point, "b<k>" for the k-th block of
-  this output (1-based), or null when nothing known comes before it. It is often
-  the latest step of the matter, but not necessarily: a sub-task grows out of
-  the step it belongs to (dinner plans after arriving in Lisbon), and parallel
-  sub-tasks may grow out of the same step. Time order is a strong hint, never a
-  rule: do not attach a block to the previous step only because it came last.
-  "committed": true when what the block states has actually happened and cannot
-  change any more at this message time (a booking made, a flight taken, an
-  arrival, a decision made with its reasons); false while it is still open (a
-  plan, an intention, an outcome not yet known). A plan's time passing is not
-  evidence that it happened.
+
+For each block give "lines": one entry per line it belongs to (empty list when
+it connects to nothing). Each entry:
+  "thread": the matter: a ref from LINES ("T2"), "b<k>" for the matter that block
+  k of this output started, or null for a new matter. Continue a matter only
+  when it really is the same matter, not merely similar words (two different
+  plans are two matters). A matter that changed course (new deadline, narrower
+  scope, another destination) is still the same matter: continue it.
+  "after": the step this block builds on: "N3", "T2" (that matter's latest
+  step), "b<k>" (block k of this output) or null. Often the latest step, but a
+  sub-task grows out of the step it belongs to, and parallel branches may grow
+  out of the same step. Time order is a strong hint, never a rule.
+  "happened": true when what the block states had already happened when it was
+  said (a booking made, an arrival, a decision taken with its reasons); false
+  when it is still going on or still ahead (a plan, an intention, an outcome
+  not known yet).
+  "time": for happened=false, the stated time it refers to, in the format above
+  ("tomorrow evening" -> "2024-05-07 19:00"); omit when no time was stated.
   "summary": the current state of the whole matter after this block: what it is
-  about now, how it started, the key steps so far and where it stands; concise,
-  with dates in the format above. The summary is how this matter is found later,
-  so it follows the matter as it changes (a superseded plan is described as
-  superseded, not as current).
-- Matters never end. "committed" is the only judgment: what has happened is
-  fixed, what has not can still change, and any matter can develop further
-  later. A sub-task that got done is a committed step of its own branch; the
-  larger matter it belongs to (the project, the trip) goes on. Never close or
-  conclude a matter.
-- A block may belong to several lines at once (the project timeline and the
-  sub-task it serves, or two different kinds of matter): give one entry each.
-- When the user later develops something that was decided earlier (wants the
-  laptop again after deciding not to buy it), continue from the old step
-  ("after" = that step) and compare against the old reasons in the summary.
-  Never rewrite the old step.
+  about now, how it started, the key steps and where it stands; concise, with
+  dates. It is how the matter is found later, so it follows the matter as it
+  changes (a superseded plan is described as superseded, not as current).
+Per block, "settles": refs of earlier steps that are "in progress" with no due
+time and that this block shows are now settled (decided, done, dropped), e.g.
+["N4"]. A step with a due time is settled by its time passing; whatever was
+planned then stays on record as having been the plan, and what actually
+happened grows from it as a new step.
+- When the user later develops something decided earlier (wants the laptop
+  again after deciding not to buy it), continue from the old step and compare
+  against the old reasons in the summary. Never rewrite an earlier step.
 - Never invent outcomes or alternatives that were not stated.
 
 Return only JSON, no prose:
-{{"blocks": [{{"content": "...", "sources": ["m1"],
-  "lines": [{{"thread": "T1", "after": "N1", "committed": true,
-  "summary": "..."}}]}}]}}
+{{"blocks": [{{"content": "...", "sources": ["m1"], "settles": [],
+  "lines": [{{"thread": "T1", "after": "N1", "happened": true, "summary": "..."}}]}}]}}
 """
 
 ASSISTANT_RULES = {
@@ -432,6 +432,7 @@ class SemanticCompiler:
                 thread=None if self.schema == "tree" else _thread(item.get("thread")),
                 commit=None if self.schema == "tree" else _commit(item.get("commit"), cited),
                 lines=_lines(item.get("lines")) if self.schema == "tree" else (),
+                settles=_refs(item.get("settles")) if self.schema == "tree" else (),
             ))
         return tuple(out)
 
@@ -486,9 +487,17 @@ def _lines(value: object) -> tuple[LineOut, ...]:
         after = after.strip() if isinstance(after, str) and after.strip() else None
         summary = entry.get("summary")
         summary = summary.strip()[:4000] if isinstance(summary, str) and summary.strip() else None
-        out.append(LineOut(thread, after, entry.get("committed") is True,
-                           summary, entry.get("done") is True))
+        happened = entry.get("happened", entry.get("committed")) is True
+        due = None if happened else entry.get("time")
+        out.append(LineOut(thread, after, happened, summary, False,
+                           due.strip() if isinstance(due, str) and due.strip() else None))
     return tuple(out)
+
+
+def _refs(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(x.strip() for x in value if isinstance(x, str) and x.strip())
 
 
 def _commit(value: object, cited: list[RawMessage]) -> CommitOut | None:
@@ -516,9 +525,10 @@ def blocks_to_json(blocks: tuple[CompiledBlock, ...], version: str = PROMPT_VERS
                 },
                 **({"lines": [
                     {"thread": x.thread, "after": x.after, "committed": x.committed,
-                     "summary": x.summary, "done": x.done}
+                     "summary": x.summary, "done": x.done, "due": x.due}
                     for x in b.lines
                 ]} if b.lines else {}),
+                **({"settles": list(b.settles)} if b.settles else {}),
             }
             for b in blocks
         ],
@@ -533,6 +543,7 @@ def blocks_from_json(data: dict) -> tuple[CompiledBlock, ...]:
             thread=None if b["thread"] is None else ThreadSignalOut(**b["thread"]),
             commit=None if b["commit"] is None else CommitOut(**b["commit"]),
             lines=tuple(LineOut(**x) for x in b.get("lines", ())),
+            settles=tuple(b.get("settles", ())),
         )
         for b in data["blocks"]
     )
