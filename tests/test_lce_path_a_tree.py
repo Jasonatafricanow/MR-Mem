@@ -127,10 +127,13 @@ def test_portugal_trip_grows_a_tree_with_parallel_branches(env):
     assert set(env.tree.lines.children_at(arrived, now)) == {agreed, shopping}
     assert env.tree.view.ancestors(shopping, cutoff=now)[0] == arrived  # background, by index
     env.look(30)
-    env.step(30, ("The user and Ana had dinner; the food was great.",
-                  [A(env.ref(dinner), done=True)]))
-    assert env.thread(dinner).status is ThreadStatus.RESOLVED
-    assert env.thread(trip).status is ThreadStatus.OPEN  # the trip goes on
+    env.step(30, ("The user and Ana had dinner; the food was great.", [A(env.ref(dinner))]))
+    # the dinner happened: committed onto its branch, nothing open left on it; lines never
+    # end, so both the dinner branch and the trip stay available to grow further
+    assert env.thread(dinner).status is ThreadStatus.OPEN
+    assert env.thread(trip).status is ThreadStatus.OPEN
+    had = env.thread(dinner).anchor_node_id
+    assert env.tree.lines.parents_at(had, T0 + timedelta(hours=31)) == (agreed,)
 
 
 def test_thread_identity_is_a_code_id_and_its_summary_follows_the_matter(env):
@@ -164,16 +167,19 @@ def test_one_block_meets_two_trees_of_different_kinds(env):
     assert len(env.tree.lines.lines_for_block(block_id)) == 2  # the trees meet here
 
 
-def test_taking_up_an_ended_matter_opens_a_new_thread_anchored_on_the_old_step(env):
-    old = env.step(0, ("The user decided not to buy the laptop: no budget.",
-                       [A(done=True)])).opened[0]
-    decided = env.thread(old).anchor_node_id
+def test_developing_a_frozen_decision_continues_from_the_old_step(env):
+    """No end: the decision stays a frozen step; later development grows from it."""
+    laptop = env.step(0, ("The user decided not to buy the laptop: no budget.",
+                          [A(summary="Laptop: decided not to buy, no budget")])).opened[0]
+    decided = env.thread(laptop).anchor_node_id
     env.look(24 * 30, "laptop again")
-    result = env.step(24 * 30, ("The user wants the laptop again after a raise.",
-                                [A(after=env.ref(node_id=decided), committed=False)]))
-    again = env.thread(result.opened[0])
-    assert again.thread_id != old and again.anchor_node_id == decided  # index to the old step
-    assert env.thread(old).status is ThreadStatus.RESOLVED  # the old step is unchanged
+    env.step(24 * 30, ("The user wants the laptop again after a raise.",
+                       [A(env.ref(laptop), after=env.ref(node_id=decided), committed=False,
+                          summary="Laptop: wants it again after a raise (earlier: no budget)")]))
+    again = env.thread(laptop)
+    assert again.anchor_node_id == decided  # grows from the old step, which is unchanged
+    assert len(env.tree.lines.nodes_for_line(env.tree.lines.list_lines()[0].line_id)) == 1
+    assert again.working_summary.startswith("Laptop: wants it again")
 
 
 def test_known_shows_threads_steps_and_rejections_with_refs(env):

@@ -26,7 +26,7 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
-TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v3"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v4"
 AssistantPolicy = Literal["attributed", "context_only"]
 Schema = Literal["flat", "tree"]
 
@@ -180,7 +180,7 @@ class LineOut:
     after: str | None  # "N<k>" known step, "T<k>" a thread's branch point, "b<k>" block k
     committed: bool  # it happened and can no longer change at this message time
     summary: str | None
-    done: bool = False  # nothing left in progress in this matter
+    done: bool = False  # ignored since tree prompt v4 (lines never end); older journals
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,11 +285,13 @@ Each entry:
   merely similar words (two different plans are two matters). A matter that
   changed course (new deadline, narrower scope, a different destination) is
   still the same matter: continue it.
-  "after": the step this block directly follows: a step ref ("N3"), a thread ref
-  ("T2") for its current branch point, "b<k>" for the k-th block of this output
-  (1-based), or null when nothing known comes before it. A new matter that grows
-  out of an earlier step (dinner plans after arriving in Lisbon) gives that step.
-  Parallel matters may follow the same step.
+  "after": the step this block builds on within this matter: a step ref ("N3"),
+  a thread ref ("T2") for its current branch point, "b<k>" for the k-th block of
+  this output (1-based), or null when nothing known comes before it. It is often
+  the latest step of the matter, but not necessarily: a sub-task grows out of
+  the step it belongs to (dinner plans after arriving in Lisbon), and parallel
+  sub-tasks may grow out of the same step. Time order is a strong hint, never a
+  rule: do not attach a block to the previous step only because it came last.
   "committed": true when what the block states has actually happened and cannot
   change any more at this message time (a booking made, a flight taken, an
   arrival, a decision made with its reasons); false while it is still open (a
@@ -300,20 +302,23 @@ Each entry:
   with dates in the format above. The summary is how this matter is found later,
   so it follows the matter as it changes (a superseded plan is described as
   superseded, not as current).
-  "done": true when this thread is frozen at this message time: what it was about
-  has happened or been settled and nothing in it is still open. The rule is the
-  same at every level: a finished sub-task is a finished branch, so mark it done;
-  a later follow-up opens a new thread whose "after" is the step it builds on.
-- When the user later takes up a matter that had ended (wants the laptop again
-  after deciding not to buy it), that is a new thread whose "after" is the old
-  step; compare against the old reasons in the summary. Never rewrite the old
-  step.
+- Matters never end. "committed" is the only judgment: what has happened is
+  fixed, what has not can still change, and any matter can develop further
+  later. A sub-task that got done is a committed step of its own branch; the
+  larger matter it belongs to (the project, the trip) goes on. Never close or
+  conclude a matter.
+- A block may belong to several lines at once (the project timeline and the
+  sub-task it serves, or two different kinds of matter): give one entry each.
+- When the user later develops something that was decided earlier (wants the
+  laptop again after deciding not to buy it), continue from the old step
+  ("after" = that step) and compare against the old reasons in the summary.
+  Never rewrite the old step.
 - Never invent outcomes or alternatives that were not stated.
 
 Return only JSON, no prose:
 {{"blocks": [{{"content": "...", "sources": ["m1"],
-  "lines": [{{"thread": "T1", "after": "N1", "committed": true, "summary": "...",
-  "done": false}}]}}]}}
+  "lines": [{{"thread": "T1", "after": "N1", "committed": true,
+  "summary": "..."}}]}}]}}
 """
 
 ASSISTANT_RULES = {

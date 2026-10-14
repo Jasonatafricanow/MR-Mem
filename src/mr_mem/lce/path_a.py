@@ -46,7 +46,7 @@ class Attachment:
     after: str | None
     committed: bool
     summary: str | None
-    done: bool = False
+    done: bool = False  # ignored: lines never end (design v6 4.4); kept for old journals
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +68,6 @@ class ApplyResult:
     committed_nodes: int = 0
     opened_threads: int = 0
     opened: list[str] = field(default_factory=list)  # thread ids, in order
-    done_threads: int = 0
     failures: list[str] = field(default_factory=list)
 
 
@@ -321,9 +320,4 @@ class PathATree:
                 thread.thread_id, supporting_memory_ids=support, at=when,
                 working_summary=line.summary, anchor_node_id=anchor,
             )
-        if line.done:
-            self.products.resolve_thread(thread.thread_id, memory_id=memory.memory_id,
-                                         at=max(when, thread.updated_at),
-                                         working_summary=line.summary)
-            result.done_threads += 1
         return node_id
