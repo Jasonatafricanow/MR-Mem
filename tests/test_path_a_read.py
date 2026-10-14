@@ -180,3 +180,40 @@ def test_raw_base_reaches_projections_upward_from_raw_hits(env):
     baseline = read("baseline", stamp_raw_hits=True)
     assert kinds(baseline) == ["raw", "raw"]
     assert baseline[0].content.startswith("[") and "no money" in baseline[0].content
+
+
+def test_matter_shape_reads_one_item_per_line_with_steps_in_order(env):
+    """Governance design v5 5.2-5.3: a line is read as one matter, its steps
+    inside in order, not as a header followed by loose support items."""
+    from mr_mem.integrations.path_a_read import RawHit
+
+    a = env.admit("r1", 0, "The user wants to buy the laptop")
+    b = env.admit("r2", 5, "The user has no budget, so does not buy it")
+    env.lce.commit(question="Buy the laptop?", summary="Wanted it, then decided not to buy",
+                   support=(b.memory_id, a.memory_id))
+    raw = [RawHit("raw:1", "User: no budget", 0.9, None, ("r2",))]
+
+    def read(evidence_time):
+        reader = PathAReader(
+            canonical_path=env.path, retrieval=None, lce=env.lce,
+            policy=ReadPolicy(include_source_text=False, projection_shape="matter",
+                              stamp_raw_hits=True),
+            raw_search=lambda scope, query, limit: raw[:limit],
+            blocks_for_record=lambda record_id: {"r2": (b.memory_id,)}.get(record_id, ()),
+            evidence_time=evidence_time,
+        )
+        return reader.search(SCOPE, "did I buy the laptop", limit=10, mode="path_a")
+
+    items = read(None)
+    assert kinds(items) == ["lce", "raw"]
+    lines = items[0].content.split("\n")
+    assert lines[0].startswith("[Accepted understanding | revision 1 | as of ")
+    assert lines[1] == "Steps in order:"
+    assert "wants to buy" in lines[2] and "no budget" in lines[3]  # time order
+    assert items[1].content == "User: no budget"  # no source time: no stamp
+
+    untimed = read(lambda memory: None)  # the source gave no message times
+    head, *steps = untimed[0].content.split("\n")
+    assert head == "[Accepted understanding | revision 1] Wanted it, then decided not to buy"
+    assert steps[1] == "1. The user wants to buy the laptop"
+    assert untimed[0].occurred_at is None

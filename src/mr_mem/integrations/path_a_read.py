@@ -18,6 +18,11 @@ them (raw record -> SemanticBlocks compiled from it -> their Thread / LCE line),
 the reverse of the projection -> evidence link used for verification. A
 projection whose support is reached from the raw hits AND whose own text is
 close to the query is read first (two independent routes agree).
+With ``projection_shape="matter"`` every selected Thread or cognition line is
+read as ONE item: the matter, its steps in order with their Block content, and
+its current state (governance design v5, 5.2-5.3). Its support then no longer
+appears as separate items. Times are shown only where the source gave a message
+time (``evidence_time``); otherwise only the order is stated.
 The ranking of projections is deliberately simple and replaceable; it was
 fixed before any evaluation run (docs/PATH_A.md) and is not benchmark-tuned.
 """
@@ -88,8 +93,13 @@ class ReadPolicy:
     min_cosine: float = 0.60
     # Prefix raw hits with their message time ("[YYYY-MM-DD HH:MM] ..."), both modes.
     stamp_raw_hits: bool = False
+    # "flat": projection line, then its support as separate items;
+    # "matter": one item per projection with its steps inside.
+    projection_shape: str = "flat"
 
     def __post_init__(self) -> None:
+        if self.projection_shape not in ("flat", "matter"):
+            raise ValueError("projection_shape must be 'flat' or 'matter'")
         for name in (
             "lce_limit", "thread_limit", "support_limit", "source_limit", "support_rank_window",
         ):
@@ -102,12 +112,15 @@ def _stamp(at: datetime | None) -> str:
     return at.strftime("%Y-%m-%d %H:%M") if at is not None else "unknown time"
 
 
-def render_memory(memory: CommittedMemory) -> str:
+def render_memory(memory: CommittedMemory, at: datetime | None = None, *,
+                  known: bool = True) -> str:
     # Support whose original evidence is gone stays readable, but is marked
     # (raw text is authority; compiled products persist, greyed, never hidden).
     active = memory.lifecycle is MemoryLifecycle.ACTIVE
     marker = "" if active else " | original evidence unavailable"
-    return f"[{_stamp(memory.occurred_at)}{marker}] {memory.content}"
+    if not known:  # the source gave no message time: say nothing about time
+        return f"[{marker[3:]}] {memory.content}" if marker else memory.content
+    return f"[{_stamp(at or memory.occurred_at)}{marker}] {memory.content}"
 
 
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
@@ -128,6 +141,7 @@ class PathAReader:
         embed: Embed | None = None,
         raw_search: RawSearch | None = None,
         blocks_for_record: BlocksForRecord | None = None,
+        evidence_time: "Callable[[CommittedMemory], datetime | None] | None" = None,
     ) -> None:
         self.canonical_path = Path(canonical_path)
         self.retrieval = retrieval
@@ -138,6 +152,26 @@ class PathAReader:
         self.raw_search = raw_search
         self.blocks_for_record = blocks_for_record
         self._embedding_cache: dict[str, tuple[float, ...]] = {}
+        # Message time the source actually gave, or None; ordering always uses
+        # occurred_at (arrival order when the source gave no time).
+        self.evidence_time = evidence_time or (lambda memory: memory.occurred_at)
+
+    def _render(self, memory: CommittedMemory) -> str:
+        at = self.evidence_time(memory)
+        return render_memory(memory, at, known=at is not None)
+
+    def _known_latest(self, memories) -> datetime | None:
+        times = [t for m in memories if (t := self.evidence_time(m)) is not None]
+        return max(times) if times else None
+
+    def _matter(self, head: str, memories, tail: str = "") -> str:
+        """One matter as one text: header, steps in order, then current state."""
+        steps = sorted(memories, key=lambda m: (m.occurred_at, m.memory_id))
+        lines = [head, "Steps in order:"]
+        lines += [f"{i}. {self._render(m)}" for i, m in enumerate(steps, 1)]
+        if tail:
+            lines.append(tail)
+        return "\n".join(lines)
 
     def _embedded(self, text: str) -> tuple[float, ...]:
         cached = self._embedding_cache.get(text)
@@ -211,12 +245,19 @@ class PathAReader:
                 continue
             seen_memory.add(memory_id)
             items.append(EvidenceItem(
-                f"memory:{memory_id}", "support", render_memory(memory), score,
+                f"memory:{memory_id}", "support", self._render(memory), score,
                 memory.occurred_at, parent,
             ))
         if self.policy.include_source_text:
             items.extend(self._source_items(parent, refs, seen_source, score))
         return items
+
+    def _memories(self, store, memory_ids, seen_memory: set[str]) -> list[CommittedMemory]:
+        found = [m for mid in dict.fromkeys(memory_ids) if (m := store.get(mid)) is not None]
+        found = sorted(found, key=lambda m: (m.occurred_at, m.memory_id))
+        found = found[-self.policy.support_limit:] if self.policy.support_limit else []
+        seen_memory.update(m.memory_id for m in found)
+        return found
 
     def _source_items(
         self, parent: str, refs: Sequence[SourceRef], seen_source: set[str], score: float
@@ -267,7 +308,7 @@ class PathAReader:
                 seen_memory.add(memory.memory_id)
                 score = float(hit.candidate.score or 0.0)
                 items.append(EvidenceItem(
-                    f"memory:{memory.memory_id}", "memory", render_memory(memory),
+                    f"memory:{memory.memory_id}", "memory", self._render(memory),
                     score, memory.occurred_at,
                 ))
                 if self.policy.source_text_for_hits:
@@ -294,7 +335,8 @@ class PathAReader:
             ))
         for hit in raw:
             content = (f"[{_stamp(hit.occurred_at)}] {hit.content}"
-                       if self.policy.stamp_raw_hits else hit.content)
+                       if self.policy.stamp_raw_hits and hit.occurred_at is not None
+                       else hit.content)
             items.append(EvidenceItem(hit.item_id, "raw", content, hit.score, hit.occurred_at))
 
     def _projection_items(
@@ -330,6 +372,21 @@ class PathAReader:
                 ]
                 as_of = max(occurred) if occurred else None
                 marker = "" if u.evidence_complete else " | original evidence unavailable"
+                if self.policy.projection_shape == "matter":
+                    support = self._memories(store, u.supporting_memory_ids, seen_memory)
+                    known = self._known_latest(support)
+                    head = (f"[Accepted understanding | revision {u.revision_number}"
+                            + (f" | as of {_stamp(known)}" if known else "")
+                            + f"{marker}] {u.content}")
+                    earlier = (self.lce.earlier_revisions(u.region_id)
+                               if u.revision_number > 1 and hasattr(self.lce, "earlier_revisions")
+                               else ())
+                    if earlier:
+                        head += "\nEarlier understanding: " + " -> ".join(earlier)
+                    items.append(EvidenceItem(
+                        f"lce:{u.baseline_id}", "lce", self._matter(head, support), score, known,
+                    ))
+                    continue
                 items.append(EvidenceItem(
                     f"lce:{u.baseline_id}", "lce",
                     f"[Accepted understanding | revision {u.revision_number} | as of "
@@ -369,6 +426,18 @@ class PathAReader:
                 t = threads[key]
                 summary = f" | So far: {t.working_summary}" if t.working_summary else ""
                 latest = newest_evidence(t.handoff_memory_ids)
+                if self.policy.projection_shape == "matter":
+                    support = self._memories(store, t.handoff_memory_ids, seen_memory)
+                    known = self._known_latest(support)
+                    head = ("[Ongoing matter, not concluded"
+                            + (f" | last update {_stamp(known)}" if known else "")
+                            + f"] {t.open_question}")
+                    tail = f"Current state: {t.working_summary}" if t.working_summary else ""
+                    items.append(EvidenceItem(
+                        f"thread:{t.thread_id}", "thread", self._matter(head, support, tail),
+                        score, known,
+                    ))
+                    continue
                 items.append(EvidenceItem(
                     f"thread:{t.thread_id}", "thread",
                     f"[Ongoing matter, not concluded | last update {_stamp(latest)}] "

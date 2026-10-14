@@ -264,6 +264,11 @@ class LcePathA:
                 continue
         return tuple(found)
 
+    def earlier_revisions(self, region_id: str, limit: int = 3) -> tuple[str, ...]:
+        """Contents of the revisions before HEAD, oldest first (audit history kept)."""
+        history = self._baselines.get_history(region_id, limit=limit + 1)
+        return tuple(r.content for r in reversed(history.revisions[1:]))
+
     def lineage_head(self, question: str):
         """Accepted HEAD of the lineage a Thread or commit on ``question`` uses."""
         return self._baselines.get_head(thread_region(_thread_identity(self.scope, question)))
