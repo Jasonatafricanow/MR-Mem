@@ -256,6 +256,12 @@ class MemoryRuntime:
                 })
         return out
 
+    def _evidence_time(self, memory):
+        """Newest message time the source actually gave for this Block, else None."""
+        times = [ref.occurred_at for ref in memory.provenance.source_refs
+                 if self.source.time_given(ref.record_id)]
+        return max(times) if times else None
+
     def _link_blocks(self, memory) -> None:
         for ref in memory.provenance.source_refs:
             linked = self._blocks_by_record.setdefault(ref.record_id, [])
@@ -540,10 +546,12 @@ class MemoryRuntime:
             text = text + "\n" + "\n".join(str(o) for o in options)
         raw_search = None
         if self.raw is not None:
-            raw = self.raw
+            raw, source = self.raw, self.source
 
             def raw_search(scope, q, limit):
-                return [RawHit(u.unit_id, u.text, score, u.occurred_at, (u.record_id,))
+                return [RawHit(u.unit_id, u.text, score,
+                               u.occurred_at if source.time_given(u.record_id) else None,
+                               (u.record_id,))
                         for u, score in raw.search(scope.user_id or "", q, limit)]
 
         reader = PathAReader(
@@ -555,6 +563,7 @@ class MemoryRuntime:
             embed=None if self.embedding is None else self._embed_cached,
             raw_search=raw_search,
             blocks_for_record=lambda record_id: self._blocks_by_record.get(record_id, ()),
+            evidence_time=self._evidence_time,
         )
         items = reader.search(scope, text[:4096], limit=top_k, mode=selected)
         return {

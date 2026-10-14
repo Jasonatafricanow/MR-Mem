@@ -259,6 +259,13 @@ ASSISTANT_RULES = {
 }
 
 
+def _time(message) -> dict:
+    """Message time only when the source gave one; otherwise order is all we know."""
+    if getattr(message, "time_given", True):
+        return {"time": message.occurred_at.isoformat()}
+    return {}
+
+
 def _extract_json(text: str) -> dict:
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
     candidate = fenced.group(1) if fenced else text
@@ -303,12 +310,11 @@ class SemanticCompiler:
                 for line in known_lines
             ],
             "CONTEXT": [
-                {"role": m.role, "time": m.occurred_at.isoformat(), "text": m.content}
+                {"role": m.role, **_time(m), "text": m.content}
                 for m in context
             ],
             "NEW": [
-                {"id": f"m{i + 1}", "role": m.role, "time": m.occurred_at.isoformat(),
-                 "text": m.content}
+                {"id": f"m{i + 1}", "role": m.role, **_time(m), "text": m.content}
                 for i, m in enumerate(new)
             ],
         }

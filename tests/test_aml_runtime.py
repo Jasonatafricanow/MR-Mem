@@ -476,3 +476,23 @@ def test_rejected_compile_keeps_raw_evidence_when_configured(tmp_path):
         assert data and data[0]["content"].startswith("User: Something")
     finally:
         rt.close()
+
+
+def test_message_time_is_only_claimed_when_the_source_gave_it(tmp_path):
+    from datetime import UTC, datetime
+
+    from mr_mem_aml.compiler import SemanticCompiler
+    from mr_mem_aml.source_store import AmlSourceStore
+
+    store = AmlSourceStore(tmp_path / "s.sqlite")
+    store.put_request({"request_id": "q1", "user_id": "u", "session_id": "s", "messages": [
+        {"role": "user", "content": "timed", "timestamp": 1_700_000_000_000},
+        {"role": "user", "content": "untimed"},
+    ]}, received_at=datetime(2026, 10, 14, tzinfo=UTC))
+    timed, untimed = store.request_messages("q1")
+    assert store.time_given("q1:0") and not store.time_given("q1:1")
+    assert (timed.time_given, untimed.time_given) == (True, False)
+    assert store.render(untimed.ref) == "[Original message] user: untimed"
+    prompt = SemanticCompiler(None).prompt((timed, untimed), (), ())
+    assert prompt.count('"time"') == 1  # no invented time for the untimed message
+    store.close()

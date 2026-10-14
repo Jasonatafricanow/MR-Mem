@@ -37,6 +37,7 @@ class RawMessage:
     content: str
     occurred_at: datetime
     fingerprint: str
+    time_given: bool = True  # False: the source gave no time; only the order is real
 
     @property
     def ref(self) -> SourceRef:
@@ -106,7 +107,18 @@ class AmlSourceStore:
         if "last_active" not in columns:  # message time of the latest Block on the line
             self._conn.execute("ALTER TABLE lineage_questions ADD COLUMN last_active TEXT")
             self._conn.execute("UPDATE lineage_questions SET last_active=first_seen")
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(messages)")}
+        if "time_given" not in columns:  # 1 = the source gave this message's time
+            self._conn.execute("ALTER TABLE messages ADD COLUMN time_given INTEGER")
+            # Older stores: a message without source time was stamped receipt
+            # time + index microseconds, so it sits within a second of receipt.
+            self._conn.execute(
+                "UPDATE messages SET time_given = (ABS(julianday(occurred_at) - julianday("
+                "(SELECT received_at FROM requests r WHERE r.request_id = messages.request_id)"
+                ")) * 86400.0 >= 1.0)"
+            )
         self._conn.commit()
+        self._time_given: dict[str, bool] = {}
 
     def close(self) -> None:
         self._conn.close()
@@ -137,12 +149,15 @@ class AmlSourceStore:
                     occurred = _occurred_at(message.get("timestamp"), received_at, index)
                     content = message["content"]
                     self._conn.execute(
-                        "INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO messages(record_id,user_id,session_id,request_id,idx,"
+                        "role,content,occurred_at,fingerprint,seq,time_given)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             f"{payload['request_id']}:{index}", payload["user_id"],
                             payload["session_id"], payload["request_id"], index,
                             message["role"], content, occurred.isoformat(),
                             hashlib.sha256(content.encode("utf-8")).hexdigest(), seq + index + 1,
+                            int(_has_time(message.get("timestamp"))),
                         ),
                     )
             return "received"
@@ -227,12 +242,12 @@ class AmlSourceStore:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT record_id,user_id,session_id,request_id,idx,role,content,occurred_at,"
-                f"fingerprint FROM messages {clause}",
+                f"fingerprint,time_given FROM messages {clause}",
                 args,
             ).fetchall()
         return tuple(
             RawMessage(r[0], r[1], r[2], r[3], r[4], r[5], r[6],
-                       datetime.fromisoformat(r[7]), r[8])
+                       datetime.fromisoformat(r[7]), r[8], r[9] is None or bool(r[9]))
             for r in rows
         )
 
@@ -262,12 +277,30 @@ class AmlSourceStore:
             return None
         return message.ref
 
+    def time_given(self, record_id: str) -> bool:
+        """Did the source give this message's time (else only its order is known)?"""
+        known = self._time_given.get(record_id)
+        if known is None:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT time_given FROM messages WHERE record_id=?", (record_id,)
+                ).fetchone()
+            known = bool(row and row[0])
+            self._time_given[record_id] = known
+        return known
+
     def render(self, ref: SourceRef) -> str | None:
         message = self.message_for(ref)
         if message is None:
             return None
+        if not self.time_given(message.record_id):
+            return f"[Original message] {message.role}: {message.content}"
         stamp = message.occurred_at.strftime("%Y-%m-%d %H:%M")
         return f"[Original message | {stamp}] {message.role}: {message.content}"
+
+
+def _has_time(timestamp: object) -> bool:
+    return isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool)
 
 
 def _occurred_at(timestamp: object, received_at: datetime, index: int) -> datetime:
