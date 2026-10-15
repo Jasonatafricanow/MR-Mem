@@ -372,10 +372,10 @@ STEP 3 - place each block in the matters from step 1 ("in"; empty when it
 belongs to none). A block can be in several matters (the sub-task and the
 project timeline; the trip and food tastes). For each:
   "matter": the id from step 1.
-  "after": the step it builds on, when it is not simply the previous block of
-  the same matter in this output: "N3" (a step in LINES), "b<k>" (block k of this
-  output, 1-based). One step can grow several branches (wanting a laptop ->
-  prices went up / salary not paid yet / the old one still works). Time order
+  "after": the step it builds on: "N3" (a step in LINES), "b<k>" (block k of
+  this output, 1-based); leave it out when it builds on no particular step. One
+  step can grow several lines (wanting a laptop -> prices went up / salary not
+  paid yet / the old one still works). Time order
   is a strong hint, never a rule.
   "happened": true when what the block states had already happened when it was
   said (a booking made, an arrival, a decision taken with its reasons); false
@@ -642,9 +642,10 @@ def _placed(value: object, matters: dict[str, dict], last_in: dict[str, int],
             index: int) -> tuple[LineOut, ...]:
     """Step 3: a block's place in the batch's matters, as line signals.
 
-    A new matter is referred to as "m:<id>" so all its blocks join one matter;
-    without an explicit "after", a block follows the previous block of the same
-    matter, and the first one follows the matter's own "after".
+    A new matter is referred to as "m:<id>" so all its blocks join one matter.
+    A block is linked only where the compiler says what it builds on: the first
+    block of a matter grows from the matter's own "after"; any other block without
+    an explicit "after" joins the matter unlinked (design 4.3, no default wiring).
     """
     if not isinstance(value, list):
         return ()
@@ -658,8 +659,8 @@ def _placed(value: object, matters: dict[str, dict], last_in: dict[str, int],
             continue
         after = entry.get("after")
         after = after.strip() if isinstance(after, str) and after.strip() else None
-        if after is None:
-            after = f"b{last_in[key]}" if key in last_in else matter["after"]
+        if after is None and key not in last_in:
+            after = matter["after"]  # where step 1 said the matter grows from
         out.append(LineOut(matter["thread"] or f"m:{key}", after,
                            entry.get("happened", entry.get("committed")) is True,
                            matter["summary"]))

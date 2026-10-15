@@ -113,11 +113,11 @@ def test_every_connected_block_is_on_its_line_and_time_moves_the_terminator(env)
     trip = env.step(0, (WANT, [A(happened=False, summary="Trip to Portugal wanted")])).opened[0]
     assert env.tree.side(env.node(WANT), at(0)) == DAY  # an intention: on the line, day side
     env.look(1)
-    env.step(1, (BOOKED, [A(env.ref(trip))]))
+    env.step(1, (BOOKED, [A(env.ref(trip), after=env.ref(trip))]))  # the trip's latest step
     assert env.tree.lines.parents_at(env.node(BOOKED), at(2)) == (env.node(WANT),)
     env.look(24)
     t = env.ref(trip)
-    env.step(24, (TRAFFIC, [A(t)]),
+    env.step(24, (TRAFFIC, [A(t, after=t)]),
              (MAY_MISS, [A(t, after="b1", happened=False)]))
     assert env.tree.side(env.node(MAY_MISS), at(24.5)) == DAY
     # the time stated in the content passed (two time axes only: the stated time is
@@ -190,7 +190,8 @@ def test_one_block_meets_two_trees_of_different_kinds(env):
     food = env.step(1, ("The user likes trying local food.", [A()])).opened[0]
     env.look(2, "bacalhau Lisbon local food")
     meal = "The user ate bacalhau at a local tasca in Lisbon."
-    result = env.step(2, (meal, [A(env.ref(trip)), A(env.ref(food))]))
+    trip_ref, food_ref = env.ref(trip), env.ref(food)
+    result = env.step(2, (meal, [A(trip_ref, after=trip_ref), A(food_ref, after=food_ref)]))
     assert result.attached == 2 and not result.failures
     assert len(env.tree.lines.lines_for_block(env.memory_of[meal])) == 2  # the trees meet
 

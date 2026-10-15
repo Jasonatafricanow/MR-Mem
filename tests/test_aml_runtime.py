@@ -522,7 +522,7 @@ def test_tree_schema_understands_matters_first_then_places_blocks():
     assert (sub.thread, sub.after, sub.committed, sub.summary) == (
         "m:a", "N4", True, "Fix 404 handler")
     assert (timeline.thread, timeline.after) == ("T2", None)
-    (cont,) = second.lines  # same new matter; follows its previous block by default
-    assert (cont.thread, cont.after, cont.committed) == ("m:a", "b1", False)
+    (cont,) = second.lines  # same new matter; linked only where the compiler says so
+    assert (cont.thread, cont.after, cont.committed) == ("m:a", None, False)
     assert second.settles == ("b1",) and egg.lines == ()
     assert blocks_from_json(blocks_to_json((first, second, egg))) == (first, second, egg)

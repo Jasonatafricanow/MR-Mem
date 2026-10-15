@@ -361,8 +361,6 @@ class PathATree:
         elif after and after.startswith("b") and after[1:].isdigit():
             created = nodes_of_block.get(int(after[1:]), [])
             node_id = created[0] if created else None
-        if node_id is None and after is None and matter is not None:
-            node_id = matter.anchor_node_id
         if node_id is not None:
             try:
                 self.lines.get_node(node_id)
