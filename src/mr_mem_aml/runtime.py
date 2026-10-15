@@ -89,7 +89,8 @@ class _SystemClock:
 
 def build_backend(spec: dict):
     if spec["type"] == "command":
-        return CommandBackend(spec["argv"], timeout=spec.get("timeout", 600))
+        return CommandBackend(spec["argv"], timeout=spec.get("timeout", 600),
+                              stream_json=spec.get("stream_json", False))
     return OpenAICompatibleBackend(
         base_url=spec["base_url"], model=spec["model"], api_key_env=spec.get("api_key_env"),
         timeout=spec.get("timeout", 600), json_mode=spec.get("json_mode", False),

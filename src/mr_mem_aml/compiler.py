@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -26,7 +27,7 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
-TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v7"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v8"
 AssistantPolicy = Literal["attributed", "context_only"]
 Schema = Literal["flat", "tree"]
 
@@ -39,6 +40,17 @@ class CompletionBackend(Protocol):
     def complete(self, prompt: str) -> str: ...
 
 
+def _kill_tree(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":  # agy spawns helpers; kill the whole tree
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       capture_output=True, check=False)
+    else:
+        proc.kill()
+    proc.wait()
+
+
 class CommandBackend:
     """Answer on stdout from a CLI (agy, grok and similar).
 
@@ -48,12 +60,47 @@ class CommandBackend:
     32k characters.
     """
 
-    def __init__(self, argv: list[str], *, timeout: float = 600, attempts: int = 4) -> None:
+    def __init__(
+        self, argv: list[str], *, timeout: float = 600, attempts: int = 4,
+        stream_json: bool = False,
+    ) -> None:
         if not argv:
             raise ValueError("command argv must be nonempty")
         self.argv, self.timeout, self.attempts = list(argv), timeout, attempts
+        self.stream_json = stream_json
+
+    def _stream(self, prompt: str) -> subprocess.CompletedProcess:
+        """``--output-format stream-json``: agy prints its final ``result`` event and
+        may then stay alive; take the result and stop the process ourselves."""
+        proc = subprocess.Popen(
+            self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+        )
+        timer = threading.Timer(self.timeout, proc.kill)
+        timer.start()
+        answer, status = "", "no result event"
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+            for line in proc.stdout:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("event") == "result":
+                    result = event.get("result") or {}
+                    status = str(result.get("status"))
+                    if status == "SUCCESS":
+                        answer = str(result.get("response") or "")
+                    break
+        finally:
+            timer.cancel()
+            _kill_tree(proc)
+        return subprocess.CompletedProcess(self.argv, 0 if answer else 1, answer, status)
 
     def _run(self, prompt: str) -> subprocess.CompletedProcess:
+        if self.stream_json:
+            return self._stream(prompt)
         inline = any("{prompt}" in part for part in self.argv)
         via_file = any("{prompt_file}" in part for part in self.argv)
         if not inline and not via_file:
@@ -280,16 +327,15 @@ Work in three steps, in this order.
 STEP 1 - understand the events from the original text as a whole. Before
 cutting anything, read NEW together with CONTEXT and LINES and work out which
 matters this batch is about: things the user is living through or working on (a
-trip, a purchase being weighed, a project and its sub-tasks, a problem). For
+trip, a purchase being weighed, a piece of work, a problem). For
 each matter decide:
 - whether it continues a matter in LINES ("thread": "T2") or is new (null).
   Continue only when it really is the same matter, not merely similar words (two
   different plans are two matters). A matter that changed course (new deadline,
   narrower scope, another destination) is still the same matter.
-- "after": the known step it grows from. A new sub-task of a known matter (a
-  fix, a feature, a question inside a project) is a new matter whose "after" is
-  the step of that bigger matter it belongs to; it is not unrelated. null only
-  when nothing known comes before it.
+- "after": the known step it grows from. A matter that grows out of a step of
+  another matter (a problem met while working on it) has that step as its
+  "after"; it is not unrelated. null only when nothing known comes before it.
 - "summary": the current state of the whole matter after this batch: what it is
   about now, how it started, the key steps and where it stands; concise, with
   dates. It is how the matter is found later, so it follows the matter as it
@@ -373,6 +419,23 @@ ASSISTANT_RULES = {
     ),
 }
 
+# Tree mode: a person working with an assistant decides, and the work is the
+# content; in a chat the interaction itself is the content (design §4.1).
+TREE_ASSISTANT_RULES = {
+    **ASSISTANT_RULES,
+    "attributed": (
+        "Work and chat differ. When a person works with an assistant (building, "
+        "coding, investigating), the person decides and the content is how the work "
+        "actually moves, step by step: what called for a step (a problem, a need, an "
+        "earlier result), the person's feedback or decision, and what the assistant "
+        "then did and how it came out. What the assistant only proposed or explained "
+        "appears only where the person took it up or turned it down. In a chat the "
+        "interaction itself is the content: the assistant's answers and "
+        "recommendations are what the user received; attribute them to the "
+        "assistant. Never present the assistant's words as the user's view."
+    ),
+}
+
 
 def _time(message) -> dict:
     """Message time only when the source gave one; otherwise order is all we know."""
@@ -444,7 +507,8 @@ class SemanticCompiler:
             ],
         }
         template = TREE_INSTRUCTIONS if self.schema == "tree" else INSTRUCTIONS
-        rules = template.format(assistant_rule=ASSISTANT_RULES[self.assistant_policy])
+        table = TREE_ASSISTANT_RULES if self.schema == "tree" else ASSISTANT_RULES
+        rules = template.format(assistant_rule=table[self.assistant_policy])
         return rules + "\nINPUT:\n" + json.dumps(material, ensure_ascii=False, indent=1)
 
     def parse(self, raw: str, new: tuple[RawMessage, ...]) -> tuple[CompiledBlock, ...]:
