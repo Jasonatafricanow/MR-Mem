@@ -27,7 +27,7 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
-TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v8"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v9"
 AssistantPolicy = Literal["attributed", "context_only"]
 Schema = Literal["flat", "tree"]
 
@@ -324,31 +324,30 @@ You receive NEW conversation messages to compile, earlier CONTEXT messages of th
 same session (read-only, never cite them) and LINES: what is already on record.
 Work in three steps, in this order.
 
-STEP 1 - understand the events from the original text as a whole. Before
-cutting anything, read NEW together with CONTEXT and LINES and work out which
-matters this batch is about: things the user is living through or working on (a
-trip, a purchase being weighed, a piece of work, a problem). For
-each matter decide:
-- whether it continues a matter in LINES ("thread": "T2") or is new (null).
-  Continue only when it really is the same matter, not merely similar words (two
-  different plans are two matters). A matter that changed course (new deadline,
-  narrower scope, another destination) is still the same matter.
-- "after": the known step it grows from. A matter that grows out of a step of
-  another matter (a problem met while working on it) has that step as its
-  "after"; it is not unrelated. null only when nothing known comes before it.
-- "summary": the current state of the whole matter after this batch: what it is
-  about now, how it started, the key steps and where it stands; concise, with
-  dates. It is how the matter is found later, so it follows the matter as it
-  changes (a superseded plan is described as superseded, not as current).
-A remark that belongs to no matter at all (a tasty egg mentioned in the middle
-of coding talk) gets no matter.
+STEP 1 - see what this batch holds. Read NEW together with CONTEXT as a whole
+and understand what is in it before cutting anything. LINES are the lines
+already on record: each holds what has happened along one thing, seen from one
+angle. Decide which lines this batch's content goes on ("matters" in the JSON):
+- a line in LINES ("thread": "T2") when the content carries that very thing on,
+  also when it changed course (new deadline, narrower scope, another
+  destination); not because the words are similar.
+- a new line (null) when it carries none of them on. "after": the known step it
+  grows from (a problem met at that step, a thing that step opened); null when
+  nothing known comes before it.
+- "summary": what this line holds now, in its own terms: what it is about, its
+  key steps and where it stands; concise, with dates. Only what is on this
+  line, not what it may serve or belong to. Write it only for lines this batch
+  puts something on. A superseded plan is described as superseded.
+The same content can go on several lines, seen from different angles (a meal on
+the trip and on food tastes). A remark that carries no line on (a tasty egg in
+the middle of coding talk) goes on none.
 
 STEP 2 - cut SemanticBlocks. A SemanticBlock is the smallest unit that
 faithfully and completely preserves what was actually meant at that time, using
 as much surrounding context as is needed to avoid distortion.
 1. Boundaries follow semantic completeness, not messages or sentences. One block
    may cite several NEW messages that must be read together; one message may
-   yield several blocks when it contains independent matters.
+   yield several blocks when it holds several independent things.
 2. A reader who never sees the original text must be able to reconstruct the
    meaning: keep who said it (user, assistant, a third party), the modality
    (fact, plan, intention, wish, question, possibility, reported claim,
@@ -368,10 +367,9 @@ as much surrounding context as is needed to avoid distortion.
    going on ("we agreed to have dinner tomorrow": the agreement happened, the
    dinner has not), make them two blocks.
 
-STEP 3 - place each block in the matters from step 1 ("in"; empty when it
-belongs to none). A block can be in several matters (the sub-task and the
-project timeline; the trip and food tastes). For each:
-  "matter": the id from step 1.
+STEP 3 - place each block on the lines from step 1 ("in"; empty when it goes
+on none). A block can be on several lines. For each:
+  "matter": the id of the line from step 1.
   "after": the step it builds on: "N3" (a step in LINES), "b<k>" (block k of
   this output, 1-based); leave it out when it builds on no particular step. One
   step can grow several lines (wanting a laptop -> prices went up / salary not
@@ -387,15 +385,15 @@ of steps that were in progress and that this block shows are now settled
 once that time has passed; what was planned stays on record as having been the
 plan, and what actually happened grows from it as a new step.
 
-Matters never end and are never closed. When the user later develops something
+Lines never end and are never closed. When the user later develops something
 decided earlier (wants the laptop again after deciding not to buy it), continue
 from the old step and compare against the old reasons in the summary. Never
 rewrite an earlier step. Never invent outcomes or alternatives that were not
 stated.
 
 LINES shows what is relevant now:
-- "threads": matters, {{"ref": "T1", "summary", "latest": its latest step}}. A
-  matter has no name; its summary says what it is about now.
+- "threads": lines, {{"ref": "T1", "summary", "latest": its latest step}}. A
+  line has no name; its summary says what it holds now.
 - "steps": earlier blocks on lines, {{"ref": "N1", "text", "state": "happened" |
   "in progress", "time": when it was said}}.
 - "rejected": understandings the user denied; never produce them again from the
