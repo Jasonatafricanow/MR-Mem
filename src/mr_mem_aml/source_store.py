@@ -95,6 +95,14 @@ class AmlSourceStore:
             );
             CREATE INDEX IF NOT EXISTS messages_session
                 ON messages(user_id, session_id, seq);
+            CREATE TABLE IF NOT EXISTS windows (
+                window_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                first_seq INTEGER NOT NULL,
+                last_seq INTEGER NOT NULL,
+                compiled TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'compiled'
+            );
             CREATE TABLE IF NOT EXISTS lineage_questions (
                 user_id TEXT NOT NULL,
                 question TEXT NOT NULL,
@@ -182,6 +190,21 @@ class AmlSourceStore:
                 "UPDATE requests SET error=? WHERE request_id=?", (error[:2000], request_id)
             )
 
+    def put_window(self, window_id: str, user_id: str, first_seq: int, last_seq: int,
+                   compiled: dict) -> None:
+        """Journal one compile window; the first journal entry wins (replay)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO windows(window_id,user_id,first_seq,last_seq,compiled)"
+                " VALUES (?,?,?,?,?)",
+                (window_id, user_id, first_seq, last_seq,
+                 json.dumps(compiled, ensure_ascii=False, sort_keys=True)),
+            )
+
+    def set_window_done(self, window_id: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute("UPDATE windows SET status='done' WHERE window_id=?", (window_id,))
+
     def remember_question(self, user_id: str, question: str, at: datetime) -> None:
         """Record that a line was touched at message time ``at``."""
         stamp = at.isoformat()
@@ -201,6 +224,43 @@ class AmlSourceStore:
                 "SELECT compiled FROM requests WHERE request_id=?", (request_id,)
             ).fetchone()
         return None if row is None or row[0] is None else json.loads(row[0])
+
+    def open_window(self, user_id: str) -> tuple[str, int, int, dict] | None:
+        """A journaled window not yet applied (a crash between journal and apply)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT window_id,first_seq,last_seq,compiled FROM windows "
+                "WHERE user_id=? AND status='compiled' ORDER BY first_seq LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        return None if row is None else (row[0], row[1], row[2], json.loads(row[3]))
+
+    def pending(self, user_id: str) -> tuple[tuple[int, RawMessage], ...]:
+        """(seq, message) of a user's messages no compile window has taken yet."""
+        with self._lock:
+            done = self._conn.execute(
+                "SELECT COALESCE(MAX(last_seq),0) FROM windows WHERE user_id=?", (user_id,)
+            ).fetchone()[0]
+            seqs = [r[0] for r in self._conn.execute(
+                "SELECT seq FROM messages WHERE user_id=? AND seq>? ORDER BY seq",
+                (user_id, done),
+            )]
+        rows = self._select("WHERE user_id=? AND seq>? ORDER BY seq", (user_id, done))
+        return tuple(zip(seqs, rows, strict=True))
+
+    def messages_between(self, user_id: str, first_seq: int, last_seq: int
+                         ) -> tuple[RawMessage, ...]:
+        return self._select("WHERE user_id=? AND seq BETWEEN ? AND ? ORDER BY seq",
+                            (user_id, first_seq, last_seq))
+
+    def users_with_pending(self) -> tuple[str, ...]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT m.user_id FROM messages m WHERE m.seq > COALESCE(("
+                "SELECT MAX(w.last_seq) FROM windows w WHERE w.user_id=m.user_id),0) "
+                "UNION SELECT user_id FROM windows WHERE status='compiled'"
+            ).fetchall()
+        return tuple(sorted(r[0] for r in rows))
 
     def request_messages(self, request_id: str) -> tuple[RawMessage, ...]:
         return self._select("WHERE request_id=? ORDER BY idx", (request_id,))

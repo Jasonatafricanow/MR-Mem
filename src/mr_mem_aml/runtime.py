@@ -80,6 +80,8 @@ class AddJob:
     context: tuple
     known_lines: tuple
     compiled: str | None = None
+    # compile window (design 4.7): (window_id, seqs of its messages, carry allowed)
+    window: tuple | None = None
 
 
 class _SystemClock:
@@ -220,6 +222,7 @@ class MemoryRuntime:
         self._vectors: dict[str, tuple[float, ...]] = {}
         self.thread_failures = 0
         self.compile_rejected = 0
+        self.window_failures = 0
         # upward link raw record -> Blocks compiled from it
         self._blocks_by_record: dict[str, list[str]] = {}
         for memory in self.core.canonical.load_all():
@@ -393,12 +396,70 @@ class MemoryRuntime:
         job = self.prepare_add(payload)
         if isinstance(job, dict):
             return job
+        if job.window is not None:
+            return self._run_windows(job)
         try:
             compiled = self.compile_job(job)
         except CompileFailed as exc:
             self.fail_add(job, str(exc))
             raise
         return self.finish_add(job, compiled)
+
+    def _run_windows(self, job: AddJob) -> dict:
+        """Compile every window that is due. Raw text is already stored and
+        searchable, so a failed window does not fail Add: it is retried by the
+        next Add or by flush, and counted."""
+        request, blocks = job.request, 0
+        while job is not None:
+            try:
+                blocks += self.finish_add(job, self.compile_job(job))["blocks"]
+            except CompileFailed as exc:
+                self.window_failures += 1
+                log.warning("window %s not compiled yet: %s", job.window[0], str(exc)[:300])
+                break
+            job = self._window_job(request["user_id"], final=False, request=request)
+        return {**_echo(request), "blocks": blocks}
+
+    def _window_end(self, pending, final: bool) -> int | None:
+        """How many pending messages the next window takes, or None to wait."""
+        soft, hard = self.config.compile_window["soft"], self.config.compile_window["hard"]
+        gap = self.config.compile_window.get("gap_minutes", 120) * 60
+
+        def breaks(prev, nxt) -> bool:
+            return (nxt.session_id != prev.session_id
+                    or (prev.time_given and nxt.time_given
+                        and (nxt.occurred_at - prev.occurred_at).total_seconds() >= gap)
+                    or (nxt.role == "user" and prev.role != "user"))
+
+        n = len(pending)
+        for i in range(soft, min(hard, n - 1) + 1):
+            if breaks(pending[i - 1][1], pending[i][1]):
+                return i
+        if n >= hard:
+            return hard
+        return n if final and n else None
+
+    def _window_job(self, user_id: str, *, final: bool, request: dict | None = None
+                    ) -> AddJob | None:
+        """Owner thread: the next due compile window of a user, if any."""
+        request = request or {"request_id": None, "user_id": user_id, "session_id": None}
+        journaled = self.source.open_window(user_id)
+        if journaled is not None:  # crash between journal and apply: apply it
+            wid, first, last, compiled = journaled
+            messages = self.source.messages_between(user_id, first, last)
+            return AddJob(request, messages, (), {}, compiled, (wid, (first, last), False))
+        pending = self.source.pending(user_id)
+        end = self._window_end(pending, final)
+        if end is None:
+            return None
+        seqs = tuple(seq for seq, _ in pending[:end])
+        messages = tuple(m for _, m in pending[:end])
+        carry = not (final and end == len(pending))  # the last window keeps its tail
+        return AddJob(
+            request, messages,
+            self.source.context_before(messages[0], self.config.context_messages),
+            self.known_steps(user_id, messages), None, (f"{user_id}:w{seqs[0]}", seqs, carry),
+        )
 
     def prepare_add(self, payload: object) -> AddJob | dict:
         """Owner thread: persist raw text once; return a response or a compile job."""
@@ -415,6 +476,10 @@ class MemoryRuntime:
             from mr_mem_aml.raw_arm import units_for
 
             self.raw.add(units_for(rid, messages))
+        if self.config.compile_window is not None:
+            self.source.set_done(rid)  # stored and searchable; windows compile later
+            job = self._window_job(request["user_id"], final=False, request=request)
+            return job if job is not None else {**_echo(request), "blocks": 0}
         compiled = self.source.compiled(rid)
         if compiled is not None:  # journaled earlier: never pay inference twice
             return AddJob(request, messages, (), (), compiled)
@@ -475,8 +540,14 @@ class MemoryRuntime:
             return job.compiled
         try:
             started = time.monotonic()
-            blocks = self.compiler.compile(job.messages, job.context, job.known_lines)
-            log.info("compiled %s: %d messages -> %d blocks in %.1fs", job.request["request_id"],
+            if job.window is not None and job.window[2]:
+                blocks, kept = self.compiler.compile(
+                    job.messages, job.context, job.known_lines, window=True)
+            else:
+                blocks = self.compiler.compile(job.messages, job.context, job.known_lines)
+                kept = len(job.messages)
+            log.info("compiled %s: %d messages -> %d blocks in %.1fs",
+                     job.request["request_id"] or job.window[0],
                      len(job.messages), len(blocks), time.monotonic() - started)
         except CompileError as exc:
             if self.config.skip_rejected_compiles and "rejected the request" in str(exc):
@@ -484,16 +555,18 @@ class MemoryRuntime:
                 # moderation). Raw evidence stays stored and searchable; this
                 # request just yields no compiled Blocks. Counted, never silent.
                 log.warning("compile rejected, kept raw only: %s: %s",
-                            job.request["request_id"], str(exc)[:300])
+                            job.request["request_id"] or job.window[0], str(exc)[:300])
                 self.compile_rejected += 1
-                return self._journal(job, ())
+                return self._journal(job, (), len(job.messages))
             raise CompileFailed(str(exc)) from exc
-        return self._journal(job, blocks)
+        return self._journal(job, blocks, kept)
 
-    def _journal(self, job: AddJob, blocks) -> dict:
+    def _journal(self, job: AddJob, blocks, kept: int | None = None) -> dict:
         data = blocks_to_json(blocks, self.compiler.version)
         if isinstance(job.known_lines, dict):  # tree: how the prompt's refs resolve
             data["refs"] = dict(job.known_lines.get("_refs", {}))
+        if job.window is not None:
+            data["kept"] = len(job.messages) if kept is None else kept
         return data
 
     def fail_add(self, job: AddJob, error: str) -> None:
@@ -502,6 +575,8 @@ class MemoryRuntime:
 
     def finish_add(self, job: AddJob, compiled: str) -> dict:
         """Owner thread: journal, admit, project, derive Path A."""
+        if job.window is not None:
+            return self._finish_window(job, compiled)
         request = job.request
         rid, scope = request["request_id"], user_scope(request["user_id"])
         if self.source.compiled(rid) is None:
@@ -525,6 +600,21 @@ class MemoryRuntime:
             raise RetryableError("canonical Memory stored; Path A commit failed, retry request")
         self.source.set_done(rid)
         return {**_echo(request), "blocks": len(committed)}
+
+    def _finish_window(self, job: AddJob, compiled: dict) -> dict:
+        wid, seqs, _ = job.window
+        user_id = job.request["user_id"]
+        kept = compiled.get("kept", len(job.messages))
+        self.source.put_window(wid, user_id, seqs[0], seqs[kept - 1], compiled)
+        scope = user_scope(user_id)
+        blocks = blocks_from_json(compiled)
+        committed = self._admit(scope, wid, blocks)
+        self._project()
+        self._generation += 1
+        at = max(m.occurred_at for m in job.messages[:kept])
+        self._grow(scope, blocks, committed, compiled.get("refs", {}), at)
+        self.source.set_window_done(wid)
+        return {"window": wid, "messages": kept, "blocks": len(committed)}
 
     def _admit(self, scope, rid, blocks) -> list:
         admission = self.core.semantic_admission(
@@ -604,6 +694,13 @@ class MemoryRuntime:
 
     def flush(self) -> dict:
         """Rescan every user Scope and retry pending mature-Thread handoffs."""
+        if self.config.compile_window is not None:  # compile what is left, tail included
+            windows = 0
+            for user_id in self.source.users_with_pending():
+                while (job := self._window_job(user_id, final=True)) is not None:
+                    self.finish_add(job, self.compile_job(job))
+                    windows += 1
+            return {"status": "ok", "windows": windows}
         if self.config.path_a_engine == "tree":  # commits happen inside Add; nothing pends
             return {"status": "ok", "scopes": 0}
         scopes = {m.scope for m in self.core.load_all()}

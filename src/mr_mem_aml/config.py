@@ -40,10 +40,22 @@ class RuntimeConfig:
     path_a_engine: str = "flat"
     # committed steps shown to the tree compiler per batch
     step_policy: dict[str, int] = field(default_factory=lambda: {"recent": 10, "cued": 10})
+    # Tree engine: compile in windows of our own instead of per Add (design 4.7):
+    # {"soft": messages, "hard": messages, "gap_minutes": a pause that ends a stretch}.
+    # Add stores raw text at once; a window closes at the first natural breakpoint
+    # after "soft" (session change, long pause, the person speaking again after the
+    # assistant), at "hard" at the latest; flush compiles what is left.
+    compile_window: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         if self.path_a_engine not in ("flat", "tree"):
             raise ValueError("path_a_engine must be 'flat' or 'tree'")
+        if self.compile_window is not None:
+            w = self.compile_window
+            if self.path_a_engine != "tree":
+                raise ValueError("compile_window needs path_a_engine 'tree'")
+            if not 1 <= w.get("soft", 0) <= w.get("hard", 0):
+                raise ValueError("compile_window needs 1 <= soft <= hard")
         if self.search_mode not in ("path_a", "baseline"):
             raise ValueError("search_mode must be 'path_a' or 'baseline'")
         if self.hyde not in ("off", "fallback", "augmented"):

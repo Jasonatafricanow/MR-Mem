@@ -20,7 +20,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -404,7 +404,11 @@ LINES shows what is relevant now:
 Return only JSON, no prose:
 {{"matters": [{{"id": "a", "thread": "T1", "after": "N2", "summary": "..."}}],
   "blocks": [{{"content": "...", "sources": ["m1"], "settles": [],
-    "in": [{{"matter": "a", "happened": true}}]}}]}}
+    "in": [{{"matter": "a", "happened": true}}]}}],
+  "carry_from": null}}
+"carry_from": when the last NEW messages leave a step unfinished (it goes on after
+them), leave them out and give the id of the first one left out; they are compiled
+with the messages that follow. Otherwise null.
 """
 
 ASSISTANT_RULES = {
@@ -511,7 +515,9 @@ class SemanticCompiler:
         rules = template.format(assistant_rule=table[self.assistant_policy])
         return rules + "\nINPUT:\n" + json.dumps(material, ensure_ascii=False, indent=1)
 
-    def parse(self, raw: str, new: tuple[RawMessage, ...]) -> tuple[CompiledBlock, ...]:
+    def parse(self, raw: str, new: tuple[RawMessage, ...], *, window: bool = False):
+        """Blocks; with ``window``, (blocks, kept): the compiler may leave an
+        unfinished tail ("carry_from") for the next window (design 4.7)."""
         data = _extract_json(raw)
         blocks = data.get("blocks") if isinstance(data, dict) else None
         if not isinstance(blocks, list):
@@ -541,22 +547,36 @@ class SemanticCompiler:
                        if self.schema == "tree" else ()),
                 settles=_refs(item.get("settles")) if self.schema == "tree" else (),
             ))
-        return tuple(out)
+        if not window:
+            return tuple(out)
+        carry = data.get("carry_from")
+        kept = int(carry[1:]) - 1 if carry in ids else len(new)
+        if kept < len(new) // 2:  # a window always moves on
+            kept = len(new)
+        keep = {m.record_id for m in new[:kept]}
+        trimmed = []
+        for block in out:  # a carried message is compiled with the next window
+            sources = tuple(r for r in block.source_record_ids if r in keep)
+            if sources:
+                trimmed.append(replace(block, source_record_ids=sources))
+        return tuple(trimmed), kept
 
     def compile(
         self,
         new: tuple[RawMessage, ...],
         context: tuple[RawMessage, ...],
         known_lines: tuple[str, ...] = (),
-    ) -> tuple[CompiledBlock, ...]:
+        *,
+        window: bool = False,
+    ):
         if not new:
-            return ()
+            return ((), 0) if window else ()
         prompt = self.prompt(new, context, known_lines)
         last = ""
         for _ in range(self.attempts):
             raw = self.backend.complete(prompt)
             try:
-                return self.parse(raw, new)
+                return self.parse(raw, new, window=window)
             except (ValueError, KeyError, TypeError) as exc:
                 last = str(exc)
                 prompt_retry = (
