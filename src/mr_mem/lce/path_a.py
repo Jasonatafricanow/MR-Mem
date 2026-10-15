@@ -55,7 +55,7 @@ PAST, DAY = "happened", "in progress"
 class Attachment:
     """One compiler signal: this Block's place in one matter."""
 
-    thread: str | None  # "T<k>" a known matter, "b<k>" the matter block k started, None = new
+    thread: str | None  # "T<k>" known matter, "m:<id>" matter new in this batch, None = new
     after: str | None  # the step it builds on: "N<k>", "T<k>", "b<k>" or None
     happened: bool  # already happened when said (else: still going on)
     summary: str | None
@@ -65,7 +65,7 @@ class Attachment:
 class BlockLines:
     memory_id: str
     lines: tuple[Attachment, ...]
-    settles: tuple[str, ...] = ()  # step refs this Block shows are now settled
+    settles: tuple[str, ...] = ()  # step refs ("N<k>", "b<k>") this Block shows are settled
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,17 +302,21 @@ class PathATree:
         result = ApplyResult()
         nodes_of_block: dict[int, list[str]] = {}
         opened_by_block: dict[int, list[str]] = {}
+        opened_by_key: dict[str, str] = {}  # "m:<id>" -> thread id, within this batch
         for index, block in enumerate(blocks, 1):
             memory = self.canonical.get(block.memory_id)
             if memory is None:
                 result.failures.append(f"block {block.memory_id} not in canonical Memory")
                 continue
             for ref in block.settles:  # an earlier open step is settled by this Block
-                node_id = refs.get(ref) if ref.startswith("N") else None
-                try:
-                    target = self.lines.get_node(node_id).block_id if node_id else None
-                except KeyError:
-                    target = None
+                target = None
+                if ref.startswith("b") and ref[1:].isdigit() and 0 < int(ref[1:]) < index:
+                    target = blocks[int(ref[1:]) - 1].memory_id
+                elif ref.startswith("N") and (node_id := refs.get(ref)):
+                    try:
+                        target = self.lines.get_node(node_id).block_id
+                    except KeyError:
+                        target = None
                 if target is None:
                     result.failures.append(f"{block.memory_id}: cannot settle {ref}")
                     continue
@@ -321,7 +325,7 @@ class PathATree:
             for k, line in enumerate(block.lines):
                 try:
                     node = self._attach(line, memory, refs, nodes_of_block, opened_by_block,
-                                        index, k, at, result)
+                                        opened_by_key, index, k, at, result)
                 except ValueError as exc:  # a refused relation never loses the Block
                     result.failures.append(f"{block.memory_id}: {exc}")
                     continue
@@ -329,11 +333,14 @@ class PathATree:
         return result
 
     def _matter(
-        self, ref: str | None, refs: dict[str, str], opened_by_block: dict[int, list[str]]
+        self, ref: str | None, refs: dict[str, str], opened_by_block: dict[int, list[str]],
+        opened_by_key: dict[str, str],
     ) -> MemoryThread | None:
         """Identity is the code id behind a ref, never a name or wording."""
         thread_id = None
-        if ref and ref.startswith("T"):
+        if ref and ref.startswith("m:"):
+            thread_id = opened_by_key.get(ref)
+        elif ref and ref.startswith("T"):
             thread_id = refs.get(ref)
         elif ref and ref.startswith("b") and ref[1:].isdigit():
             opened = opened_by_block.get(int(ref[1:]), [])
@@ -366,9 +373,9 @@ class PathATree:
     def _attach(
         self, line: Attachment, memory: CommittedMemory, refs: dict[str, str],
         nodes_of_block: dict[int, list[str]], opened_by_block: dict[int, list[str]],
-        index: int, k: int, at: datetime, result: ApplyResult,
+        opened_by_key: dict[str, str], index: int, k: int, at: datetime, result: ApplyResult,
     ) -> str:
-        matter = self._matter(line.thread, refs, opened_by_block)
+        matter = self._matter(line.thread, refs, opened_by_block, opened_by_key)
         parent = self._parent(line.after, matter, refs, nodes_of_block)
         if parent is not None:
             line_id = self.lines.get_node(parent).line_id
@@ -392,6 +399,8 @@ class PathATree:
                 working_summary=line.summary, anchor_node_id=node.node_id,
             )
             opened_by_block.setdefault(index, []).append(matter.thread_id)
+            if line.thread and line.thread.startswith("m:"):
+                opened_by_key[line.thread] = matter.thread_id
             result.opened.append(matter.thread_id)
         else:
             self.products.update_thread(

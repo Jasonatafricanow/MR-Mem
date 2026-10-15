@@ -203,3 +203,19 @@ def test_known_shows_rejections(env):
     known = env.look(2, "Lisbon")
     assert known.payload["threads"] == [{"ref": "T1", "summary": "Trip to Lisbon", "latest": "N1"}]
     assert known.payload["rejected"] == ["The user dislikes Lisbon."]
+
+
+def test_a_matter_new_in_the_batch_joins_its_blocks_and_b_refs_settle(env):
+    project = env.step(0, ("The user is building a budget tracker.", [A()])).opened[0]
+    env.look(1, "404 handler")
+    setup = env.ref(node_id=env.matter(project).anchor_node_id)
+    plan = "The user will fix the 404 handler."
+    fixed = "The user fixed the 404 handler with a JSON response."
+    blocks = [BlockLines(env.block(plan, 1).memory_id, (A("m:a", after=setup, happened=False),)),
+              BlockLines(env.block(fixed, 1).memory_id, (A("m:a", after="b1"),), ("b1",))]
+    result = env.tree.apply(blocks, env.known.refs, at(1))
+    assert len(result.opened) == 1 and result.settled == 1  # one new matter for both blocks
+    assert env.tree.lines.parents_at(env.node(fixed), at(2)) == (env.node(plan),)
+    # the sub-task grows out of the project step: same tree, not an unrelated one
+    assert len(env.tree.lines.list_lines()) == 1
+    assert env.tree.side(env.node(plan), at(1)) == PAST  # "b1" settled within the batch

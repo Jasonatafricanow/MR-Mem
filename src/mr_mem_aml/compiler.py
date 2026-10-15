@@ -26,7 +26,7 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
-TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v6"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v7"
 AssistantPolicy = Literal["attributed", "context_only"]
 Schema = Literal["flat", "tree"]
 
@@ -272,20 +272,80 @@ Return only JSON, no prose:
   "commit": {{"question": "...", "summary": "..."}} or null}}]}}
 """
 
-TREE_INSTRUCTIONS = INSTRUCTIONS[: INSTRUCTIONS.index("Line-of-thought signals")] + """\
+TREE_INSTRUCTIONS = """You are the semantic compiler of a long-term memory system.
+You receive NEW conversation messages to compile, earlier CONTEXT messages of the
+same session (read-only, never cite them) and LINES: what is already on record.
+Work in three steps, in this order.
+
+STEP 1 - understand the events from the original text as a whole. Before
+cutting anything, read NEW together with CONTEXT and LINES and work out which
+matters this batch is about: things the user is living through or working on (a
+trip, a purchase being weighed, a project and its sub-tasks, a problem). For
+each matter decide:
+- whether it continues a matter in LINES ("thread": "T2") or is new (null).
+  Continue only when it really is the same matter, not merely similar words (two
+  different plans are two matters). A matter that changed course (new deadline,
+  narrower scope, another destination) is still the same matter.
+- "after": the known step it grows from. A new sub-task of a known matter (a
+  fix, a feature, a question inside a project) is a new matter whose "after" is
+  the step of that bigger matter it belongs to; it is not unrelated. null only
+  when nothing known comes before it.
+- "summary": the current state of the whole matter after this batch: what it is
+  about now, how it started, the key steps and where it stands; concise, with
+  dates. It is how the matter is found later, so it follows the matter as it
+  changes (a superseded plan is described as superseded, not as current).
+A remark that belongs to no matter at all (a tasty egg mentioned in the middle
+of coding talk) gets no matter.
+
+STEP 2 - cut SemanticBlocks. A SemanticBlock is the smallest unit that
+faithfully and completely preserves what was actually meant at that time, using
+as much surrounding context as is needed to avoid distortion.
+1. Boundaries follow semantic completeness, not messages or sentences. One block
+   may cite several NEW messages that must be read together; one message may
+   yield several blocks when it contains independent matters.
+2. A reader who never sees the original text must be able to reconstruct the
+   meaning: keep who said it (user, assistant, a third party), the modality
+   (fact, plan, intention, wish, question, possibility, reported claim,
+   correction, refusal), and every concrete specific (names, numbers, amounts,
+   dates and times, places, titles, items). Resolve relative time ("yesterday",
+   "next Friday", "this afternoon") against the message time when unambiguous,
+   write it as YYYY-MM-DD or YYYY-MM-DD HH:MM, and keep the original expression
+   as well ("this afternoon (2024-05-06 15:00)").
+3. Time-local: record the state at that moment. Never add later outcomes.
+4. Keep what is unknown unknown; do not guess or generalize.
+5. Useful granularity: neither one giant block nor atomized fragments.
+6. Skip content without lasting information (greetings, thanks, filler).
+7. {assistant_rule}
+8. Write each block in the conversation's language as plain declarative
+   third-person sentences ("The user ...", "The assistant ...").
 9. When one message holds something that already happened and something still
    going on ("we agreed to have dinner tomorrow": the agreement happened, the
    dinner has not), make them two blocks.
 
-Lines (optional, per block): blocks that belong together by meaning and logic
-form lines, like branches of a git tree: a trip, a purchase being weighed, a
-project and its sub-tasks. Only connect what really connects; a passing remark
-that relates to nothing (a tasty egg mentioned in the middle of coding talk)
-gets no line. One step can grow several branches (wanting a laptop -> prices
-went up / salary not paid yet / nothing appealing / the old one still works),
-and one block can sit on several lines at once (the project timeline and the
-sub-task it serves; the trip and food tastes). Lines never end and are never
-closed: anything can develop further later.
+STEP 3 - place each block in the matters from step 1 ("in"; empty when it
+belongs to none). A block can be in several matters (the sub-task and the
+project timeline; the trip and food tastes). For each:
+  "matter": the id from step 1.
+  "after": the step it builds on, when it is not simply the previous block of
+  the same matter in this output: "N3" (a step in LINES), "b<k>" (block k of this
+  output, 1-based). One step can grow several branches (wanting a laptop ->
+  prices went up / salary not paid yet / the old one still works). Time order
+  is a strong hint, never a rule.
+  "happened": true when what the block states had already happened when it was
+  said (a booking made, an arrival, a decision taken with its reasons); false
+  when it is still going on or still ahead (a plan, an intention, an outcome
+  not known yet). A time it refers to belongs in the block content (rule 2).
+Per block, "settles": refs ("N4", or "b<k>" for an earlier block of this output)
+of steps that were in progress and that this block shows are now settled
+(decided, done, dropped). A step whose content states a time is settled anyway
+once that time has passed; what was planned stays on record as having been the
+plan, and what actually happened grows from it as a new step.
+
+Matters never end and are never closed. When the user later develops something
+decided earlier (wants the laptop again after deciding not to buy it), continue
+from the old step and compare against the old reasons in the summary. Never
+rewrite an earlier step. Never invent outcomes or alternatives that were not
+stated.
 
 LINES shows what is relevant now:
 - "threads": matters, {{"ref": "T1", "summary", "latest": its latest step}}. A
@@ -295,39 +355,10 @@ LINES shows what is relevant now:
 - "rejected": understandings the user denied; never produce them again from the
   same evidence.
 
-For each block give "lines": one entry per line it belongs to (empty list when
-it connects to nothing). Each entry:
-  "thread": the matter: a ref from LINES ("T2"), "b<k>" for the matter that block
-  k of this output started, or null for a new matter. Continue a matter only
-  when it really is the same matter, not merely similar words (two different
-  plans are two matters). A matter that changed course (new deadline, narrower
-  scope, another destination) is still the same matter: continue it.
-  "after": the step this block builds on: "N3", "T2" (that matter's latest
-  step), "b<k>" (block k of this output) or null. Often the latest step, but a
-  sub-task grows out of the step it belongs to, and parallel branches may grow
-  out of the same step. Time order is a strong hint, never a rule.
-  "happened": true when what the block states had already happened when it was
-  said (a booking made, an arrival, a decision taken with its reasons); false
-  when it is still going on or still ahead (a plan, an intention, an outcome
-  not known yet). A time it refers to belongs in the block content, resolved
-  in the format above (rule 2).
-  "summary": the current state of the whole matter after this block: what it is
-  about now, how it started, the key steps and where it stands; concise, with
-  dates. It is how the matter is found later, so it follows the matter as it
-  changes (a superseded plan is described as superseded, not as current).
-Per block, "settles": refs of earlier steps that are "in progress" and that
-this block shows are now settled (decided, done, dropped), e.g. ["N4"]. A step
-whose content states a time is settled anyway once that time has passed; what
-was planned stays on record as having been the plan, and what actually
-happened grows from it as a new step.
-- When the user later develops something decided earlier (wants the laptop
-  again after deciding not to buy it), continue from the old step and compare
-  against the old reasons in the summary. Never rewrite an earlier step.
-- Never invent outcomes or alternatives that were not stated.
-
 Return only JSON, no prose:
-{{"blocks": [{{"content": "...", "sources": ["m1"], "settles": [],
-  "lines": [{{"thread": "T1", "after": "N1", "happened": true, "summary": "..."}}]}}]}}
+{{"matters": [{{"id": "a", "thread": "T1", "after": "N2", "summary": "..."}}],
+  "blocks": [{{"content": "...", "sources": ["m1"], "settles": [],
+    "in": [{{"matter": "a", "happened": true}}]}}]}}
 """
 
 ASSISTANT_RULES = {
@@ -422,6 +453,8 @@ class SemanticCompiler:
         if not isinstance(blocks, list):
             raise ValueError("'blocks' must be a list")
         ids = {f"m{i + 1}": m for i, m in enumerate(new)}
+        matters = _matters(data.get("matters")) if self.schema == "tree" else {}
+        last_in: dict[str, int] = {}  # matter id -> latest block placed in it
         out: list[CompiledBlock] = []
         for item in blocks:
             if not isinstance(item, dict):
@@ -440,7 +473,8 @@ class SemanticCompiler:
                 source_record_ids=tuple(m.record_id for m in cited),
                 thread=None if self.schema == "tree" else _thread(item.get("thread")),
                 commit=None if self.schema == "tree" else _commit(item.get("commit"), cited),
-                lines=_lines(item.get("lines")) if self.schema == "tree" else (),
+                lines=(_placed(item.get("in"), matters, last_in, len(out) + 1)
+                       if self.schema == "tree" else ()),
                 settles=_refs(item.get("settles")) if self.schema == "tree" else (),
             ))
         return tuple(out)
@@ -498,6 +532,54 @@ def _lines(value: object) -> tuple[LineOut, ...]:
         summary = summary.strip()[:4000] if isinstance(summary, str) and summary.strip() else None
         happened = entry.get("happened", entry.get("committed")) is True
         out.append(LineOut(thread, after, happened, summary))
+    return tuple(out)
+
+
+def _matters(value: object) -> dict[str, dict]:
+    """Step 1 of the tree prompt: the matters of this batch, understood as a whole."""
+    out: dict[str, dict] = {}
+    if not isinstance(value, list):
+        return out
+    for entry in value:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            continue
+        thread, after, summary = entry.get("thread"), entry.get("after"), entry.get("summary")
+        out[entry["id"].strip()] = {
+            "thread": thread.strip() if isinstance(thread, str) and thread.strip()
+            and thread.strip().lower() not in ("null", "none", "new") else None,
+            "after": after.strip() if isinstance(after, str) and after.strip() else None,
+            "summary": summary.strip()[:4000] if isinstance(summary, str) and summary.strip()
+            else None,
+        }
+    return out
+
+
+def _placed(value: object, matters: dict[str, dict], last_in: dict[str, int],
+            index: int) -> tuple[LineOut, ...]:
+    """Step 3: a block's place in the batch's matters, as line signals.
+
+    A new matter is referred to as "m:<id>" so all its blocks join one matter;
+    without an explicit "after", a block follows the previous block of the same
+    matter, and the first one follows the matter's own "after".
+    """
+    if not isinstance(value, list):
+        return ()
+    out: list[LineOut] = []
+    for entry in value:
+        if not isinstance(entry, dict) or not isinstance(entry.get("matter"), str):
+            continue
+        key = entry["matter"].strip()
+        matter = matters.get(key)
+        if matter is None:
+            continue
+        after = entry.get("after")
+        after = after.strip() if isinstance(after, str) and after.strip() else None
+        if after is None:
+            after = f"b{last_in[key]}" if key in last_in else matter["after"]
+        out.append(LineOut(matter["thread"] or f"m:{key}", after,
+                           entry.get("happened", entry.get("committed")) is True,
+                           matter["summary"]))
+        last_in[key] = index
     return tuple(out)
 
 

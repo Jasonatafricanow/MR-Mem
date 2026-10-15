@@ -498,21 +498,31 @@ def test_message_time_is_only_claimed_when_the_source_gave_it(tmp_path):
     store.close()
 
 
-def test_tree_schema_parses_tense_time_and_settles():
+def test_tree_schema_understands_matters_first_then_places_blocks():
+    """Prompt v7: matters from the whole text (step 1), then blocks placed in them."""
     from datetime import UTC, datetime
 
     from mr_mem_aml.compiler import SemanticCompiler, blocks_from_json, blocks_to_json
     from mr_mem_aml.source_store import RawMessage
 
-    msg = RawMessage("r:0", "u", "s", "r", 0, "user", "dinner tomorrow at 7",
+    msg = RawMessage("r:0", "u", "s", "r", 0, "user", "fix the 404 handler; dinner at 7",
                      datetime(2026, 5, 1, tzinfo=UTC), "f")
-    raw = ('{"blocks": [{"content": "c", "sources": ["m1"], "settles": ["N2"], "lines": ['
-           '{"thread": "T1", "after": "N1", "happened": false, "time": "2026-05-02 19:00",'
-           ' "summary": "s"}, {"thread": null, "after": null, "happened": true}]}]}')
-    (block,) = SemanticCompiler(None, schema="tree").parse(raw, (msg,))
-    first, second = block.lines
-    # a stated time is content (two time axes only): no separate field is kept
-    assert (first.thread, first.committed, first.due) == ("T1", False, None)
-    assert (second.thread, second.committed, second.due) == (None, True, None)
-    assert block.settles == ("N2",)
-    assert blocks_from_json(blocks_to_json((block,)))[0] == block
+    raw = ('{"matters": ['
+           '{"id": "a", "thread": null, "after": "N4", "summary": "Fix 404 handler"},'
+           '{"id": "b", "thread": "T2", "after": null, "summary": "Project timeline"}],'
+           ' "blocks": ['
+           '{"content": "c1", "sources": ["m1"], "in": [{"matter": "a", "happened": true},'
+           ' {"matter": "b", "happened": true}]},'
+           '{"content": "c2", "sources": ["m1"], "settles": ["b1"],'
+           ' "in": [{"matter": "a", "happened": false}]},'
+           '{"content": "egg was tasty", "sources": ["m1"], "in": []}]}')
+    first, second, egg = SemanticCompiler(None, schema="tree").parse(raw, (msg,))
+    sub, timeline = first.lines
+    # a new sub-task is a new matter growing out of a known step, not an unrelated one
+    assert (sub.thread, sub.after, sub.committed, sub.summary) == (
+        "m:a", "N4", True, "Fix 404 handler")
+    assert (timeline.thread, timeline.after) == ("T2", None)
+    (cont,) = second.lines  # same new matter; follows its previous block by default
+    assert (cont.thread, cont.after, cont.committed) == ("m:a", "b1", False)
+    assert second.settles == ("b1",) and egg.lines == ()
+    assert blocks_from_json(blocks_to_json((first, second, egg))) == (first, second, egg)
