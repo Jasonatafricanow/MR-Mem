@@ -253,7 +253,8 @@ class PathATree:
             len(nodes) - steps_policy.get("latest", 0):] if steps_policy.get("latest") else []
         picked = [c.question for c in select_known_lines(
             [LineCard(n, None, True, s.occurred_at, s.content) for _, n, s in nodes],
-            batch_text=batch_text, now=now, embed=embed, due=0, **steps_policy,
+            batch_text=batch_text, now=now, embed=embed, due=0,
+            **{k: v for k, v in steps_policy.items() if k != "latest"},
         ).lines]
         anchors = [matters[c.question].anchor_node_id for c in chosen]
         steps = list(dict.fromkeys(
