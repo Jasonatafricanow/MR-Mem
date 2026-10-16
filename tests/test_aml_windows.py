@@ -112,3 +112,26 @@ def test_points_link_each_block_to_the_steps_it_carries_on():
         (None, "N1", True), (None, "N4", True)]  # one block, two lines meet
     assert [(x.thread, x.after) for x in egg.lines] == [(None, None)]  # a point of its own
     assert [(x.after, x.committed) for x in more.lines] == [("b1", False)]
+
+
+def test_a_journaled_window_is_applied_without_a_model_call(tmp_path):
+    backend = TreeBackend()
+    rt = runtime(tmp_path / "a", backend)
+    try:
+        add(rt, "r1", "u1", "a1", "u2", "a2", "u3", "a3")
+        compiled = rt.source.open_window("u1")  # applied, so not open
+        assert compiled is None and len(backend.windows) == 1
+        import sqlite3
+
+        row = sqlite3.connect(tmp_path / "a" / "data" / "aml_source.sqlite").execute(
+            "SELECT window_id,user_id,first_seq,last_seq,compiled FROM windows").fetchone()
+    finally:
+        rt.close()
+    replay = TreeBackend()
+    rt = runtime(tmp_path / "b", replay)
+    try:
+        rt.source.put_window(row[0], row[1], row[2], row[3], json.loads(row[4]))
+        assert add(rt, "r1", "u1", "a1", "u2", "a2", "u3", "a3")["blocks"] == 4
+        assert replay.windows == []  # the journal answered; no model call
+    finally:
+        rt.close()

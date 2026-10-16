@@ -248,6 +248,12 @@ class AmlSourceStore:
         rows = self._select("WHERE user_id=? AND seq>? ORDER BY seq", (user_id, done))
         return tuple(zip(seqs, rows, strict=True))
 
+    def seqs_between(self, user_id: str, first_seq: int, last_seq: int) -> tuple[int, ...]:
+        with self._lock:
+            return tuple(r[0] for r in self._conn.execute(
+                "SELECT seq FROM messages WHERE user_id=? AND seq BETWEEN ? AND ? ORDER BY seq",
+                (user_id, first_seq, last_seq)))
+
     def messages_between(self, user_id: str, first_seq: int, last_seq: int
                          ) -> tuple[RawMessage, ...]:
         return self._select("WHERE user_id=? AND seq BETWEEN ? AND ? ORDER BY seq",

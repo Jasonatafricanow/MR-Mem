@@ -448,7 +448,8 @@ class MemoryRuntime:
         if journaled is not None:  # crash between journal and apply: apply it
             wid, first, last, compiled = journaled
             messages = self.source.messages_between(user_id, first, last)
-            return AddJob(request, messages, (), {}, compiled, (wid, (first, last), False))
+            seqs = self.source.seqs_between(user_id, first, last)
+            return AddJob(request, messages, (), {}, compiled, (wid, seqs, False))
         pending = self.source.pending(user_id)
         end = self._window_end(pending, final)
         if end is None:
