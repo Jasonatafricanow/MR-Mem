@@ -36,10 +36,10 @@ class TreeBackend:
         })
 
 
-def runtime(tmp_path: Path, backend, **window) -> MemoryRuntime:
+def runtime(tmp_path: Path, backend, scene: str = "chat", **window) -> MemoryRuntime:
     config = RuntimeConfig(
         data_dir=tmp_path / "data", compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree", compile_window={"soft": 3, "hard": 5, **window},
+        path_a_engine="tree", compile_window={"soft": 3, "hard": 5, **window}, scene=scene,
     )
     return MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
 
@@ -64,6 +64,18 @@ def test_windows_close_at_the_next_turn_of_the_person_and_flush_compiles_the_res
         assert rt.flush() == {"status": "ok", "windows": 1}
         assert backend.windows[-1] == ["u3", "a3"]
         assert rt.flush() == {"status": "ok", "windows": 0}
+    finally:
+        rt.close()
+
+
+def test_work_windows_close_after_the_feedback_before_the_next_report(tmp_path):
+    backend = TreeBackend()
+    rt = runtime(tmp_path, backend, scene="work")
+    try:
+        add(rt, "r1", "u1", "a1", "u2", "a2", "u3", "a3")
+        assert backend.windows == [["u1", "a1", "u2"]]  # "a1" and its feedback "u2" stay together
+        rt.flush()
+        assert backend.windows[1:] == [["a2", "u3", "a3"]]
     finally:
         rt.close()
 

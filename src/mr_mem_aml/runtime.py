@@ -425,12 +425,18 @@ class MemoryRuntime:
         """How many pending messages the next window takes, or None to wait."""
         soft, hard = self.config.compile_window["soft"], self.config.compile_window["hard"]
         gap = self.config.compile_window.get("gap_minutes", 120) * 60
+        work = self.config.scene == "work"
+
+        def turn(prev, nxt) -> bool:
+            if work:  # after the person's feedback, before the assistant's next report
+                return prev.role == "user" and nxt.role != "user"
+            return nxt.role == "user" and prev.role != "user"  # the person speaks again
 
         def breaks(prev, nxt) -> bool:
             return (nxt.session_id != prev.session_id
                     or (prev.time_given and nxt.time_given
                         and (nxt.occurred_at - prev.occurred_at).total_seconds() >= gap)
-                    or (nxt.role == "user" and prev.role != "user"))
+                    or turn(prev, nxt))
 
         n = len(pending)
         for i in range(soft, min(hard, n - 1) + 1):

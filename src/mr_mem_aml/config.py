@@ -43,9 +43,14 @@ class RuntimeConfig:
     # Tree engine: compile in windows of our own instead of per Add (design 4.7):
     # {"soft": messages, "hard": messages, "gap_minutes": a pause that ends a stretch}.
     # Add stores raw text at once; a window closes at the first natural breakpoint
-    # after "soft" (session change, long pause, the person speaking again after the
-    # assistant), at "hard" at the latest; flush compiles what is left.
+    # after "soft", where a block is complete (session change, long pause, and the
+    # turn boundary of the scene), at "hard" at the latest; flush compiles what is left.
     compile_window: dict[str, int] | None = None
+    # Conversation scene (design 4.1, 4.7): "chat" = the interaction is the content,
+    # a turn ends when the person speaks again after the assistant; "work" = a block
+    # is the assistant's report and the person's feedback on it, so a turn ends when
+    # the assistant speaks again after the person.
+    scene: str = "chat"
     # Tree engine placement: "lines" = blocks placed on lines judged by their
     # summaries; "points" = each block linked to the earlier steps it carries on,
     # lines are what the links make, and no summary takes part in placement.
@@ -56,6 +61,8 @@ class RuntimeConfig:
             raise ValueError("path_a_engine must be 'flat' or 'tree'")
         if self.placement not in ("lines", "points"):
             raise ValueError("placement must be 'lines' or 'points'")
+        if self.scene not in ("chat", "work"):
+            raise ValueError("scene must be 'chat' or 'work'")
         if self.compile_window is not None:
             w = self.compile_window
             if self.path_a_engine != "tree":
