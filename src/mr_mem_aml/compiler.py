@@ -27,8 +27,8 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
-TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v10"
-POINTS_PROMPT_VERSION = "mr-mem-aml-point-compiler-v2"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v11"
+POINTS_PROMPT_VERSION = "mr-mem-aml-point-compiler-v3"
 AssistantPolicy = Literal["attributed", "context_only"]
 Schema = Literal["flat", "tree", "points"]
 
@@ -449,6 +449,9 @@ understand what is in it before cutting anything.
   now settled (decided, done, dropped). A step whose content states a time is
   settled anyway once that time has passed; what was planned stays on record
   as having been the plan, and what actually happened carries it on.
+In work with an assistant, steps carry each other on in a loop: something calls
+for the person's feedback or decision, the assistant acts on it, and what comes
+of it calls for the next feedback or decision.
 
 Never rewrite an earlier step. Never invent outcomes or alternatives that were
 not stated.
@@ -473,9 +476,9 @@ TREE_ASSISTANT_RULES = {
     "attributed": (
         "Work and chat differ. When a person works with an assistant (building, "
         "coding, investigating), the person decides and the content is how the work "
-        "actually moves, step by step: what called for a step (a problem, a need, an "
-        "earlier result), the person's feedback or decision, and what the assistant "
-        "then did and how it came out. What the assistant only proposed or explained "
+        "actually moves: what the person noticed, asked, decided, rejected or "
+        "corrected, and what the assistant then did and how it came out. What the "
+        "assistant only proposed or explained "
         "appears only where the person took it up or turned it down. In a chat the "
         "interaction itself is the content: the assistant's answers and "
         "recommendations are what the user received; attribute them to the "
