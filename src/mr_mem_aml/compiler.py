@@ -27,8 +27,8 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
-TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v11"
-POINTS_PROMPT_VERSION = "mr-mem-aml-point-compiler-v3"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v12"
+POINTS_PROMPT_VERSION = "mr-mem-aml-point-compiler-v4"
 AssistantPolicy = Literal["attributed", "context_only"]
 Schema = Literal["flat", "tree", "points"]
 
@@ -348,7 +348,7 @@ faithfully and completely preserves what was actually meant at that time, using
 as much surrounding context as is needed to avoid distortion.
 1. Boundaries follow semantic completeness, not messages or sentences. One block
    may cite several NEW messages that must be read together; one message may
-   yield several blocks when it holds several independent things.
+   yield several blocks when its parts carry on different things.
 2. A reader who never sees the original text must be able to reconstruct the
    meaning: keep who said it (user, assistant, a third party), the modality
    (fact, plan, intention, wish, question, possibility, reported claim,
