@@ -249,13 +249,15 @@ class PathATree:
         line_of = {node_id: line_id for line_id, node_id, _ in nodes}
         day = sorted((n for _, n, _ in nodes if self.side(n, now) == DAY),
                      key=lambda n: state_of[n].occurred_at)[-steps_policy.get("recent", 10):]
+        latest = sorted((n for _, n, _ in nodes), key=lambda n: state_of[n].occurred_at)[
+            len(nodes) - steps_policy.get("latest", 0):] if steps_policy.get("latest") else []
         picked = [c.question for c in select_known_lines(
             [LineCard(n, None, True, s.occurred_at, s.content) for _, n, s in nodes],
             batch_text=batch_text, now=now, embed=embed, due=0, **steps_policy,
         ).lines]
         anchors = [matters[c.question].anchor_node_id for c in chosen]
         steps = list(dict.fromkeys(
-            n for n in (*day, *picked, *anchors) if n is not None and n in state_of))
+            n for n in (*day, *latest, *picked, *anchors) if n is not None and n in state_of))
         step_ref: dict[str, str] = {}
         payload_steps = []
         for node_id in sorted(steps, key=lambda n: (state_of[n].occurred_at, n)):
@@ -296,9 +298,13 @@ class PathATree:
     # -- apply compiler signals ------------------------------------------
 
     def apply(
-        self, blocks: Sequence[BlockLines], refs: dict[str, str], at: datetime
+        self, blocks: Sequence[BlockLines], refs: dict[str, str], at: datetime,
+        *, open_matters: bool = True,
     ) -> ApplyResult:
-        """Put each Block on the lines it connects to, in the tense it was said."""
+        """Put each Block on the lines it connects to, in the tense it was said.
+
+        ``open_matters=False`` is point placement: a Block is a node linked to the
+        steps it carries on, and no matter (Thread product) is opened for it."""
         result = ApplyResult()
         nodes_of_block: dict[int, list[str]] = {}
         opened_by_block: dict[int, list[str]] = {}
@@ -325,7 +331,7 @@ class PathATree:
             for k, line in enumerate(block.lines):
                 try:
                     node = self._attach(line, memory, refs, nodes_of_block, opened_by_block,
-                                        opened_by_key, index, k, at, result)
+                                        opened_by_key, index, k, at, result, open_matters)
                 except ValueError as exc:  # a refused relation never loses the Block
                     result.failures.append(f"{block.memory_id}: {exc}")
                     continue
@@ -372,6 +378,7 @@ class PathATree:
         self, line: Attachment, memory: CommittedMemory, refs: dict[str, str],
         nodes_of_block: dict[int, list[str]], opened_by_block: dict[int, list[str]],
         opened_by_key: dict[str, str], index: int, k: int, at: datetime, result: ApplyResult,
+        open_matters: bool = True,
     ) -> str:
         matter = self._matter(line.thread, refs, opened_by_block, opened_by_key)
         parent = self._parent(line.after, matter, refs, nodes_of_block)
@@ -388,6 +395,8 @@ class PathATree:
             self.lines.add_edge(line_id, parent, node.node_id, knowledge_at=at)
         self.tense.record(memory.memory_id, happened=line.happened, known_at=at)
         result.attached += 1
+        if matter is None and not open_matters:
+            return node.node_id
         if matter is None:
             # a new matter: its id comes from the Block that started it, never from words
             matter = self.products.open_thread(

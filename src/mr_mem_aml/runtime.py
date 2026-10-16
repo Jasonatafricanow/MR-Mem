@@ -202,7 +202,8 @@ class MemoryRuntime:
         self.backend = None if compiler is not None else build_backend(config.compiler)
         self.compiler = compiler or SemanticCompiler(
             self.backend, assistant_policy=config.assistant_policy,
-            schema="tree" if config.path_a_engine == "tree" else "flat",
+            schema=("flat" if config.path_a_engine != "tree"
+                    else "points" if config.placement == "points" else "tree"),
         )
         self._trees: dict[str, object] = {}
         self.tree_failures: list[str] = []
@@ -660,7 +661,7 @@ class MemoryRuntime:
                 Attachment(x.thread, x.after, x.committed, x.summary)
                 for x in block.lines), block.settles)
              for block, memory in zip(blocks, committed, strict=True)],
-            refs, at,
+            refs, at, open_matters=self.config.placement != "points",
         )
         if result.failures:  # a refused relation never loses a Block; counted, logged
             self.tree_failures.extend(result.failures)

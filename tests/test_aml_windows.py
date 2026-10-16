@@ -93,3 +93,22 @@ def test_a_long_pause_is_a_breakpoint(tmp_path):
         assert backend.windows == [["u1", "a1", "u1b"]]
     finally:
         rt.close()
+
+
+def test_points_link_each_block_to_the_steps_it_carries_on():
+    from datetime import UTC, datetime
+
+    from mr_mem_aml.compiler import SemanticCompiler
+    from mr_mem_aml.source_store import RawMessage
+
+    msg = RawMessage("r:0", "u", "s", "r", 0, "user", "ate bacalhau in Lisbon; egg was tasty",
+                     datetime(2026, 5, 1, tzinfo=UTC), "f")
+    raw = json.dumps({"blocks": [
+        {"content": "meal", "sources": ["m1"], "after": ["N1", "N4"], "happened": True},
+        {"content": "egg", "sources": ["m1"], "after": [], "happened": True},
+        {"content": "more", "sources": ["m1"], "after": ["b1"], "happened": False}]})
+    meal, egg, more = SemanticCompiler(None, schema="points").parse(raw, (msg,))
+    assert [(x.thread, x.after, x.committed) for x in meal.lines] == [
+        (None, "N1", True), (None, "N4", True)]  # one block, two lines meet
+    assert [(x.thread, x.after) for x in egg.lines] == [(None, None)]  # a point of its own
+    assert [(x.after, x.committed) for x in more.lines] == [("b1", False)]

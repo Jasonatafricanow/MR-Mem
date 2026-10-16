@@ -46,10 +46,16 @@ class RuntimeConfig:
     # after "soft" (session change, long pause, the person speaking again after the
     # assistant), at "hard" at the latest; flush compiles what is left.
     compile_window: dict[str, int] | None = None
+    # Tree engine placement: "lines" = blocks placed on lines judged by their
+    # summaries; "points" = each block linked to the earlier steps it carries on,
+    # lines are what the links make, and no summary takes part in placement.
+    placement: str = "lines"
 
     def __post_init__(self) -> None:
         if self.path_a_engine not in ("flat", "tree"):
             raise ValueError("path_a_engine must be 'flat' or 'tree'")
+        if self.placement not in ("lines", "points"):
+            raise ValueError("placement must be 'lines' or 'points'")
         if self.compile_window is not None:
             w = self.compile_window
             if self.path_a_engine != "tree":

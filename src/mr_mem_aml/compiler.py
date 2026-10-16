@@ -28,8 +28,9 @@ from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
 TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v9"
+POINTS_PROMPT_VERSION = "mr-mem-aml-point-compiler-v1"
 AssistantPolicy = Literal["attributed", "context_only"]
-Schema = Literal["flat", "tree"]
+Schema = Literal["flat", "tree", "points"]
 
 
 class CompileError(RuntimeError):
@@ -421,6 +422,50 @@ ASSISTANT_RULES = {
     ),
 }
 
+_STEP2 = TREE_INSTRUCTIONS[TREE_INSTRUCTIONS.index("STEP 2"):TREE_INSTRUCTIONS.index("STEP 3")]
+
+# Point placement (design 4.3, 4.6): each block is linked to the earlier steps it
+# carries on; a line is the points so linked. No line summary is shown or written.
+POINTS_INSTRUCTIONS = """You are the semantic compiler of a long-term memory system.
+You receive NEW conversation messages to compile, earlier CONTEXT messages of the
+same session (read-only, never cite them) and STEPS: earlier steps on record.
+Work in three steps, in this order.
+
+STEP 1 - see what this batch holds. Read NEW together with CONTEXT as a whole and
+understand what is in it before cutting anything.
+
+""" + _STEP2 + """STEP 3 - link each block to what it carries on.
+  "after": refs of the earlier steps this block carries on, wherever they are:
+  "N3" (a step in STEPS), "b<k>" (block k of this output, 1-based). Several
+  when it carries several on (a meal carries on the trip and the food tastes);
+  empty when it carries nothing on (a tasty egg in the middle of coding talk).
+  One step can be carried on by several blocks (wanting a laptop -> prices went
+  up / salary not paid yet / the old one still works).
+  "happened": true when what the block states had already happened when it was
+  said (a booking made, an arrival, a decision taken with its reasons); false
+  when it is still going on or still ahead (a plan, an intention, an outcome
+  not known yet). A time it refers to belongs in the block content (rule 2).
+  "settles": refs of steps that were in progress and that this block shows are
+  now settled (decided, done, dropped). A step whose content states a time is
+  settled anyway once that time has passed; what was planned stays on record
+  as having been the plan, and what actually happened carries it on.
+
+Never rewrite an earlier step. Never invent outcomes or alternatives that were
+not stated.
+
+STEPS: {{"ref": "N1", "text", "state": "happened" | "in progress", "time": when it
+was said}}. "rejected": understandings the user denied; never produce them again
+from the same evidence.
+
+Return only JSON, no prose:
+{{"blocks": [{{"content": "...", "sources": ["m1"], "after": ["N2"],
+    "happened": true, "settles": []}}],
+  "carry_from": null}}
+"carry_from": when the last NEW messages leave a step unfinished (it goes on after
+them), leave them out and give the id of the first one left out; they are compiled
+with the messages that follow. Otherwise null.
+"""
+
 # Tree mode: a person working with an assistant decides, and the work is the
 # content; in a chat the interaction itself is the content (design §4.1).
 TREE_ASSISTANT_RULES = {
@@ -474,13 +519,14 @@ class SemanticCompiler:
     ) -> None:
         if assistant_policy not in ASSISTANT_RULES:
             raise ValueError("assistant_policy must be 'attributed' or 'context_only'")
-        if schema not in ("flat", "tree"):
-            raise ValueError("schema must be 'flat' or 'tree'")
+        if schema not in ("flat", "tree", "points"):
+            raise ValueError("schema must be 'flat', 'tree' or 'points'")
         self.backend = backend
         self.assistant_policy = assistant_policy
         self.attempts = attempts
         self.schema = schema
-        self.version = TREE_PROMPT_VERSION if schema == "tree" else PROMPT_VERSION
+        self.version = {"tree": TREE_PROMPT_VERSION, "points": POINTS_PROMPT_VERSION}.get(
+            schema, PROMPT_VERSION)
 
     def prompt(
         self,
@@ -488,7 +534,10 @@ class SemanticCompiler:
         context: tuple[RawMessage, ...],
         known_lines: tuple,
     ) -> str:
-        if self.schema == "tree":  # {"threads": [...], "steps": [...], "rejected": [...]}
+        if self.schema == "points":  # steps only: placement never sees a line summary
+            lines = dict(known_lines) if isinstance(known_lines, dict) else {}
+            head = {"STEPS": lines.get("steps", []), "rejected": lines.get("rejected", [])}
+        elif self.schema == "tree":  # {"threads": [...], "steps": [...], "rejected": [...]}
             lines = dict(known_lines) if isinstance(known_lines, dict) else {}
             head = {"LINES": {k: v for k, v in lines.items() if v and not k.startswith("_")}}
         else:
@@ -508,8 +557,9 @@ class SemanticCompiler:
                 for i, m in enumerate(new)
             ],
         }
-        template = TREE_INSTRUCTIONS if self.schema == "tree" else INSTRUCTIONS
-        table = TREE_ASSISTANT_RULES if self.schema == "tree" else ASSISTANT_RULES
+        template = {"tree": TREE_INSTRUCTIONS, "points": POINTS_INSTRUCTIONS}.get(
+            self.schema, INSTRUCTIONS)
+        table = ASSISTANT_RULES if self.schema == "flat" else TREE_ASSISTANT_RULES
         rules = template.format(assistant_rule=table[self.assistant_policy])
         return rules + "\nINPUT:\n" + json.dumps(material, ensure_ascii=False, indent=1)
 
@@ -539,11 +589,12 @@ class SemanticCompiler:
             out.append(CompiledBlock(
                 content=content,
                 source_record_ids=tuple(m.record_id for m in cited),
-                thread=None if self.schema == "tree" else _thread(item.get("thread")),
-                commit=None if self.schema == "tree" else _commit(item.get("commit"), cited),
+                thread=None if self.schema != "flat" else _thread(item.get("thread")),
+                commit=None if self.schema != "flat" else _commit(item.get("commit"), cited),
                 lines=(_placed(item.get("in"), matters, last_in, len(out) + 1)
-                       if self.schema == "tree" else ()),
-                settles=_refs(item.get("settles")) if self.schema == "tree" else (),
+                       if self.schema == "tree" else _linked(item)
+                       if self.schema == "points" else ()),
+                settles=_refs(item.get("settles")) if self.schema != "flat" else (),
             ))
         if not window:
             return tuple(out)
@@ -664,6 +715,15 @@ def _placed(value: object, matters: dict[str, dict], last_in: dict[str, int],
                            matter["summary"]))
         last_in[key] = index
     return tuple(out)
+
+
+def _linked(item: dict) -> tuple[LineOut, ...]:
+    """Points: one line signal per step the block carries on; none -> a new line."""
+    happened = item.get("happened") is True
+    afters = _refs(item.get("after") if isinstance(item.get("after"), list)
+                   else [item.get("after")])
+    return tuple(LineOut(None, a, happened, None) for a in afters) or (
+        LineOut(None, None, happened, None),)
 
 
 def _refs(value: object) -> tuple[str, ...]:
