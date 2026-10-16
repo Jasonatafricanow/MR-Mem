@@ -27,8 +27,8 @@ from typing import Literal, Protocol
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
-TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v9"
-POINTS_PROMPT_VERSION = "mr-mem-aml-point-compiler-v1"
+TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v10"
+POINTS_PROMPT_VERSION = "mr-mem-aml-point-compiler-v2"
 AssistantPolicy = Literal["attributed", "context_only"]
 Schema = Literal["flat", "tree", "points"]
 
@@ -362,7 +362,7 @@ as much surrounding context as is needed to avoid distortion.
 5. Useful granularity: neither one giant block nor atomized fragments.
 6. Skip content without lasting information (greetings, thanks, filler).
 7. {assistant_rule}
-8. Write each block in the conversation's language as plain declarative
+8. Write each block in the language the user speaks as plain declarative
    third-person sentences ("The user ...", "The assistant ...").
 9. When one message holds something that already happened and something still
    going on ("we agreed to have dinner tomorrow": the agreement happened, the
