@@ -449,6 +449,8 @@ class MemoryRuntime:
             wid, first, last, compiled = journaled
             messages = self.source.messages_between(user_id, first, last)
             seqs = self.source.seqs_between(user_id, first, last)
+            if len(seqs) < compiled.get("kept", len(seqs)):  # its messages not all here yet
+                return None
             return AddJob(request, messages, (), {}, compiled, (wid, seqs, False))
         pending = self.source.pending(user_id)
         end = self._window_end(pending, final)
