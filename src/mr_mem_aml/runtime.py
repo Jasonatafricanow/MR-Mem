@@ -703,6 +703,7 @@ class MemoryRuntime:
             committed.append(admission.admit(SemanticMemoryCandidate(
                 semantic_id=f"aml:{rid}:{index}", scope=scope, content=block.content,
                 source_refs=tuple(refs), compiler_version=PROMPT_VERSION,
+                attributes=self.source.admission_attributes(rid),
             )))
             self._link_blocks(committed[-1])
         return committed

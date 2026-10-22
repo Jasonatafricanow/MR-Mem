@@ -134,6 +134,9 @@ class AmlSourceStore:
     def close(self) -> None:
         self._conn.close()
 
+    def admission_attributes(self, request_id: str) -> tuple[tuple[str, str], ...]:
+        return ()
+
     # -- write --------------------------------------------------------
 
     def put_request(self, payload: dict, *, received_at: datetime) -> str:
