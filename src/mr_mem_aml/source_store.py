@@ -38,9 +38,12 @@ class RawMessage:
     occurred_at: datetime
     fingerprint: str
     time_given: bool = True  # False: the source gave no time; only the order is real
+    native_ref: SourceRef | None = None
 
     @property
     def ref(self) -> SourceRef:
+        if self.native_ref is not None:
+            return self.native_ref
         return SourceRef(
             NAMESPACE, self.session_id, self.record_id, self.occurred_at,
             fingerprint=self.fingerprint,

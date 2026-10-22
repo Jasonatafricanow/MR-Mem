@@ -214,6 +214,26 @@ class CanonicalMemoryStore:
                     changed.append(memory_id)
         return tuple(changed)
 
+    def invalidate_batch(self, scope: Scope, memory_ids: tuple[str, ...]) -> tuple[str, ...]:
+        """Retire partial admission of a cancelled source batch before rebuilding it.
+
+        This is a host operation, never a model-proposed lifecycle transition.
+        All identities are checked before changing anything.
+        """
+        at = datetime.now(UTC)
+        with self._transaction():
+            memories = tuple(self.get(mid) for mid in memory_ids)
+            if any(m is None or m.scope != scope for m in memories):
+                raise ValueError("batch invalidation requires existing same-scope memories")
+            changed = []
+            for memory in memories:
+                if memory.lifecycle is MemoryLifecycle.ACTIVE:
+                    if at < memory.known_at:
+                        raise ValueError("invalidation precedes admission")
+                    self._set_lifecycle(memory, MemoryLifecycle.INVALIDATED, at=at)
+                    changed.append(memory.memory_id)
+        return tuple(changed)
+
     def _commit_semantic(self, memory: CommittedMemory) -> None:
         with self._transaction():
             previous = None

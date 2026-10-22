@@ -202,13 +202,14 @@ def _echo(request: dict) -> dict:
 class MemoryRuntime:
     """Single-writer composition; one instance per data directory."""
 
-    def __init__(self, config: RuntimeConfig, *, compiler: SemanticCompiler | None = None):
+    def __init__(self, config: RuntimeConfig, *, compiler: SemanticCompiler | None = None,
+                 source: AmlSourceStore | None = None):
         self.config = config
         data = Path(config.data_dir)
         data.mkdir(parents=True, exist_ok=True)
         self.canonical_path = data / "memory.sqlite"
         self.core = MemoryCore(self.canonical_path)
-        self.source = AmlSourceStore(data / "aml_source.sqlite")
+        self.source = source if source is not None else AmlSourceStore(data / "aml_source.sqlite")
         self.compiler_configured = compiler is not None or config.compiler["type"] != "disabled"
         self.backend = None if compiler is not None else build_backend(config.compiler)
         self.compiler = compiler or SemanticCompiler(
