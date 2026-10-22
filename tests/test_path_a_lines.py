@@ -54,7 +54,8 @@ def test_future_plan_is_not_due_yet():
 def test_dense_cue_bridges_words_that_do_not_overlap():
     portugal = card("Portugal trip", "go next year", hours_ago=999)
     other = card("Laptop purchase", "comparing models", hours_ago=999)
-    vectors = {"Portugal trip go next year": (1.0, 0.0), "Laptop purchase comparing models": (0.0, 1.0),
+    vectors = {"Portugal trip go next year": (1.0, 0.0),
+               "Laptop purchase comparing models": (0.0, 1.0),
                "booked Lisbon": (0.9, 0.1)}
 
     def embed(text):

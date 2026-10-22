@@ -270,7 +270,8 @@ class MemoryRuntime:
                 thread = threads.get(question)
                 head = None if lce is None else lce.lineage_head(question)
                 out.append({
-                    "user_id": user_id, "question": question, "last_active": last_active.isoformat(),
+                    "user_id": user_id, "question": question,
+                    "last_active": last_active.isoformat(),
                     "thread": None if thread is None else {
                         "status": thread.status.value, "mature": thread.mature,
                         "summary": thread.working_summary,
@@ -880,4 +881,6 @@ class MemoryRuntime:
 
 def _past_feedback(roles: list[str]) -> bool:
     """An assistant message after a message of the person, in one work block."""
-    return any(r == "assistant" for r in roles[roles.index("user") + 1:]) if "user" in roles else False
+    if "user" not in roles:
+        return False
+    return any(r == "assistant" for r in roles[roles.index("user") + 1:])

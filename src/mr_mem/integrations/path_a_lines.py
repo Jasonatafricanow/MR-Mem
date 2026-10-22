@@ -21,9 +21,9 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Callable, Sequence
 
 from mr_mem.memory.providers.bm25 import lexical_tokens
 
@@ -92,7 +92,7 @@ def _cosine_order(query: str, docs: Sequence[str],
     for i, d in enumerate(docs):
         dv = embed(d)
         dn = math.sqrt(sum(x * x for x in dv)) or 1.0
-        scored.append((sum(a * c for a, c in zip(qv, dv)) / (qn * dn), i))
+        scored.append((sum(a * c for a, c in zip(qv, dv, strict=True)) / (qn * dn), i))
     scored.sort(key=lambda item: (-item[0], item[1]))
     return [i for _, i in scored]
 

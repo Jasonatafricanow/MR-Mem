@@ -144,7 +144,7 @@ class PathAReader:
         embed: Embed | None = None,
         raw_search: RawSearch | None = None,
         blocks_for_record: BlocksForRecord | None = None,
-        evidence_time: "Callable[[CommittedMemory], datetime | None] | None" = None,
+        evidence_time: Callable[[CommittedMemory], datetime | None] | None = None,
         line_context: Callable | None = None,
     ) -> None:
         self.canonical_path = Path(canonical_path)

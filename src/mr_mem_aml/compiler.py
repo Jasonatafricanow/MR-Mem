@@ -49,11 +49,14 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
     if os.name == "nt":  # agy spawns helpers; kill the whole tree
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                       capture_output=True, check=False)
-    else:
+        try:
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True, check=False, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # Fall back to the handle for the child we created.
+    if proc.poll() is None:
         proc.kill()
-    proc.wait()
+    proc.wait(timeout=5)
 
 
 class CommandBackend:

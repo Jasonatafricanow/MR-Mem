@@ -81,7 +81,9 @@ class RuntimeConfig:
             raise ValueError("disabled compiler requires hyde='off'")
         if type(self.compile_concurrency) is not int or not 1 <= self.compile_concurrency <= 64:
             raise ValueError("compile_concurrency must be an integer in [1, 64]")
-        if self.embedding and self.embedding.get("type") not in ("fastembed", "openai", "gemini", "ark"):
+        if self.embedding and self.embedding.get("type") not in (
+            "fastembed", "openai", "gemini", "ark"
+        ):
             raise ValueError("embedding.type must be fastembed, openai, gemini or ark")
         if type(self.context_messages) is not int or not 0 <= self.context_messages <= 200:
             raise ValueError("context_messages must be an integer in [0, 200]")

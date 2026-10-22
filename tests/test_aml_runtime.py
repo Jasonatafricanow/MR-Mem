@@ -446,7 +446,8 @@ def test_compiler_sees_recent_cued_and_due_lines(tmp_path):
 def test_raw_base_reads_projections_over_raw_message_hits(tmp_path):
     rt, _ = runtime(tmp_path, raw_base=True)
     try:
-        add(rt, "r1", "No money, not buying that laptop || commit:Buy the laptop?|Not buying: no budget",
+        add(rt, "r1", "No money, not buying that laptop || "
+            "commit:Buy the laptop?|Not buying: no budget",
             "Makes sense.")
         add(rt, "r2", "Went hiking at the lake", start=1_690_100_000_000)
         query = {"query": "did I buy the laptop", "user_id": "u1", "top_k": 10}
