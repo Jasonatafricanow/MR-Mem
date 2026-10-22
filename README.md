@@ -1,5 +1,7 @@
 # MR-Mem
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Standalone sidecar semantic-memory runtime extracted from Mind Runtime.
 
 For assembling storage, retrieval and recovery before the compiler is ready, see
