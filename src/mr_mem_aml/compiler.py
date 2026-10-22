@@ -24,13 +24,17 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol
 
+from mr_mem_aml import entries as entry_mode
 from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
 TREE_PROMPT_VERSION = "mr-mem-aml-tree-compiler-v12"
-POINTS_PROMPT_VERSION = "mr-mem-aml-point-compiler-v4"
+POINTS_PROMPT_VERSION = "mr-mem-aml-point-compiler-v7"
+# entries: extraction prompt v2 + assembly v2 of the 2026-10-17 trial (entries.py)
+ENTRIES_PROMPT_VERSION = "mr-mem-aml-entry-compiler-v1"
 AssistantPolicy = Literal["attributed", "context_only"]
-Schema = Literal["flat", "tree", "points"]
+Schema = Literal["flat", "tree", "points", "entries"]
+CONTENT_BYTES = 16000  # an assembled block stays under the canonical 16384-byte limit
 
 
 class CompileError(RuntimeError):
@@ -422,39 +426,104 @@ ASSISTANT_RULES = {
     ),
 }
 
-_STEP2 = TREE_INSTRUCTIONS[TREE_INSTRUCTIONS.index("STEP 2"):TREE_INSTRUCTIONS.index("STEP 3")]
-
-# Point placement (design 4.3, 4.6): each block is linked to the earlier steps it
-# carries on; a line is the points so linked. No line summary is shown or written.
+# Point placement (design v8 4.1-4.6): each block is linked to the earlier steps it
+# is built on; a line is the steps so linked. No line summary is shown or written.
 POINTS_INSTRUCTIONS = """You are the semantic compiler of a long-term memory system.
-You receive NEW conversation messages to compile, earlier CONTEXT messages of the
-same session (read-only, never cite them) and STEPS: earlier steps on record.
-Work in three steps, in this order.
 
-STEP 1 - see what this batch holds. Read NEW together with CONTEXT as a whole and
-understand what is in it before cutting anything.
+What you produce:
+- SemanticBlocks ("blocks"). A block is the smallest complete piece of meaning
+  that can be read on its own without being taken out of context. It may span
+  several messages; one message may give several blocks.
+- Links. Each block names the earlier blocks it was built on: the event or the
+  line of thought in it moved forward from there. A line is nothing but blocks
+  linked this way. You never decide what a line is about, where it starts or
+  ends, or which line a block belongs to.
 
-""" + _STEP2 + """STEP 3 - link each block to what it carries on.
-  "after": refs of the earlier steps this block carries on, wherever they are:
-  "N3" (a step in STEPS), "b<k>" (block k of this output, 1-based). Several
-  when it carries several on (a meal carries on the trip and the food tastes);
-  empty when it carries nothing on (a tasty egg in the middle of coding talk).
-  One step can be carried on by several blocks (wanting a laptop -> prices went
-  up / salary not paid yet / the old one still works).
-  "happened": true when what the block states had already happened when it was
-  said (a booking made, an arrival, a decision taken with its reasons); false
-  when it is still going on or still ahead (a plan, an intention, an outcome
-  not known yet). A time it refers to belongs in the block content (rule 2).
-  "settles": refs of steps that were in progress and that this block shows are
-  now settled (decided, done, dropped). A step whose content states a time is
-  settled anyway once that time has passed; what was planned stays on record
-  as having been the plan, and what actually happened carries it on.
-In work with an assistant, steps carry each other on in a loop: something calls
-for the person's feedback or decision, the assistant acts on it, and what comes
-of it calls for the next feedback or decision.
+What a block holds depends on the conversation:
+- Work: a person and an assistant building, coding or investigating together.
+  The person decides, and they decide on what the assistant brings them.
+  - The request the person opens the work with is one block. A new request of
+    the person that does not answer anything the assistant brought is a new
+    block too.
+  - Every other block is one exchange: what the assistant brought (what it did,
+    what it ran into, what came out, what it proposes or asks) followed by the
+    person's feedback on it (a decision, a correction, a question, a judgement).
+    Read on its own it says what happened and what the person made of it.
+  - When the person's message holds several points about different things,
+    numbered or not, each point is its own block. A point that answers part of
+    what the assistant brought goes with that part; a point that raises
+    something new stands on its own as a new request. Points that only make
+    sense together stay together.
+  - A block ends with the person's feedback. The assistant's next message,
+    which reports how that feedback was carried out, opens the next block;
+    never add it to the block it answers. Use only what was known when the
+    block was said.
+  - When the assistant reports what it actually did and the person does not
+    answer it (they go on to something new), that report is a block of its
+    own. What the assistant only proposed or explained without the person
+    answering it is not a block. A lot of activity that did not move the
+    request is still one exchange.
+- Chat: people talking, or a user asking an assistant. The interaction is the
+  content: each person's statements, plans, tastes and positions; the
+  assistant's answers and recommendations are what the user received,
+  attributed to the assistant. One experience may give several blocks (what
+  was done, why, what was seen, what was thought).
 
-Never rewrite an earlier step. Never invent outcomes or alternatives that were
-not stated.
+You receive NEW messages to compile, earlier CONTEXT of the same session
+(read-only, never cite it) and STEPS: earlier blocks on record. Work in three
+steps, in this order.
+
+STEP 1 - read NEW with CONTEXT as a whole and see what moved before cutting.
+
+STEP 2 - cut blocks.
+1. Boundaries follow meaning, not messages.
+2. A reader who never sees the original must be able to reconstruct the
+   meaning: who said it, the modality (fact, plan, intention, wish, question,
+   possibility, reported claim, correction, refusal) and every concrete
+   specific (names, numbers, amounts, dates and times, places, titles, items,
+   files). Resolve a relative time against the message time when unambiguous
+   and write it as YYYY-MM-DD or YYYY-MM-DD HH:MM next to the original wording
+   ("this afternoon (2024-05-06 15:00)").
+3. Keep the unknown unknown; do not guess or generalize. Leave out what you
+   cannot support rather than over-read a passing remark.
+4. When a block would hold something that had already happened and something
+   still ahead ("they agreed to have dinner tomorrow"), cut it in two.
+5. Skip what carries no lasting information (greetings, thanks, filler).
+6. {assistant_rule}
+7. Write in the language the user speaks, as plain third-person sentences
+   ("The user ...", "The assistant ...").
+
+STEP 3 - for each block:
+  "after": refs of the earlier blocks it was built on: "N3" (in STEPS) or
+  "b<k>" (the k-th block of this output, earlier than this one). It may be far
+  back, it may be several, it is empty when the block builds on nothing on
+  record. Decide by what was done, not by what was said. Happening at the same
+  time or sharing words does not make one block built on another. A link is
+  not a cause; a cause goes into the content only when the original states it.
+  In work, the assistant's part of a block carries out an earlier decision or
+  request of the person; the block is built on the block where that was
+  decided: usually the one just before, sometimes far back.
+  Work example:
+    b1 the person asks to speed up the import and keep the CSV format.
+    b2 the assistant reports the import takes 9 minutes; the person asks for
+       caching. after: ["b1"]
+    b3 the assistant reports caching is in and the import takes 2 minutes; the
+       person approves. after: ["b2"]
+    b4 the assistant reports the export is done; the person says the CSV format
+       asked for at the start is still wrong. after: ["b1"]
+  In chat, a remark is not built on another just because it comes next.
+  Chat example: the user is training for a half marathon in March; weeks later
+  the user's knee hurts after long runs; the user decides to skip the March
+  race. The decision is built on both earlier blocks.
+  "happened": true when what the block is about had already happened by its
+  last message (a decision taken, work reported done or failed, something
+  seen, an arrival); false when it is still going on or ahead (a plan, an
+  intention, work still running). Asking about something does not make it
+  going on.
+  "settles": refs of steps that were going on and that this block shows are
+  now settled (done, decided, dropped).
+
+Never rewrite an earlier step. Never invent outcomes or alternatives.
 
 STEPS: {{"ref": "N1", "text", "state": "happened" | "in progress", "time": when it
 was said}}. "rejected": understandings the user denied; never produce them again
@@ -464,10 +533,16 @@ Return only JSON, no prose:
 {{"blocks": [{{"content": "...", "sources": ["m1"], "after": ["N2"],
     "happened": true, "settles": []}}],
   "carry_from": null}}
-"carry_from": when the last NEW messages leave a step unfinished (it goes on after
-them), leave them out and give the id of the first one left out; they are compiled
-with the messages that follow. Otherwise null.
+"carry_from": when the last NEW messages leave a block unfinished (it goes on
+after them), leave them out and give the id of the first one left out; they are
+compiled with the messages that follow. Otherwise null.
 """
+
+POINTS_ASSISTANT_RULES = {
+    **ASSISTANT_RULES,
+    "attributed": "Attribute every statement to who made it; never present the "
+                  "assistant's words as the user's view.",
+}
 
 # Tree mode: a person working with an assistant decides, and the work is the
 # content; in a chat the interaction itself is the content (design §4.1).
@@ -519,17 +594,23 @@ class SemanticCompiler:
         assistant_policy: AssistantPolicy = "attributed",
         attempts: int = 3,
         schema: Schema = "flat",
+        scene: str = "chat",
     ) -> None:
         if assistant_policy not in ASSISTANT_RULES:
             raise ValueError("assistant_policy must be 'attributed' or 'context_only'")
-        if schema not in ("flat", "tree", "points"):
-            raise ValueError("schema must be 'flat', 'tree' or 'points'")
+        if schema not in ("flat", "tree", "points", "entries"):
+            raise ValueError("schema must be 'flat', 'tree', 'points' or 'entries'")
+        if scene not in ("chat", "work"):
+            raise ValueError("scene must be 'chat' or 'work'")
+        if schema == "entries" and assistant_policy != "attributed":
+            raise ValueError("schema 'entries' assembles assistant parts: policy 'attributed'")
         self.backend = backend
         self.assistant_policy = assistant_policy
         self.attempts = attempts
         self.schema = schema
-        self.version = {"tree": TREE_PROMPT_VERSION, "points": POINTS_PROMPT_VERSION}.get(
-            schema, PROMPT_VERSION)
+        self.scene = scene  # entries: how code assembles blocks (work or chat)
+        self.version = {"tree": TREE_PROMPT_VERSION, "points": POINTS_PROMPT_VERSION,
+                        "entries": ENTRIES_PROMPT_VERSION}.get(schema, PROMPT_VERSION)
 
     def prompt(
         self,
@@ -537,6 +618,8 @@ class SemanticCompiler:
         context: tuple[RawMessage, ...],
         known_lines: tuple,
     ) -> str:
+        if self.schema == "entries":
+            return entry_mode.prompt(self._entry_material(new, context, known_lines))
         if self.schema == "points":  # steps only: placement never sees a line summary
             lines = dict(known_lines) if isinstance(known_lines, dict) else {}
             head = {"STEPS": lines.get("steps", []), "rejected": lines.get("rejected", [])}
@@ -562,7 +645,8 @@ class SemanticCompiler:
         }
         template = {"tree": TREE_INSTRUCTIONS, "points": POINTS_INSTRUCTIONS}.get(
             self.schema, INSTRUCTIONS)
-        table = ASSISTANT_RULES if self.schema == "flat" else TREE_ASSISTANT_RULES
+        table = {"flat": ASSISTANT_RULES, "points": POINTS_ASSISTANT_RULES}.get(
+            self.schema, TREE_ASSISTANT_RULES)
         rules = template.format(assistant_rule=table[self.assistant_policy])
         return rules + "\nINPUT:\n" + json.dumps(material, ensure_ascii=False, indent=1)
 
@@ -620,9 +704,14 @@ class SemanticCompiler:
         known_lines: tuple[str, ...] = (),
         *,
         window: bool = False,
+        trace: dict | None = None,
     ):
+        """``trace`` (entries only) is filled with what the journal keeps besides the
+        blocks: the pieces, the model's entries and the assembly audit."""
         if not new:
             return ((), 0) if window else ()
+        if self.schema == "entries":
+            return self._compile_entries(new, context, known_lines, window, trace)
         prompt = self.prompt(new, context, known_lines)
         last = ""
         for _ in range(self.attempts):
@@ -636,6 +725,75 @@ class SemanticCompiler:
                 )
                 prompt = self.prompt(new, context, known_lines) + prompt_retry
         raise CompileError(f"invalid compiler output after {self.attempts} attempts: {last}")
+
+    def _entry_material(self, new, context, known_lines) -> dict:
+        steps = dict(known_lines) if isinstance(known_lines, dict) else {}
+        return entry_mode.material(
+            [{"id": f"m{i + 1}", "role": m.role, **_time(m), "text": m.content}
+             for i, m in enumerate(new)],
+            [{"role": m.role, "text": m.content} for m in context],
+            steps.get("steps", []), steps.get("rejected", []),
+        )
+
+    def _compile_entries(self, new, context, known_lines, window: bool, trace: dict | None):
+        """One model call writes entries; code assembles the blocks (entries.py)."""
+        material = self._entry_material(new, context, known_lines)
+        if not material["NEW"]:  # background notices only: nothing to compile
+            return ((), len(new)) if window else ()
+        ids = {f"m{i + 1}": m for i, m in enumerate(new)}
+        # an unanswered assistant run at the end goes to the next window, as long as
+        # the window still moves on (the same rule as "carry_from" in parse)
+        first = entry_mode.trailing_run(material, self.scene)
+        start = int(first[1:]) - 1 if first else 0
+        carry = window and 0 < start and len(new) // 2 <= start
+        prompt = entry_mode.prompt(material)
+        last = ""
+        for _ in range(self.attempts):
+            raw = self.backend.complete(prompt)
+            try:
+                data = _extract_json(raw)
+                raw_entries = data.get("entries") if isinstance(data, dict) else None
+                if not isinstance(raw_entries, list):
+                    raise ValueError("'entries' must be a list")
+                break
+            except (ValueError, TypeError) as exc:
+                last = str(exc)
+                prompt = (entry_mode.prompt(material)
+                          + f"\n\nYour previous output was invalid ({last}). Return only the JSON.")
+        else:
+            raise CompileError(f"invalid compiler output after {self.attempts} attempts: {last}")
+        result = entry_mode.assemble(material, raw_entries, self.scene, carry=carry)
+        material_text = {p["id"]: p["text"] for m in material["NEW"] for p in m["pieces"]}
+        out = []
+        for b, block in enumerate(result["blocks"], 1):
+            content = block["content"]
+            if not content.strip():  # entries without "says": the original wording
+                content = "\n".join(material_text[p] for p in block["pieces"])
+                result["audit"].setdefault("no_says", []).append(f"b{b}")
+            if len(content.encode("utf-8")) > CONTENT_BYTES:  # never silent: kept in the audit
+                content = content.encode("utf-8")[:CONTENT_BYTES].decode("utf-8", "ignore") + "…"
+                result["audit"].setdefault("trimmed", []).append(f"b{b}")
+            out.append(CompiledBlock(
+                content=content,
+                source_record_ids=tuple(ids[s].record_id for s in block["sources"]),
+                thread=None, commit=None,
+                lines=_linked({"after": block["after"], "happened": block["happened"]}),
+                settles=tuple(block["settles"]),
+            ))
+        if trace is not None:
+            trace.update({
+                "language": entry_mode.language(material),
+                "messages": {m["id"]: ids[m["id"]].record_id for m in material["NEW"]},
+                "pieces": material_text,
+                "entries": result["entries"],
+                "blocks": [{"pieces": b["pieces"], "entries": b["entries"]}
+                           for b in result["blocks"]],
+                "audit": result["audit"],
+            })
+        if not window:
+            return tuple(out)
+        carried = result["carry_from"]
+        return tuple(out), int(carried[1:]) - 1 if carried else len(new)
 
 
 def _thread(value: object) -> ThreadSignalOut | None:

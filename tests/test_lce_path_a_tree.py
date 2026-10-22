@@ -220,3 +220,34 @@ def test_a_matter_new_in_the_batch_joins_its_blocks_and_b_refs_settle(env):
     # the sub-task grows out of the project step: same tree, not an unrelated one
     assert len(env.tree.lines.list_lines()) == 1
     assert env.tree.side(env.node(plan), at(1)) == PAST  # "b1" settled within the batch
+
+
+def test_points_keep_only_refs_to_an_earlier_place_and_log_the_rest(env):
+    first = BlockLines(env.block("The user asked for a window test.", 0).memory_id, (A(),))
+    later = BlockLines(env.block("The assistant added the test; the user approved.", 0).memory_id,
+                       (A(after="b1"), A(after="b3"), A(after="b9a"), A(after="N99")))
+    alone = BlockLines(env.block("The user said the egg was tasty.", 0).memory_id,
+                       (A(after="b3"),))
+    result = env.tree.apply([first, later, alone], {}, at(0), open_matters=False)
+    assert env.tree.lines.parents_at(
+        env.node("The assistant added the test; the user approved."), at(1)) == (
+        env.node("The user asked for a window test."),)
+    assert sorted(f.split("dropped ref ")[1] for f in result.failures) == [
+        "N99", "b3", "b3", "b9a"]  # forward, made-up and unknown refs are logged
+    assert env.tree.lines.parents_at(env.node("The user said the egg was tasty."), at(1)) == ()
+
+
+def test_a_block_citing_several_messages_spans_their_times(env):
+    refs = []
+    for hours in (0, 3):
+        ref = SourceRef("host", "s1", f"span{hours}", at(hours), "1")
+        env.host.refs[ref.source_key] = ref
+        refs.append(ref)
+    memory = SemanticAdmissionService(
+        store=env.core.canonical, sources=env.host, clock=Clock(), origin_runtime_id="t",
+    ).admit(SemanticMemoryCandidate(semantic_id="span", scope=SCOPE, content="span",
+                                    source_refs=tuple(refs), compiler_version="test"))
+    env.memory_of["span"] = memory.memory_id
+    env.tree.apply([BlockLines(memory.memory_id, (A(),))], {}, at(3), open_matters=False)
+    node = env.tree.lines.states_for_node(env.node("span"))[0]
+    assert (node.occurred_start, node.occurred_end) == (at(0), at(3))

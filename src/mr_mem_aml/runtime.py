@@ -51,6 +51,7 @@ from mr_mem_aml.compiler import (
     blocks_to_json,
 )
 from mr_mem_aml.config import RuntimeConfig
+from mr_mem_aml.entries import CONTEXT_KEEP, is_noise
 from mr_mem_aml.source_store import AmlSourceStore, RequestConflict, user_scope
 
 log = logging.getLogger("mr_mem_aml")
@@ -203,7 +204,9 @@ class MemoryRuntime:
         self.compiler = compiler or SemanticCompiler(
             self.backend, assistant_policy=config.assistant_policy,
             schema=("flat" if config.path_a_engine != "tree"
-                    else "points" if config.placement == "points" else "tree"),
+                    else config.placement if config.placement in ("points", "entries")
+                    else "tree"),
+            scene=config.scene,
         )
         self._trees: dict[str, object] = {}
         self.tree_failures: list[str] = []
@@ -224,6 +227,9 @@ class MemoryRuntime:
         self.thread_failures = 0
         self.compile_rejected = 0
         self.window_failures = 0
+        # work blocks that run past the person's feedback into the assistant's next
+        # message (design 4.1); counted and logged, never refused
+        self.past_feedback: list[str] = []
         # upward link raw record -> Blocks compiled from it
         self._blocks_by_record: dict[str, list[str]] = {}
         for memory in self.core.canonical.load_all():
@@ -305,7 +311,8 @@ class MemoryRuntime:
                     if m.scope == scope and m.memory_id not in on_lines]
             out.append({"user_id": user_id, "now": now.isoformat(), "lines": lines,
                         "threads": matters, "lone_blocks": lone,
-                        "relations_refused": list(self.tree_failures)})
+                        "relations_refused": list(self.tree_failures),
+                        "past_feedback": list(self.past_feedback)})
         return out
 
     def _evidence_time(self, memory):
@@ -438,12 +445,20 @@ class MemoryRuntime:
                         and (nxt.occurred_at - prev.occurred_at).total_seconds() >= gap)
                     or turn(prev, nxt))
 
+        # size[i]: what the first i pending messages count toward the caps; entries
+        # placement drops background notices, so they do not count
+        size = [0]
+        for _, m in pending:
+            size.append(size[-1] + int(self.config.placement != "entries"
+                                       or not is_noise(m.role, m.content)))
         n = len(pending)
-        for i in range(soft, min(hard, n - 1) + 1):
-            if breaks(pending[i - 1][1], pending[i][1]):
+        for i in range(1, n):
+            if size[i] > hard:
+                break
+            if size[i] >= soft and breaks(pending[i - 1][1], pending[i][1]):
                 return i
-        if n >= hard:
-            return hard
+        if size[n] >= hard:
+            return size.index(hard)
         return n if final and n else None
 
     def _window_job(self, user_id: str, *, final: bool, request: dict | None = None
@@ -467,9 +482,23 @@ class MemoryRuntime:
         carry = not (final and end == len(pending))  # the last window keeps its tail
         return AddJob(
             request, messages,
-            self.source.context_before(messages[0], self.config.context_messages),
+            self._context(messages[0]),
             self.known_steps(user_id, messages), None, (f"{user_id}:w{seqs[0]}", seqs, carry),
         )
+
+    def _context(self, first) -> tuple:
+        """Earlier messages of the session shown as CONTEXT. Entries placement drops
+        background notices and keeps the last real messages, so it reaches further
+        back until it has them or the session starts."""
+        limit = self.config.context_messages
+        rows = self.source.context_before(first, limit)
+        if self.config.placement != "entries":
+            return rows
+        while (0 < limit < 1000 and len(rows) == limit
+               and sum(not is_noise(m.role, m.content) for m in rows) < CONTEXT_KEEP):
+            limit *= 2
+            rows = self.source.context_before(first, limit)
+        return rows
 
     def prepare_add(self, payload: object) -> AddJob | dict:
         """Owner thread: persist raw text once; return a response or a compile job."""
@@ -495,7 +524,7 @@ class MemoryRuntime:
             return AddJob(request, messages, (), (), compiled)
         return AddJob(
             request, messages,
-            self.source.context_before(messages[0], self.config.context_messages),
+            self._context(messages[0]),
             (self.known_steps(request["user_id"], messages)
              if self.config.path_a_engine == "tree"
              else self.known_lines(request["user_id"], messages)),
@@ -548,17 +577,25 @@ class MemoryRuntime:
         """Any thread: the model call. Touches no store."""
         if job.compiled is not None:
             return job.compiled
+        trace: dict = {}  # entries placement: pieces, entries and audit for the journal
         try:
             started = time.monotonic()
             if job.window is not None and job.window[2]:
                 blocks, kept = self.compiler.compile(
-                    job.messages, job.context, job.known_lines, window=True)
+                    job.messages, job.context, job.known_lines, window=True, trace=trace)
             else:
-                blocks = self.compiler.compile(job.messages, job.context, job.known_lines)
+                blocks = self.compiler.compile(
+                    job.messages, job.context, job.known_lines, trace=trace)
                 kept = len(job.messages)
             log.info("compiled %s: %d messages -> %d blocks in %.1fs",
                      job.request["request_id"] or job.window[0],
                      len(job.messages), len(blocks), time.monotonic() - started)
+            if trace:
+                audit = trace["audit"]
+                log.info("entries %s: %d entries; unresolved %d, redirected %d, dropped %d, "
+                         "user coverage %s", job.request["request_id"] or job.window[0],
+                         len(trace["entries"]), len(audit["unresolved"]),
+                         len(audit["redirected"]), len(audit["dropped"]), audit["user_coverage"])
         except CompileError as exc:
             if self.config.skip_rejected_compiles and "rejected the request" in str(exc):
                 # The provider permanently refuses this input (e.g. content
@@ -569,14 +606,17 @@ class MemoryRuntime:
                 self.compile_rejected += 1
                 return self._journal(job, (), len(job.messages))
             raise CompileFailed(str(exc)) from exc
-        return self._journal(job, blocks, kept)
+        return self._journal(job, blocks, kept, trace)
 
-    def _journal(self, job: AddJob, blocks, kept: int | None = None) -> dict:
+    def _journal(self, job: AddJob, blocks, kept: int | None = None,
+                 trace: dict | None = None) -> dict:
         data = blocks_to_json(blocks, self.compiler.version)
         if isinstance(job.known_lines, dict):  # tree: how the prompt's refs resolve
             data["refs"] = dict(job.known_lines.get("_refs", {}))
         if job.window is not None:
             data["kept"] = len(job.messages) if kept is None else kept
+        if trace:  # entries placement: kept for audit and replay, never ingested
+            data["assembly"] = trace
         return data
 
     def fail_add(self, job: AddJob, error: str) -> None:
@@ -632,13 +672,17 @@ class MemoryRuntime:
         )
         committed = []
         for index, block in enumerate(blocks):
-            refs = []
+            refs, roles = [], []
             for record_id in block.source_record_ids:
                 message = self.source.message_by_record(record_id)
                 if message is None:
                     raise RetryableError(f"raw record vanished: {record_id}")
                 refs.append(message.ref)
+                roles.append((message.occurred_at, message.index, message.role))
             refs.sort(key=lambda ref: (ref.occurred_at, ref.record_id))
+            if self.config.scene == "work" and _past_feedback([r for *_, r in sorted(roles)]):
+                self.past_feedback.append(f"aml:{rid}:{index}")
+                log.warning("block aml:%s:%d runs past the person's feedback", rid, index)
             committed.append(admission.admit(SemanticMemoryCandidate(
                 semantic_id=f"aml:{rid}:{index}", scope=scope, content=block.content,
                 source_refs=tuple(refs), compiler_version=PROMPT_VERSION,
@@ -670,7 +714,7 @@ class MemoryRuntime:
                 Attachment(x.thread, x.after, x.committed, x.summary)
                 for x in block.lines), block.settles)
              for block, memory in zip(blocks, committed, strict=True)],
-            refs, at, open_matters=self.config.placement != "points",
+            refs, at, open_matters=self.config.placement == "lines",
         )
         if result.failures:  # a refused relation never loses a Block; counted, logged
             self.tree_failures.extend(result.failures)
@@ -787,3 +831,8 @@ class MemoryRuntime:
                 if item.content.strip()
             ]
         }
+
+
+def _past_feedback(roles: list[str]) -> bool:
+    """An assistant message after a message of the person, in one work block."""
+    return any(r == "assistant" for r in roles[roles.index("user") + 1:]) if "user" in roles else False

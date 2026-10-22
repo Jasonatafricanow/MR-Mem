@@ -53,14 +53,16 @@ class RuntimeConfig:
     scene: str = "chat"
     # Tree engine placement: "lines" = blocks placed on lines judged by their
     # summaries; "points" = each block linked to the earlier steps it carries on,
-    # lines are what the links make, and no summary takes part in placement.
+    # lines are what the links make, and no summary takes part in placement;
+    # "entries" = placed like "points", but the model only writes per-message
+    # entries and code assembles the blocks and links (trial, compiler entries.py).
     placement: str = "lines"
 
     def __post_init__(self) -> None:
         if self.path_a_engine not in ("flat", "tree"):
             raise ValueError("path_a_engine must be 'flat' or 'tree'")
-        if self.placement not in ("lines", "points"):
-            raise ValueError("placement must be 'lines' or 'points'")
+        if self.placement not in ("lines", "points", "entries"):
+            raise ValueError("placement must be 'lines', 'points' or 'entries'")
         if self.scene not in ("chat", "work"):
             raise ValueError("scene must be 'chat' or 'work'")
         if self.compile_window is not None:
