@@ -122,6 +122,8 @@ class NativeSourceStore(AmlSourceStore):
             if row is None:
                 raise ValueError("native source metadata missing")
             ref = decode_ref(json.loads(row[0]))
+            if ref.version_key in self.retired(metadata.request_id):
+                continue
             current = self.reader.read(user_scope(self.user_id), ref)
             if current is not None and current.ref == ref:
                 out.append(replace(metadata, content=current.content, native_ref=ref))
