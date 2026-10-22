@@ -1,6 +1,11 @@
 # MR-Mem
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Standalone sidecar semantic-memory runtime extracted from Mind Runtime.
+
+For assembling storage, retrieval and recovery before the compiler is ready, see
+[runtime assembly](docs/ASSEMBLY.md) ([中文](docs/ASSEMBLY.zh-CN.md)).
 
 MR-Mem does **not** replace an Agent's native session/history database. When the
 host already has durable conversation storage, that store remains the raw source
@@ -143,3 +148,14 @@ These remain host/integration concerns:
 The standalone subsystem originated from Mind Runtime
 `main@18d9275175ed6781962164e530efe4433e29ac7f`. Historical identities should
 only be preserved where they remain semantically valid under ADR-0001.
+
+## Path A
+
+`mr_mem.integrations` (optional, `pip install -e ".[lce]"`) connects mature
+Threads, first-appearance complete cognition and lineage revisions to LCE Path A,
+routes compiled Block signals in one place, and provides one unified read path
+(accepted cognition with its evidence, then active Threads, then canonical
+Memory). It is host-neutral: the host keeps raw text (ADR-0001) and supplies the
+semantic compiler and retrieval stack. See [docs/PATH_A.md](docs/PATH_A.md).
+The AML evaluation adapter (`mr_mem_aml`, this branch only) is described in
+[docs/AML.md](docs/AML.md).

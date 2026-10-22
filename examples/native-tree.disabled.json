@@ -1,0 +1,10 @@
+{
+  "data_dir": "../data/native-memory",
+  "compiler": {"type": "disabled"},
+  "path_a_engine": "tree",
+  "placement": "points",
+  "scene": "chat",
+  "compile_window": null,
+  "raw_base": false,
+  "hyde": "off"
+}

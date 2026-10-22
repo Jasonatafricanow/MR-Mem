@@ -1,0 +1,22 @@
+{
+  "data_dir": "data",
+  "compiler": {
+    "type": "openai",
+    "base_url": "http://127.0.0.1:11434/v1",
+    "model": "qwen2.5:14b-instruct",
+    "json_mode": true,
+    "timeout": 600
+  },
+  "embedding": {
+    "type": "openai",
+    "base_url": "http://127.0.0.1:11434/v1",
+    "model": "bge-m3",
+    "dimension": 1024
+  },
+  "hyde": "off",
+  "search_mode": "path_a",
+  "lce_enabled": true,
+  "compile_concurrency": 2,
+  "host": "127.0.0.1",
+  "port": 8765
+}

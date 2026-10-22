@@ -13,13 +13,20 @@ dependencies = []
 
 [project.optional-dependencies]
 vector = [
+    "numpy>=1.26,<3",
     "qdrant-client==1.19.0",
     "fastembed==0.8.0",
+]
+lce = [
+    "lce-core @ git+https://github.com/Jasonatafricanow/LCE-Longitudinal-Cognition-Engine@5228475d4cce7403078963695e2a98776f4fec24",
 ]
 dev = [
     "pytest>=8.3",
     "ruff>=0.11",
 ]
+
+[project.scripts]
+mr-mem-aml = "mr_mem_aml.__main__:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
