@@ -57,7 +57,7 @@ def test_native_metadata_journal_rehydrates_exact_version_only(tmp_path):
         source.close()
 
 
-@pytest.mark.parametrize("change", ["unchanged", "edit", "delete", "partial_edit"])
+@pytest.mark.parametrize("change", ["unchanged", "edit", "delete", "partial_edit", "revert"])
 def test_native_pending_restart_revision_and_partial_admission(tmp_path, change, monkeypatch):
     host = Host()
     host.put("1", "Considering a laptop")
@@ -101,5 +101,15 @@ def test_native_pending_restart_revision_and_partial_admission(tmp_path, change,
                        if m.memory_id in original)
         assert native.synchronize("s", host.messages.values(), compile_pending=True)[
             "applied_batches"] == 0
+        if change == "revert":
+            host.put("1", "Edited temporarily")
+            native.synchronize("s", host.messages.values(), compile_pending=True)
+            host.put("1", "Considering a laptop")
+            assert native.synchronize("s", host.messages.values(), compile_pending=True)[
+                "applied_batches"] == 1
+            active = [m for m in native.runtime.core.load_all()
+                      if m.lifecycle is MemoryLifecycle.ACTIVE]
+            assert {m.content for m in active} == {m.content for m in host.messages.values()}
+            assert len(active) == 2
     finally:
         native.close()

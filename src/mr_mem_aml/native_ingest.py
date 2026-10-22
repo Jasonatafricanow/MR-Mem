@@ -53,6 +53,7 @@ class NativeMemory:
                     stale = True
                     invalidated.update(self.runtime.core.canonical.invalidate_source(
                         self.scope, current or ref, deleted=current is None))
+                    self.source.retire_ref(rid, ref)
             if stale and status != "done":
                 # A partially applied batch must not produce duplicates on reconstruction.
                 ids = tuple(m.memory_id for m in self.runtime.core.load_all()
@@ -62,7 +63,8 @@ class NativeMemory:
                 self.source.cancel(rid)
                 cancelled += 1
             else:
-                covered.update(ref.version_key for ref in refs)
+                covered.update(ref.version_key for ref in refs
+                               if ref.version_key not in self.source.retired(rid))
         fresh = tuple(m for m in messages if m.ref.version_key not in covered)
         if fresh:
             rid = "native-" + uuid4().hex

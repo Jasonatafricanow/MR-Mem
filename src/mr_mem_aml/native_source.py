@@ -26,6 +26,9 @@ class NativeSourceStore(AmlSourceStore):
         self._bindings = {}
         self._conn.execute("CREATE TABLE IF NOT EXISTS native_refs ("
                            "record_id TEXT PRIMARY KEY, ref TEXT NOT NULL)")
+        self._conn.execute("CREATE TABLE IF NOT EXISTS native_retired_versions ("
+                           "request_id TEXT, version_key TEXT, "
+                           "PRIMARY KEY(request_id,version_key))")
         self._conn.execute("CREATE TABLE IF NOT EXISTS native_binding (identity TEXT PRIMARY KEY)")
         identity = reader.identity
         bound = self._conn.execute("SELECT identity FROM native_binding").fetchall()
@@ -86,10 +89,26 @@ class NativeSourceStore(AmlSourceStore):
             "SELECT request_id,status FROM requests WHERE session_id=? ORDER BY rowid",
             (session_id,)))
 
+    def sessions(self):
+        return tuple(row[0] for row in self._conn.execute(
+            "SELECT DISTINCT session_id FROM requests ORDER BY session_id"))
+
     def cancel(self, request_id):
         with self._conn:
             self._conn.execute("UPDATE requests SET status='cancelled' WHERE request_id=?",
                                (request_id,))
+
+    def retire_ref(self, request_id, ref):
+        with self._conn:
+            self._conn.execute("INSERT OR IGNORE INTO native_retired_versions VALUES (?,?)",
+                               (request_id, ref.version_key))
+
+    def retired(self, request_id):
+        return {r[0] for r in self._conn.execute(
+            "SELECT version_key FROM native_retired_versions WHERE request_id=?", (request_id,))}
+
+    def time_given(self, record_id):
+        return True  # Native adapters require source timestamps, never receipt-time substitutes.
 
     def _select(self, clause, args):
         out = []
