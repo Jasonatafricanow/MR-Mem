@@ -160,8 +160,13 @@ def _digest(*parts: str) -> str:
 class LineGraphStore:
     """SQLite persistence for Line identities and their knowledge-time revisioned DAG."""
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, *, read_only: bool = False) -> None:
         self.path = Path(path)
+        self._fingerprint = "unset"
+        if read_only:
+            self.conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)
+            self.conn.execute("PRAGMA query_only=ON")
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.execute("PRAGMA foreign_keys = ON")

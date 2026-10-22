@@ -96,8 +96,11 @@ class ReadPolicy:
     # "flat": projection line, then its support as separate items;
     # "matter": one item per projection with its steps inside.
     projection_shape: str = "flat"
+    max_characters: int = 65536
 
     def __post_init__(self) -> None:
+        if type(self.max_characters) is not int or not 0 <= self.max_characters <= 65536:
+            raise ValueError("max_characters must be in [0, 65536]")
         if self.projection_shape not in ("flat", "matter"):
             raise ValueError("projection_shape must be 'flat' or 'matter'")
         for name in (
@@ -142,10 +145,12 @@ class PathAReader:
         raw_search: RawSearch | None = None,
         blocks_for_record: BlocksForRecord | None = None,
         evidence_time: "Callable[[CommittedMemory], datetime | None] | None" = None,
+        line_context: Callable | None = None,
     ) -> None:
         self.canonical_path = Path(canonical_path)
         self.retrieval = retrieval
         self.lce = lce
+        self.line_context = line_context
         self.policy = policy or ReadPolicy()
         self.render_source = render_source
         self.embed = embed
@@ -291,7 +296,7 @@ class PathAReader:
         try:
             if self.raw_search is not None:
                 self._raw_read(scope, query, limit, mode, store, items, seen_memory, seen_source)
-                return tuple(items[:limit])
+                return self._bounded(items, limit)
             hits = self.retrieval.search(
                 MemoryRetrievalQuery(scope=scope, text=query, limit=limit),
                 budget=MemorySurfaceBudget(max_items=limit, max_characters=65536),
@@ -318,7 +323,18 @@ class PathAReader:
                     ))
         finally:
             store.close()
-        return tuple(items[:limit])
+        return self._bounded(items, limit)
+
+    def _bounded(self, items, limit):
+        result, remaining = [], self.policy.max_characters
+        for item in items:
+            if len(item.content) > remaining:
+                continue
+            result.append(item)
+            remaining -= len(item.content)
+            if len(result) >= limit:
+                break
+        return tuple(result)
 
     def _raw_read(self, scope, query, limit, mode, store, items, seen_memory, seen_source) -> None:
         raw = list(self.raw_search(scope, query, limit))
@@ -349,6 +365,13 @@ class PathAReader:
         seen_source: set[str],
     ) -> list[EvidenceItem]:
         items: list[EvidenceItem] = []
+        if self.line_context is not None:
+            for group in self.line_context(scope, rank_of, store):
+                seen_memory.update(group.memory_ids)
+                items.append(EvidenceItem(
+                    group.item_id, "line", group.content, group.score, None,
+                ))
+            return items
         heads = tuple(self.lce.accepted()) if self.lce is not None else ()
 
         def newest_evidence(memory_ids) -> datetime | None:

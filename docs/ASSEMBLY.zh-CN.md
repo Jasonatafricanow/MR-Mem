@@ -18,3 +18,9 @@
 
 测试用明确标注的已接受夹具代替推理算法，验证无编译器时持久保存、重启恢复、去重、用户隔离。
 原研发工作区没有修改。原有未提交内容在隔离副本中单独形成保留快照；本次没有采纳编译可靠性研究原型。
+
+`path_a_engine=tree`、`search_mode=path_a` 现在会读取已有 Line 图，raw 和 canonical 两条检索路径均已接入。
+命中的 Block 会携带受预算约束的相邻步骤及明确记录的推进边，保留 flat 和 baseline 模式。
+`read_policy.max_characters` 限制最终搜索文本总长度。读取不需要编译器，图和时态库只读打开。
+MR 通过 `MR_MEM_LINE_ROOT=<data_dir>/lce_tree` 消费同一套读出逻辑。
+知识时间、用户范围、隐藏策略和预算规则见 [Line 读出契约](LINE_READ_CONTRACT.md)。

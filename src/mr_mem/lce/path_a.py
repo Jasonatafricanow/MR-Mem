@@ -111,7 +111,11 @@ def stated_end(content: str) -> datetime | None:
 class TenseStore:
     """How each Block was said (happened or not) and when a later Block settled it."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+        if read_only:
+            self.conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+            self.conn.execute("PRAGMA query_only=ON")
+            return
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.executescript(
@@ -142,20 +146,26 @@ class TenseStore:
             self.conn.execute("INSERT OR IGNORE INTO settled VALUES (?, ?, ?)",
                               (memory_id, at.isoformat(), by))
 
-    def side(self, memory_id: str, now: datetime, content: str) -> str | None:
+    def side(
+        self, memory_id: str, now: datetime, content: str, *,
+        knowledge_at: datetime | None = None,
+        allow_settler: Callable[[str], bool] | None = None,
+    ) -> str | None:
         """Which side of the terminator at message time ``now``; None when not on a line."""
         row = self.conn.execute(
-            "SELECT happened FROM said WHERE memory_id = ?", (memory_id,)
+            "SELECT happened, known_at FROM said WHERE memory_id = ?", (memory_id,)
         ).fetchone()
-        if row is None:
+        if row is None or (knowledge_at is not None
+                           and datetime.fromisoformat(row[1]) > knowledge_at):
             return None
         if row[0] or ((end := stated_end(content)) is not None and end <= now):
             return PAST
         settled = self.conn.execute(
-            "SELECT 1 FROM settled WHERE memory_id = ? AND settled_at <= ? LIMIT 1",
+            "SELECT by_memory_id FROM settled WHERE memory_id = ? AND settled_at <= ?",
             (memory_id, now.isoformat()),
-        ).fetchone()
-        return PAST if settled else DAY
+        ).fetchall()
+        return PAST if any(allow_settler is None or allow_settler(row[0])
+                           for row in settled) else DAY
 
 
 class PathATree:

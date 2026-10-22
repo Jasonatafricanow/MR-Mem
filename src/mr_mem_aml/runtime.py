@@ -824,6 +824,30 @@ class MemoryRuntime:
                                (u.record_id,))
                         for u, score in raw.search(scope.user_id or "", q, limit)]
 
+        line_context = None
+        if selected == "path_a" and self.config.path_a_engine == "tree":
+            from mr_mem.integrations.line_read import LineContextReader
+            from mr_mem.memory.retrieval import MemorySurfaceBudget
+
+            graph_reader = LineContextReader(
+                Path(self.config.data_dir) / "lce_tree",
+                max_nodes=max(1, self.config.read_policy.support_limit),
+            )
+            known_at = datetime.now(UTC)
+            messages = [m for batch in self.source.all_request_messages().values()
+                        for m in batch if m.user_id == user_id]
+            message_now = max((m.occurred_at for m in messages), default=known_at)
+
+            def line_context(scope, ranks, store):
+                return graph_reader.read(
+                    scope=scope, ranks=ranks, store=store, knowledge_at=known_at,
+                    now=message_now, evidence_time=self._evidence_time,
+                    budget=MemorySurfaceBudget(
+                        min(top_k, self.config.read_policy.lce_limit),
+                        self.config.read_policy.max_characters,
+                    ),
+                )
+
         reader = PathAReader(
             canonical_path=self.canonical_path,
             retrieval=None if raw_search is not None else self._retrieval(),
@@ -835,6 +859,7 @@ class MemoryRuntime:
             raw_search=raw_search,
             blocks_for_record=lambda record_id: self._blocks_by_record.get(record_id, ()),
             evidence_time=self._evidence_time,
+            line_context=line_context,
         )
         items = reader.search(scope, text[:4096], limit=top_k, mode=selected)
         return {

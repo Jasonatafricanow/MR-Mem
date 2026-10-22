@@ -33,3 +33,11 @@ verify pending input, recovery, exactly-once application and scope isolation, no
 semantic inference. Existing runtime/window tests cover the normal configured path.
 The original development overlay is preserved separately from this change; the
 compiler-reliability research candidate was not promoted into production.
+
+With `path_a_engine=tree`, `search_mode=path_a` now reads the persisted Line graph
+on both raw and canonical discovery paths. The selected Block is returned with a
+bounded neighbourhood and explicit stored progression edges; flat and baseline
+modes remain available. `read_policy.max_characters` bounds final search output.
+The reader needs no compiler and opens graph/tense storage read-only. See
+[the Line read contract](LINE_READ_CONTRACT.md) for time, scope and budget rules.
+An MR consumer selects the same graph with `MR_MEM_LINE_ROOT=<data_dir>/lce_tree`.
