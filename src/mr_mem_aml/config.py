@@ -75,8 +75,10 @@ class RuntimeConfig:
             raise ValueError("search_mode must be 'path_a' or 'baseline'")
         if self.hyde not in ("off", "fallback", "augmented"):
             raise ValueError("hyde must be off, fallback or augmented")
-        if self.compiler.get("type") not in ("command", "openai"):
-            raise ValueError("compiler.type must be 'command' or 'openai'")
+        if self.compiler.get("type") not in ("command", "openai", "disabled"):
+            raise ValueError("compiler.type must be 'command', 'openai' or 'disabled'")
+        if self.compiler.get("type") == "disabled" and self.hyde != "off":
+            raise ValueError("disabled compiler requires hyde='off'")
         if type(self.compile_concurrency) is not int or not 1 <= self.compile_concurrency <= 64:
             raise ValueError("compile_concurrency must be an integer in [1, 64]")
         if self.embedding and self.embedding.get("type") not in ("fastembed", "openai", "gemini", "ark"):

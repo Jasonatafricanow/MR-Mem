@@ -81,7 +81,9 @@ class RuntimeHost:
         runtime = self.runtime
         config = runtime.config
         return {
-            "status": "ok",
+            "status": "ok" if runtime.compiler_configured else "degraded",
+            "compiler_configured": runtime.compiler_configured,
+            "semantic_validation": "not_checked",
             "search_mode": config.search_mode,
             "lce_enabled": config.lce_enabled,
             "dense": runtime.index is not None,

@@ -2,6 +2,9 @@
 
 Standalone sidecar semantic-memory runtime extracted from Mind Runtime.
 
+For assembling storage, retrieval and recovery before the compiler is ready, see
+[runtime assembly](docs/ASSEMBLY.md) ([中文](docs/ASSEMBLY.zh-CN.md)).
+
 MR-Mem does **not** replace an Agent's native session/history database. When the
 host already has durable conversation storage, that store remains the raw source
 of truth. MR-Mem owns compiled semantic memory plus Thread/LCE-derived cognition

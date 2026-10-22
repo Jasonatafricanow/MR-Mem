@@ -1,0 +1,11 @@
+{
+  "data_dir": "./assembly-data",
+  "compiler": {"type": "disabled"},
+  "search_mode": "baseline",
+  "lce_enabled": false,
+  "embedding": null,
+  "hyde": "off",
+  "raw_base": true,
+  "host": "127.0.0.1",
+  "port": 8765
+}

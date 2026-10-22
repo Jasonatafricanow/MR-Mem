@@ -90,7 +90,16 @@ class _SystemClock:
         return datetime.now(UTC)
 
 
+class UnavailableCompilerBackend:
+    """An unfilled algorithm port; never emits an empty successful proposal."""
+
+    def complete(self, prompt: str) -> str:
+        raise CompileError("semantic_compiler_not_configured")
+
+
 def build_backend(spec: dict):
+    if spec["type"] == "disabled":
+        return UnavailableCompilerBackend()
     if spec["type"] == "command":
         return CommandBackend(spec["argv"], timeout=spec.get("timeout", 600),
                               stream_json=spec.get("stream_json", False))
@@ -200,6 +209,7 @@ class MemoryRuntime:
         self.canonical_path = data / "memory.sqlite"
         self.core = MemoryCore(self.canonical_path)
         self.source = AmlSourceStore(data / "aml_source.sqlite")
+        self.compiler_configured = compiler is not None or config.compiler["type"] != "disabled"
         self.backend = None if compiler is not None else build_backend(config.compiler)
         self.compiler = compiler or SemanticCompiler(
             self.backend, assistant_policy=config.assistant_policy,
@@ -515,6 +525,10 @@ class MemoryRuntime:
             from mr_mem_aml.raw_arm import units_for
 
             self.raw.add(units_for(rid, messages))
+        if not self.compiler_configured:
+            # Preserve pending raw input, including windowed input, without
+            # pretending zero semantic Blocks is a successful compilation.
+            return AddJob(request, messages, (), (), self.source.compiled(rid))
         if self.config.compile_window is not None:
             self.source.set_done(rid)  # stored and searchable; windows compile later
             job = self._window_job(request["user_id"], final=False, request=request)
@@ -577,6 +591,8 @@ class MemoryRuntime:
         """Any thread: the model call. Touches no store."""
         if job.compiled is not None:
             return job.compiled
+        if not self.compiler_configured:
+            raise CompileFailed("semantic_compiler_not_configured")
         trace: dict = {}  # entries placement: pieces, entries and audit for the journal
         try:
             started = time.monotonic()
@@ -748,6 +764,8 @@ class MemoryRuntime:
 
     def flush(self) -> dict:
         """Rescan every user Scope and retry pending mature-Thread handoffs."""
+        if not self.compiler_configured:
+            raise CompileFailed("semantic_compiler_not_configured")
         if self.config.compile_window is not None:  # compile what is left, tail included
             windows = 0
             for user_id in self.source.users_with_pending():
