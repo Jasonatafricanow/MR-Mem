@@ -24,3 +24,9 @@
 `read_policy.max_characters` 限制最终搜索文本总长度。读取不需要编译器，图和时态库只读打开。
 MR 通过 `MR_MEM_LINE_ROOT=<data_dir>/lce_tree` 消费同一套读出逻辑。
 知识时间、用户范围、隐藏策略和预算规则见 [Line 读出契约](LINE_READ_CONTRACT.md)。
+
+有原生历史的宿主现在可使用 `NativeMemory`：侧库仅保存来源版本、批次和接受的编译结果，正文由
+宿主按 scope 实时读取。原文编辑/删除自动传播到 canonical 失效；未完成的旧批次取消后重新登记
+当前输入，重启可恢复，未配置编译器时保留待处理状态。见 [原生接入契约](NATIVE_INGEST_CONTRACT.md)
+和 `examples/native-tree.disabled.json`。Hermes 回合接线位于配套 MR 分支的
+`docs/assembly-native-memory.md`。Path B 仍是现有设计明确保留的第二阶段，没有被总装验收代替。

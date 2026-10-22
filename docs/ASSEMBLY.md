@@ -41,3 +41,12 @@ modes remain available. `read_policy.max_characters` bounds final search output.
 The reader needs no compiler and opens graph/tense storage read-only. See
 [the Line read contract](LINE_READ_CONTRACT.md) for time, scope and budget rules.
 An MR consumer selects the same graph with `MR_MEM_LINE_ROOT=<data_dir>/lce_tree`.
+
+For a host with its own history, `NativeMemory` composes a metadata-only source
+journal with the same compiler/admission/tree pipeline. The host supplies a
+scope-checked native reader and synchronizes session snapshots before reading
+memory. Revision/deletion propagation, cancelled partial batches, restart and
+disabled-compiler pending state are included. See [native ingestion](NATIVE_INGEST_CONTRACT.md)
+and `examples/native-tree.disabled.json`. Hermes integration is in the paired MR
+branch's `docs/assembly-native-memory.md`. Path B remains the separately gated
+second phase in the existing design, not a capability certified by this assembly.
