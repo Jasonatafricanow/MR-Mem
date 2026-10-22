@@ -133,7 +133,10 @@ class AcceptedGraphCompiler:
 
 
 @pytest.mark.parametrize("raw_base", [False, True])
-def test_aml_tree_search_after_restart_preserves_baseline(tmp_path, raw_base):
+def test_aml_tree_search_after_restart_preserves_baseline(tmp_path, raw_base, monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "numpy", None)  # BM25-only installs need no vector extra.
     config = RuntimeConfig(data_dir=tmp_path, compiler={"type": "disabled"},
                            path_a_engine="tree", placement="points", raw_base=raw_base)
     payload = {"request_id": "r", "user_id": "u", "session_id": "s", "messages": [

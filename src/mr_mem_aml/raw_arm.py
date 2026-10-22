@@ -20,12 +20,14 @@ import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-
-import numpy as np
+from typing import TYPE_CHECKING
 
 from mr_mem.memory.providers.bm25 import lexical_tokens
 from mr_mem.memory.providers.hybrid import HybridRRFProvider, RetrievalArm
 from mr_mem.memory.retrieval import MemoryRetrievalQuery, RetrievedMemoryCandidate
+
+if TYPE_CHECKING:
+    import numpy as np
 
 MAX_CONTENT_BYTES = 16_000
 DENSE_MAX_CHARS = 32_000
@@ -120,6 +122,8 @@ class RawArm:
                 fresh.append(unit)
         if self.embedding is None or not fresh:
             return
+        import numpy as np
+
         texts = [u.text[:DENSE_MAX_CHARS] for u in fresh]
         if hasattr(self.embedding, "embed_many"):
             matrix = np.asarray(self.embedding.embed_many(texts), dtype=np.float32)
@@ -157,6 +161,8 @@ class RawArm:
         return sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:limit]
 
     def _dense(self, user_id: str, text: str, limit: int) -> list[tuple[str, float]]:
+        import numpy as np
+
         index = self._users[user_id]
         if index.vectors is None or not index.ids:
             return []

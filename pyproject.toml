@@ -13,6 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 vector = [
+    "numpy>=1.26,<3",
     "qdrant-client==1.19.0",
     "fastembed==0.8.0",
 ]
