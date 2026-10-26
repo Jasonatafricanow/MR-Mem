@@ -201,6 +201,21 @@ class AmlSourceStore:
                  json.dumps(compiled, ensure_ascii=False, sort_keys=True)),
             )
 
+    def add_to_window(self, window_id: str, key: str, value: object) -> None:
+        """Add a later stage's result to a journaled window not yet applied (placement
+        "moves": step 2). A key already there wins (replay never pays twice)."""
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT compiled FROM windows WHERE window_id=? AND status='compiled'",
+                (window_id,)).fetchone()
+            if row is None:
+                return
+            compiled = json.loads(row[0])
+            compiled.setdefault(key, value)
+            self._conn.execute(
+                "UPDATE windows SET compiled=? WHERE window_id=?",
+                (json.dumps(compiled, ensure_ascii=False, sort_keys=True), window_id))
+
     def set_window_done(self, window_id: str) -> None:
         with self._lock, self._conn:
             self._conn.execute("UPDATE windows SET status='done' WHERE window_id=?", (window_id,))

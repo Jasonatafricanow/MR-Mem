@@ -147,3 +147,24 @@ def test_a_journaled_window_is_applied_without_a_model_call(tmp_path):
         assert replay.windows == []  # the journal answered; no model call
     finally:
         rt.close()
+
+
+class OneBlockBackend:
+    """One block citing every NEW message."""
+
+    def complete(self, prompt: str) -> str:
+        new = json.loads(prompt.split("INPUT:\n", 1)[1])["NEW"]
+        return json.dumps({"matters": [], "blocks": [
+            {"content": "all", "sources": [m["id"] for m in new], "in": []}],
+            "carry_from": None})
+
+
+def test_a_work_block_running_past_the_feedback_is_counted_not_refused(tmp_path):
+    rt = runtime(tmp_path, OneBlockBackend(), scene="work")
+    try:
+        add(rt, "r1", "u1", "a1", "u2", "a2")
+        rt.flush()  # one window: u1 a1 u2 | a2 ... the first block has "a1" after "u1"
+        assert len(rt.past_feedback) == 1
+        assert len(rt.core.load_all()) == 2  # counted, the Block still stands
+    finally:
+        rt.close()

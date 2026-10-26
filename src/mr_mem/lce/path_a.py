@@ -32,7 +32,7 @@ import hashlib
 import re
 import sqlite3
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -329,7 +329,15 @@ class PathATree:
                     continue
                 self.tense.settle(target, at=at, by=memory.memory_id)
                 result.settled += 1
-            for k, line in enumerate(block.lines):
+            lines = []  # only refs to an earlier place: no cycle, no made-up id (design 4.2)
+            for line in block.lines:
+                if line.after is None or self._earlier(line.after, refs, index):
+                    lines.append(line)
+                else:
+                    result.failures.append(f"{block.memory_id}: dropped ref {line.after}")
+            if block.lines and not lines:  # every link refused: the Block stands alone
+                lines = [replace(block.lines[0], after=None)]
+            for k, line in enumerate(lines):
                 try:
                     node = self._attach(line, memory, refs, nodes_of_block, opened_by_block,
                                         opened_by_key, index, k, at, result, open_matters)
@@ -354,6 +362,13 @@ class PathATree:
             thread_id = opened[0] if opened else None
         thread = None if thread_id is None else self.products.get_thread(thread_id)
         return thread if thread is not None and thread.status is ThreadStatus.OPEN else None
+
+    @staticmethod
+    def _earlier(ref: str, refs: dict[str, str], index: int) -> bool:
+        """A step on record ("N<k>", "T<k>") or an earlier block of this batch."""
+        if ref.startswith("b"):
+            return ref[1:].isdigit() and 0 < int(ref[1:]) < index
+        return ref in refs
 
     def _parent(
         self, after: str | None, matter: MemoryThread | None, refs: dict[str, str],
@@ -387,9 +402,11 @@ class PathATree:
             line_id = self.lines.get_node(parent).line_id
         else:
             line_id = self.lines.create_line((memory.memory_id,), created_at=at).line_id
+        # a Block citing several messages spans from the earliest to the latest (design 2)
+        times = [ref.occurred_at for ref in memory.provenance.source_refs] or [memory.occurred_at]
         node, _, _ = self.lines.ensure_node(
             line_id, block_id=memory.memory_id, state_id=memory.memory_id,
-            occurred_start=memory.occurred_at, occurred_end=memory.occurred_at,
+            occurred_start=min(times), occurred_end=max(times),
             knowledge_at=at,
         )
         if parent is not None and parent != node.node_id:
