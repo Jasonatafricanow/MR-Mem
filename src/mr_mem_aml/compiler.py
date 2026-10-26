@@ -598,7 +598,10 @@ class SemanticCompiler:
         attempts: int = 3,
         schema: Schema = "flat",
         scene: str = "chat",
+        step1: str = "moves",
     ) -> None:
+        if step1 not in ("moves", "slim4"):
+            raise ValueError("step1 must be 'moves' or 'slim4'")
         if assistant_policy not in ASSISTANT_RULES:
             raise ValueError("assistant_policy must be 'attributed' or 'context_only'")
         if schema not in ("flat", "tree", "points", "entries", "moves"):
@@ -614,9 +617,10 @@ class SemanticCompiler:
         self.attempts = attempts
         self.schema = schema
         self.scene = scene  # entries: how code assembles blocks (work or chat)
+        self.step1 = step1  # moves: which step-1 prompt writes the SBs
         self.version = {"tree": TREE_PROMPT_VERSION, "points": POINTS_PROMPT_VERSION,
                         "entries": ENTRIES_PROMPT_VERSION, "moves": MOVES_PROMPT_VERSION
-                        }.get(schema, PROMPT_VERSION)
+                        }.get(schema, PROMPT_VERSION) + ("-slim4" if step1 == "slim4" else "")
 
     def prompt(
         self,
@@ -803,13 +807,13 @@ class SemanticCompiler:
         carried = result["carry_from"]
         return tuple(out), int(carried[1:]) - 1 if carried else len(new)
 
-    def _ask_json(self, prompt: str, check) -> dict:
+    def _ask_json(self, prompt: str, check, extract=move_mode.extract_json):
         last = ""
         retry = prompt
         for _ in range(self.attempts):
             raw = self.backend.complete(retry)
             try:
-                data = move_mode.extract_json(raw)
+                data = extract(raw)
                 check(data)
                 return data
             except (ValueError, TypeError) as exc:
@@ -836,9 +840,15 @@ class SemanticCompiler:
                if not entry_mode.is_noise(m.role, m.content)][-6:]
         used_roles = [roles[i] for i in use]
         sessions = [new[i].session_id for i in use]
-        data = self._ask_json(move_mode.step1_prompt(lang, material, ctx),
-                              lambda d: move_mode.check_step1(d, used_roles, sessions))
-        sbs = move_mode.parse_step1(data, used_roles, sessions)
+        if self.step1 == "slim4":
+            data = self._ask_json(move_mode.step1_prompt_slim4(material, ctx),
+                                  lambda d: move_mode.check_step1_slim4(d, used_roles),
+                                  move_mode.extract_json_array)
+            sbs = move_mode.parse_step1_slim4(data, used_roles)
+        else:
+            data = self._ask_json(move_mode.step1_prompt(lang, material, ctx),
+                                  lambda d: move_mode.check_step1(d, used_roles, sessions))
+            sbs = move_mode.parse_step1(data, used_roles, sessions)
         out = []
         for sb in sbs:
             content = move_mode.content_of(sb["situation"], sb["move"], lang)

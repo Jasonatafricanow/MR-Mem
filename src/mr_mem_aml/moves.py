@@ -168,6 +168,100 @@ def tail_start(roles: list[str]) -> int | None:
     return last_user + 1
 
 
+# --- step 1, slim4 (trial, 2026-10-26) ---------------------------------------------
+# The SB written as in the bbz_diag slim4 prompt: one SB per stretch whose "what was done, how it
+# came out" has one answer, its turns spanning the agent's messages too, the summary being what was
+# done, the result and the person's decision or reservation. Only the interface differs from slim4:
+# M ids, a CONTEXT, no links (step 2 places). Chinese only.
+
+STEP1_SLIM4 = """你是 SemanticBlock（SB）编译器。把对话编译成若干 SB，每个 SB 记录"一件事"。
+
+## 切分规则
+1. 先通读全文再切。一个 SB 是"这一段做了什么、结果怎样"只有一个答案的一段。切点落在这个答案变了的地方：做的事变了、结果变了，或出现了转折（被纠正、被否决、出了意外、得出结论）。
+   - 同一个大目标下的不同进展，只要各有各的结果，就是不同的 SB。例如"出门→打车→没赶上航班"是三个 SB，不是一个。
+   - 一个请求和对它的执行、汇报、答复，如果只得出同一个结果，是一个 SB。
+   - 后一段要靠前一段的背景才讲得通，这不是合并的理由。
+2. 没有自己结果的内容，不单独成 SB：只说"现在去做 X"的过程播报、一句没人接的话、没展开的术语，归入它所属或所引出的那个 SB（不单独写出，细节留在原文）。
+3. 解释一个词或概念、或由此引出的旁枝：有来有回（至少一问一答，或接着聊了几句）、有自己的结果，就单独成 SB；只提了一句、没人接，归入当前 SB，不单独写出。
+4. 不按表面话题词、轮次或"一问一答"配对机械切分；看起来像新话题、其实在佐证当前这件事的，归入当前 SB。
+5. 消解相对时间和指代："今天/昨天/这个/它"写成具体日期或对象。回忆中的"今天"指回忆那天，不是说话那天。每条消息有时间可用。
+6. 某字段在原文里没有体现就填 null，不要编。
+
+## unresolved
+7. 待定 = 这件事已经推进出了结果，下一步只能由人拍板，而且到对话结束人都没有回应。填人该拍板的那条消息的 M 编号，否则填 null。
+   判断看"下一步在谁手里"，不看措辞：要等实验、运行、数据或别的事情发生才能定的，不是在等人，不算待定；只是提了个想法、问了个问题、还没有结果的，不算待定；后面已经回答、决定或做了的，不算待定。
+
+## 每个 SB 的字段
+- id
+- turns: 这件事覆盖的 NEW 消息范围，如 "M3-M7"（只有一条写 "M3"）
+- summary: 一段短摘要，只写这一件事的三样东西：做了什么、结果怎样、人在其中的决定或保留（没有就不写这一样）。细节、数字、原话都留在原文，不要写进来。摘要不是复述。
+- unresolved: 见规则 7
+
+## 输出
+只输出合法 JSON 数组，不要其他文字，字符串里不要用英文双引号（引用用「」）：[{{"id":"b1","turns":"M1-M4","summary":"...","unresolved":null}}]
+
+CONTEXT（之前的消息，只供理解，不编译）：
+{context}
+
+NEW：
+{new}"""
+
+
+def step1_prompt_slim4(new: list[dict], context: list[dict]) -> str:
+    """As step1_prompt, in Chinese: NEW messages are M1, M2 ... in order."""
+    order = list(dict.fromkeys(m.get("session") for m in [*context, *new]))
+    tag = (lambda m: f" 会话{chr(65 + order.index(m.get('session')) % 26)}") if len(order) > 1 else (lambda m: "")
+    return STEP1_SLIM4.format(
+        context="\n".join(_line("zh", "", m, 600, tag(m)).replace("[ ", "[", 1) for m in context) or "-",
+        new="\n".join(_line("zh", f"M{i + 1}", m, 4000, tag(m)) for i, m in enumerate(new)))
+
+
+_RANGE = re.compile(r"M(\d+)(?:\s*[-–~～至]\s*M?(\d+))?")
+
+
+def parse_step1_slim4(data: object, roles: list[str]) -> list[dict]:
+    """SBs as parse_step1 gives them: {"sources", "situation" (the summary), "move" (""),
+    "happened" (True: slim4 does not tell plans apart), "unresolved"}. Sources are every message
+    in the turns span; spans out of range are clipped, an SB with no valid span is dropped."""
+    if isinstance(data, dict):
+        data = next((v for v in data.values() if isinstance(v, list)), None)
+    if not isinstance(data, list):
+        raise ValueError("expected a JSON array of SBs")
+    n = len(roles)
+    out = []
+    for b in data:
+        if not isinstance(b, dict) or not str(b.get("summary") or "").strip():
+            continue
+        sources: set[int] = set()
+        for a, z in _RANGE.findall(str(b.get("turns") or "")):
+            lo, hi = sorted((int(a), int(z or a)))
+            sources |= set(range(max(lo, 1) - 1, min(hi, n)))
+        if not sources:
+            continue
+        u = _RANGE.fullmatch(str(b.get("unresolved") or "").strip())
+        out.append({"sources": sorted(sources), "situation": str(b["summary"]).strip(), "move": "",
+                    "happened": True,
+                    "unresolved": int(u.group(1)) - 1 if u and 0 < int(u.group(1)) <= n else None})
+    out.sort(key=lambda b: (b["sources"][-1], b["sources"][0]))
+    return out
+
+
+def extract_json_array(text: str) -> list:
+    start, end = text.find("["), text.rfind("]")
+    if start < 0 or end <= start:
+        raise ValueError("no JSON array in the output")
+    return json.loads(text[start:end + 1])
+
+
+def check_step1_slim4(data: object, roles: list[str]) -> None:
+    """Most of the person's messages left outside every SB is a broken answer: ask again."""
+    sbs = parse_step1_slim4(data, roles)
+    people = [i for i, r in enumerate(roles) if r == "user"]
+    covered = {i for b in sbs for i in b["sources"]}
+    if len(people) >= 2 and sum(i in covered for i in people) * 2 < len(people):
+        raise ValueError(f"SBs cover {sum(i in covered for i in people)} of the person's {len(people)} messages")
+
+
 # --- step 2 ---------------------------------------------------------------------
 
 STEP2 = {

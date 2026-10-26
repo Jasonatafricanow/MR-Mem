@@ -63,6 +63,9 @@ class RuntimeConfig:
     # placement "moves", step 2: per SB the top "k" earlier SBs by each of four
     # searches, plus the "latest" SBs before the window
     place_policy: dict[str, int] = field(default_factory=lambda: {"k": 10, "latest": 15})
+    # placement "moves", step 1: "moves" = one SB per point of the person; "slim4" = one SB
+    # per stretch with one result, as the bbz_diag slim4 prompt (trial, 2026-10-26, Chinese only)
+    step1: str = "moves"
 
     def __post_init__(self) -> None:
         if self.path_a_engine not in ("flat", "tree"):
@@ -73,6 +76,8 @@ class RuntimeConfig:
             raise ValueError("placement 'moves' is the work scene's and compiles in windows")
         if self.scene not in ("chat", "work"):
             raise ValueError("scene must be 'chat' or 'work'")
+        if self.step1 not in ("moves", "slim4"):
+            raise ValueError("step1 must be 'moves' or 'slim4'")
         if self.compile_window is not None:
             w = self.compile_window
             if self.path_a_engine != "tree":

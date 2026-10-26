@@ -206,7 +206,7 @@ class MemoryRuntime:
             schema=("flat" if config.path_a_engine != "tree"
                     else config.placement if config.placement in ("points", "entries", "moves")
                     else "tree"),
-            scene=config.scene,
+            scene=config.scene, step1=config.step1,
         )
         self._trees: dict[str, object] = {}
         self.tree_failures: list[str] = []

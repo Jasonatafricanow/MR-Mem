@@ -57,6 +57,26 @@ def test_the_tail_after_the_person_goes_to_the_next_window():
     assert mv.tail_start(["assistant", "user"]) is None
 
 
+def test_step1_slim4_spans_become_sources_with_the_agent_messages():
+    roles = ["user", "assistant", "assistant", "user", "assistant"]
+    data = [{"id": "b1", "turns": "M1-M3", "summary": "建了 worktree，用户同意", "unresolved": None},
+            {"id": "b2", "turns": "M4-M9", "summary": "推送完成", "unresolved": "M4"},   # clipped to M5
+            {"id": "b3", "turns": "10-09#46", "summary": "x"},                        # no M span: dropped
+            {"id": "b4", "turns": "M2", "summary": ""}]                               # no summary: dropped
+    sbs = mv.parse_step1_slim4(data, roles)
+    assert [(b["sources"], b["situation"], b["move"], b["unresolved"]) for b in sbs] == [
+        ([0, 1, 2], "建了 worktree，用户同意", "", None), ([3, 4], "推送完成", "", 3)]
+    assert mv.content_of(sbs[0]["situation"], sbs[0]["move"], "zh") == "建了 worktree，用户同意"
+
+
+def test_step1_slim4_leaving_most_of_the_person_out_is_asked_again():
+    roles = ["user", "assistant", "user", "assistant", "user"]
+    with pytest.raises(ValueError):
+        mv.check_step1_slim4([{"turns": "M1-M2", "summary": "s"}], roles)
+    mv.check_step1_slim4([{"turns": "M1-M3", "summary": "s"}], roles)
+    assert mv.extract_json_array('```json\n[{"turns":"M1","summary":"s"}]\n```') == [{"turns": "M1", "summary": "s"}]
+
+
 # --- step 2 ---------------------------------------------------------------------
 
 def test_step2_links_only_to_candidates_or_earlier_sbs():
