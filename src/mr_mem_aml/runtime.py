@@ -912,6 +912,13 @@ class MemoryRuntime:
         text = query.strip()
         if self.config.append_options and options:
             text = text + "\n" + "\n".join(str(o) for o in options)
+        if selected == "path_a" and self.config.line_read is not None:
+            return {"data": [
+                {"id": item["id"], "content": item["content"], "score": item["score"],
+                 **({"created_at": item["occurred_at"].isoformat()} if item["occurred_at"] else {})}
+                for item in self._line_read(scope, user_id.strip(), text[:4096])[:top_k]
+                if item["content"].strip()
+            ]}
         raw_search = None
         if self.raw is not None:
             raw, source = self.raw, self.source
@@ -947,6 +954,59 @@ class MemoryRuntime:
                 if item.content.strip()
             ]
         }
+
+
+    def _line_read(self, scope, user_id: str, text: str) -> list[dict]:
+        """Readout by the upward index (line_read.py): raw hits -> SBs -> the Line around them,
+        plus raw snippets. Owner thread: reads the source, canonical and Line stores."""
+        from mr_mem.memory.retrieval import MemoryRetrievalQuery
+        from mr_mem_aml import line_read
+
+        policy = line_read.LineReadPolicy.of(self.config.line_read)
+        records = list(dict.fromkeys(u.record_id for u, _ in self.raw.search(user_id, text, policy.raw_k)))
+        sb_hits = [] if self.index is None else [
+            c.memory_id for c in self.index.retrieval().search(
+                MemoryRetrievalQuery(scope=scope, text=text, limit=min(policy.sb_k, 100)))]
+        tree = self.tree_for(scope)
+        lines, far, now = tree.lines, datetime(9999, 1, 1, tzinfo=UTC), datetime.now(UTC)
+
+        def nodes(block: str):
+            return lines.nodes_for_state(block)
+
+        def parents(block: str) -> list[str]:
+            return list(dict.fromkeys(lines.get_node(p).block_id for n in nodes(block)
+                                      for p in lines.parents_at(n.node_id, far)))
+
+        def children(block: str) -> list[str]:
+            return list(dict.fromkeys(lines.get_node(c).block_id for n in nodes(block)
+                                      for c in lines.children_at(n.node_id, far)))
+        steps: dict[str, line_read.Step] = {}
+
+        def step(block: str) -> line_read.Step:
+            if block not in steps:
+                memory = self.core.canonical.get(block)
+                given = [] if memory is None else [r.occurred_at for r in memory.provenance.source_refs
+                                                    if self.source.time_given(r.record_id)]
+                on = nodes(block)
+                side = tree.side(on[0].node_id, now) if on else None
+                steps[block] = line_read.Step("" if memory is None else memory.content,
+                                              min(given) if given else None, side != "in progress")
+            return steps[block]
+
+        def sources(block: str) -> list[str]:
+            memory = self.core.canonical.get(block)
+            return [] if memory is None else [r.record_id for r in memory.provenance.source_refs]
+
+        def message(record: str):
+            m = self.source.message_by_record(record)
+            return None if m is None else line_read.RawMessage(
+                m.content, m.role, m.occurred_at if m.time_given else None)
+        ranked = [b for b in line_read.rank_blocks(records, lambda r: self._blocks_by_record.get(r, ()),
+                                                   sb_hits, policy.rrf_k)
+                  if self.core.canonical.get(b) is not None]
+        return line_read.compose(text, ranked, records, step=step, sources=sources, parents=parents,
+                                 children=children, message=message, lang=self.language_of(user_id),
+                                 policy=policy)
 
 
 def _past_feedback(roles: list[str]) -> bool:

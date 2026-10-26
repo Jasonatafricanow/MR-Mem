@@ -66,6 +66,10 @@ class RuntimeConfig:
     # placement "moves", step 1: "moves" = one SB per point of the person; "slim4" = one SB
     # per stretch with one result, as the bbz_diag slim4 prompt (trial, 2026-10-26, Chinese only)
     step1: str = "moves"
+    # search in path_a mode reads by the upward index (line_read.py, design 5.3, 5.5): raw hits ->
+    # their SBs -> the Line around them, plus raw snippets; None keeps the PathAReader read.
+    # Keys of line_read.LineReadPolicy (budget, line_chars, sbs, up, down, raw_k, sb_k, snippet, rrf_k, tz_minutes)
+    line_read: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         if self.path_a_engine not in ("flat", "tree"):
@@ -78,6 +82,12 @@ class RuntimeConfig:
             raise ValueError("scene must be 'chat' or 'work'")
         if self.step1 not in ("moves", "slim4"):
             raise ValueError("step1 must be 'moves' or 'slim4'")
+        if self.line_read is not None:
+            from mr_mem_aml.line_read import LineReadPolicy
+
+            LineReadPolicy.of(self.line_read)
+            if not (self.raw_base and self.path_a_engine == "tree" and self.placement in ("points", "moves")):
+                raise ValueError("line_read needs raw_base and the tree engine's Line graph (points or moves)")
         if self.compile_window is not None:
             w = self.compile_window
             if self.path_a_engine != "tree":
