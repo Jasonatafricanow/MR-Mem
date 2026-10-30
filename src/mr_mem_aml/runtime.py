@@ -254,6 +254,7 @@ class MemoryRuntime:
         self._vectors: dict[str, tuple[float, ...]] = {}
         self.thread_failures = 0
         self.compile_rejected = 0
+        self._hyde = None  # the HyDE expander, built on first use
         self.compile_failed_kept_raw = (
             0  # compiles that failed after retries; their raw stays searchable
         )
@@ -483,7 +484,8 @@ class MemoryRuntime:
                 )
             )
         if self.config.hyde != "off":
-            backend = self.backend
+            backend = (build_backend(self.config.hyde_backend) if self.config.hyde_backend
+                       else self.backend)
             if backend is None:
                 raise ValueError("HyDE needs a configured completion backend")
             expander = PromptHyDEExpander(backend.complete)
@@ -1479,6 +1481,22 @@ class MemoryRuntime:
             ]
         }
 
+    def _hyde_passage(self, text: str) -> str:
+        """The hypothetical passage HyDE searches with ("" when it cannot be had: the question alone)."""
+        from mr_mem.memory.providers.hybrid import PromptHyDEExpander
+
+        if self._hyde is None:
+            backend = (build_backend(self.config.hyde_backend) if self.config.hyde_backend
+                       else self.backend)
+            self._hyde = PromptHyDEExpander(backend.complete) if backend is not None else False
+        if not self._hyde:
+            return ""
+        try:
+            return self._hyde.expand(text)
+        except Exception as exc:  # noqa: BLE001 - HyDE is optional: the question alone still searches
+            log.warning("HyDE failed, searching with the question alone: %s", str(exc)[:200])
+            return ""
+
     def _line_read(self, scope, user_id: str, text: str) -> list[dict]:
         """Readout by the upward index (line_read.py): raw hits -> SBs -> the Line around them,
         plus raw snippets. Owner thread: reads the source, canonical and Line stores."""
@@ -1489,12 +1507,26 @@ class MemoryRuntime:
         records = list(
             dict.fromkeys(u.record_id for u, _ in self.raw.search(user_id, text, policy.raw_k))
         )
+        sb_search = None if self.index is None else self.index.retrieval()
+        if self.config.hyde == "augmented":  # HyDE: a hypothetical passage searched beside the question
+            hypo = self._hyde_passage(text)
+            if hypo:
+                from mr_mem.memory.providers.hybrid import HyDEAugmentedProvider
+
+                extra = [u.record_id for u, _ in self.raw.search(user_id, hypo, policy.raw_k)]
+                score: dict[str, float] = {}
+                for ranked_ in (records, extra):
+                    for n, r in enumerate(dict.fromkeys(ranked_)):
+                        score[r] = score.get(r, 0.0) + 1.0 / (60 + n + 1)
+                records = sorted(score, key=lambda r: -score[r])[: policy.raw_k]
+                if sb_search is not None:
+                    sb_search = HyDEAugmentedProvider(sb_search, _FixedExpander(hypo))
         sb_hits = (
             []
-            if self.index is None
+            if sb_search is None
             else [
                 c.memory_id
-                for c in self.index.retrieval().search(
+                for c in sb_search.search(
                     MemoryRetrievalQuery(scope=scope, text=text, limit=min(policy.sb_k, 100))
                 )
             ]
@@ -1715,3 +1747,13 @@ def _past_feedback(roles: list[str]) -> bool:
         if "user" in roles
         else False
     )
+
+
+class _FixedExpander:
+    """A HyDE expander that hands back a passage already written for this query."""
+
+    def __init__(self, passage: str) -> None:
+        self._passage = passage
+
+    def expand(self, query: str) -> str:
+        return self._passage

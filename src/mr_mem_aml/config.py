@@ -20,6 +20,8 @@ class RuntimeConfig:
     assistant_policy: str = "attributed"  # attributed | context_only
     embedding: dict[str, Any] | None = None
     hyde: str = "off"  # off | fallback | augmented
+    # the completion backend HyDE writes its hypothetical passage with; None: the compiler's
+    hyde_backend: dict | None = None
     read_policy: ReadPolicy = field(default_factory=ReadPolicy)
     host: str = "127.0.0.1"
     port: int = 8765
