@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS line_edges (
     line_id TEXT NOT NULL REFERENCES lines(line_id) ON DELETE CASCADE,
     parent_node_id TEXT NOT NULL REFERENCES line_nodes(node_id) ON DELETE CASCADE,
     child_node_id TEXT NOT NULL REFERENCES line_nodes(node_id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'after',
     PRIMARY KEY(line_id, parent_node_id, child_node_id)
 );
 CREATE TABLE IF NOT EXISTS line_node_memberships (
@@ -153,6 +154,9 @@ CREATE TABLE IF NOT EXISTS line_graph_metadata (key TEXT PRIMARY KEY, value TEXT
 """
 
 
+EDGE_KINDS = ("part", "after")
+
+
 def _digest(*parts: str) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:24]
 
@@ -166,6 +170,8 @@ class LineGraphStore:
         self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(_SCHEMA)
+        if "kind" not in {row[1] for row in self.conn.execute("PRAGMA table_info(line_edges)")}:
+            self.conn.execute("ALTER TABLE line_edges ADD COLUMN kind TEXT NOT NULL DEFAULT 'after'")
         self.conn.commit()
         # Path A: the compiler prompt version that produced the relations.
         self._fingerprint = "unset"
@@ -382,24 +388,36 @@ class LineGraphStore:
         ).fetchall()
         return tuple((str(p), str(c)) for p, c in rows)
 
-    def _related_at(self, node_id: str, cutoff: datetime, *, parents: bool) -> tuple[str, ...]:
+    def _related_at(
+        self, node_id: str, cutoff: datetime, *, parents: bool, kind: str | None = None
+    ) -> tuple[str, ...]:
         _require_utc(cutoff, "cutoff")
         node = self.get_node(node_id)
         at = cutoff.isoformat()
         mine, other = ("child_node_id", "parent_node_id") if parents else (
             "parent_node_id", "child_node_id")
         rows = self.conn.execute(
-            f"SELECT DISTINCT {other} FROM line_edge_revisions WHERE line_id = ? AND {mine} = ? "
-            "AND known_at <= ? AND (retired_at IS NULL OR retired_at > ?) ORDER BY 1",
-            (node.line_id, node_id, at, at),
+            f"SELECT DISTINCT r.{other} FROM line_edge_revisions r JOIN line_edges e "
+            "USING (line_id, parent_node_id, child_node_id) "
+            f"WHERE r.line_id = ? AND r.{mine} = ? AND r.known_at <= ? "
+            "AND (r.retired_at IS NULL OR r.retired_at > ?) AND (? IS NULL OR e.kind = ?) ORDER BY 1",
+            (node.line_id, node_id, at, at, kind, kind),
         ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
-    def parents_at(self, node_id: str, cutoff: datetime) -> tuple[str, ...]:
-        return self._related_at(node_id, cutoff, parents=True)
+    def parents_at(self, node_id: str, cutoff: datetime, kind: str | None = None) -> tuple[str, ...]:
+        """``kind``: "part" (what it is part of), "after" (what it carries on), None (both)."""
+        return self._related_at(node_id, cutoff, parents=True, kind=kind)
 
-    def children_at(self, node_id: str, cutoff: datetime) -> tuple[str, ...]:
-        return self._related_at(node_id, cutoff, parents=False)
+    def children_at(self, node_id: str, cutoff: datetime, kind: str | None = None) -> tuple[str, ...]:
+        return self._related_at(node_id, cutoff, parents=False, kind=kind)
+
+    def edge_kind(self, line_id: str, parent_id: str, child_id: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT kind FROM line_edges WHERE line_id = ? AND parent_node_id = ? AND child_node_id = ?",
+            (line_id, parent_id, child_id),
+        ).fetchone()
+        return None if row is None else str(row[0])
 
     def retire_edge_from(
         self, line_id: str, parent_id: str, child_id: str, cutoff: datetime, *, commit: bool = True
@@ -456,10 +474,15 @@ class LineGraphStore:
 
     def add_edge(
         self, line_id: str, parent_id: str, child_id: str, *, knowledge_at: datetime,
-        commit: bool = True,
+        commit: bool = True, kind: str = "after",
     ) -> bool:
-        """Relate two nodes of one Line. False when already implied (no shortcut edges)."""
+        """Relate two nodes of one Line. False when already implied (no shortcut edges).
+
+        ``kind``: "part" when the child is a part of the parent (step 1 put it under it),
+        "after" when the child carries on from the parent (design 4.2)."""
         _require_utc(knowledge_at, "knowledge_at")
+        if kind not in EDGE_KINDS:
+            raise ValueError(f"unknown Line edge kind {kind!r}")
         if parent_id == child_id:
             raise ValueError("a Line edge cannot self-reference")
         lines = {self.get_node(parent_id).line_id, self.get_node(child_id).line_id}
@@ -472,8 +495,8 @@ class LineGraphStore:
         for cutoff in self._boundaries_from(line_id, knowledge_at):
             if self._reachable(child_id, parent_id, cutoff):
                 raise ValueError(f"Line edge would create a cycle at {cutoff.isoformat()}")
-        self.conn.execute("INSERT OR IGNORE INTO line_edges VALUES (?, ?, ?)",
-                          (line_id, parent_id, child_id))
+        self.conn.execute("INSERT OR IGNORE INTO line_edges VALUES (?, ?, ?, ?)",
+                          (line_id, parent_id, child_id, kind))
         ordinal = self.conn.execute(
             "SELECT COUNT(*) FROM line_edge_revisions WHERE line_id = ? AND parent_node_id = ? "
             "AND child_node_id = ?",

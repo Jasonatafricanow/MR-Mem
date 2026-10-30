@@ -201,6 +201,13 @@ class AmlSourceStore:
                  json.dumps(compiled, ensure_ascii=False, sort_keys=True)),
             )
 
+    def window(self, window_id: str) -> tuple[str, dict] | None:
+        """(status, compiled) of a journaled window: the first journal entry, which wins."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status, compiled FROM windows WHERE window_id=?", (window_id,)).fetchone()
+        return None if row is None else (row[0], json.loads(row[1]))
+
     def add_to_window(self, window_id: str, key: str, value: object) -> None:
         """Add a later stage's result to a journaled window not yet applied (placement
         "moves": step 2). A key already there wins (replay never pays twice)."""
@@ -268,6 +275,41 @@ class AmlSourceStore:
             return tuple(r[0] for r in self._conn.execute(
                 "SELECT seq FROM messages WHERE user_id=? AND seq BETWEEN ? AND ? ORDER BY seq",
                 (user_id, first_seq, last_seq)))
+
+    def last_time(self, user_id: str) -> datetime | None:
+        """Message time of the person's latest message: "now" for an offline history."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT occurred_at FROM messages WHERE user_id=? ORDER BY seq DESC LIMIT 1",
+                (user_id,)).fetchone()
+        return None if row is None else datetime.fromisoformat(row[0])
+
+    def places(self, user_id: str) -> dict[str, tuple[int, int]]:
+        """record_id -> (session number from 1 in order of first message, seq): where a message
+        sits in the person's history, for readouts to show."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT record_id, session_id, seq FROM messages WHERE user_id=? ORDER BY seq",
+                (user_id,)).fetchall()
+        sessions: dict[str, int] = {}
+        return {r: (sessions.setdefault(s, len(sessions) + 1), q) for r, s, q in rows}
+
+    def session_times(self, user_id: str) -> dict[str, datetime]:
+        """record_id -> the time the source gave the latest message before it in its session, for a
+        message whose own time the source did not give: when its session had got to. Never the time
+        it was stored, nor a time borrowed from a later message or another session."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT record_id, session_id, occurred_at, time_given FROM messages WHERE user_id=? ORDER BY seq",
+                (user_id,)).fetchall()
+        reached: dict[str, datetime] = {}
+        out: dict[str, datetime] = {}
+        for record, session, at, given in rows:
+            if given is None or given:
+                reached[session] = datetime.fromisoformat(at)
+            elif session in reached:
+                out[record] = reached[session]
+        return out
 
     def messages_between(self, user_id: str, first_seq: int, last_seq: int
                          ) -> tuple[RawMessage, ...]:

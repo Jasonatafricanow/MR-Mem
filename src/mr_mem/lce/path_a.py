@@ -59,6 +59,7 @@ class Attachment:
     after: str | None  # the step it builds on: "N<k>", "T<k>", "b<k>" or None
     happened: bool  # already happened when said (else: still going on)
     summary: str | None
+    part: bool = False  # ``after`` is what this Block is a part of, not what it carries on
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +158,26 @@ class TenseStore:
         ).fetchone()
         return PAST if settled else DAY
 
+    def settled_by(self, memory_id: str, now: datetime) -> list[str]:
+        """The Blocks that settled this one by ``now``, in order."""
+        return [r[0] for r in self.conn.execute(
+            "SELECT by_memory_id FROM settled WHERE memory_id = ? AND settled_at <= ? ORDER BY settled_at",
+            (memory_id, now.isoformat()))]
+
+    def confirmed(self, memory_id: str, now: datetime) -> bool | None:
+        """Said as happened, or settled by a later Block by ``now``. Unlike ``side``, a stated time
+        that has passed does not count: time passing is no evidence that it happened (design 1.3).
+        None when not on a line."""
+        row = self.conn.execute(
+            "SELECT happened FROM said WHERE memory_id = ?", (memory_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return bool(row[0]) or self.conn.execute(
+            "SELECT 1 FROM settled WHERE memory_id = ? AND settled_at <= ? LIMIT 1",
+            (memory_id, now.isoformat()),
+        ).fetchone() is not None
+
 
 class PathATree:
     """LCE Lines of one Scope. Not thread-safe: the runtime owner thread uses it."""
@@ -216,6 +237,9 @@ class PathATree:
         block_id = self.lines.get_node(node_id).block_id
         memory = self.canonical.get(block_id)
         return self.tense.side(block_id, now, "" if memory is None else memory.content)
+
+    def confirmed(self, node_id: str, now: datetime) -> bool | None:
+        return self.tense.confirmed(self.lines.get_node(node_id).block_id, now)
 
     # -- compile input -----------------------------------------------------
 
@@ -410,7 +434,8 @@ class PathATree:
             knowledge_at=at,
         )
         if parent is not None and parent != node.node_id:
-            self.lines.add_edge(line_id, parent, node.node_id, knowledge_at=at)
+            self.lines.add_edge(line_id, parent, node.node_id, knowledge_at=at,
+                                kind="part" if line.part else "after")
         self.tense.record(memory.memory_id, happened=line.happened, known_at=at)
         result.attached += 1
         if matter is None and not open_matters:

@@ -174,6 +174,11 @@ class OpenAICompatibleBackend:
         self.timeout, self.attempts = timeout, attempts
         self.json_mode, self.max_tokens, self.temperature = json_mode, max_tokens, temperature
         self.headers, self.extra_body = dict(headers or {}), dict(extra_body or {})
+        # what the calls cost: answered calls, characters and the tokens the endpoint reports
+        self.usage = {"calls": 0, "chars_in": 0, "chars_out": 0, "prompt_tokens": 0, "completion_tokens": 0,
+                      "cut_at_max_tokens": 0}
+        self._usage_lock = threading.Lock()
+        self.last_finish: str | None = None  # why the last answer stopped ("length": cut at max_tokens)
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", **self.headers}
@@ -206,6 +211,15 @@ class OpenAICompatibleBackend:
                     data = json.loads(response.read().decode("utf-8"))
                 content = data["choices"][0]["message"]["content"]
                 if isinstance(content, str) and content.strip():
+                    tokens = data.get("usage") or {}
+                    with self._usage_lock:
+                        self.usage["calls"] += 1
+                        self.usage["chars_in"] += len(prompt)
+                        self.usage["chars_out"] += len(content)
+                        self.usage["prompt_tokens"] += int(tokens.get("prompt_tokens") or 0)
+                        self.usage["completion_tokens"] += int(tokens.get("completion_tokens") or 0)
+                        self.usage["cut_at_max_tokens"] += data["choices"][0].get("finish_reason") == "length"
+                    self.last_finish = data["choices"][0].get("finish_reason")
                     return content
                 last = "empty completion"
             except urllib.error.HTTPError as exc:
@@ -257,6 +271,13 @@ class CompiledBlock:
     commit: CommitOut | None
     lines: tuple[LineOut, ...] = ()
     settles: tuple[str, ...] = ()  # tree schema: earlier open steps this block settles
+    standing: bool = False  # chat scene: an instruction or preference meant to hold from now on
+    # (record id, paragraph numbers) for the source messages this block points to only in part
+    spans: tuple[tuple[str, tuple[int, ...]], ...] = ()
+    # chat scene, JSON: {"own": {record: span items | null}, "parts": [{record: span items | null}]},
+    # what the person's turns and each part point to, apart (null: the whole message)
+    pointers: str = ""
+    under: int | None = None  # chat scene: the block of this window it builds on (step 1)
 
 
 INSTRUCTIONS = """You are the semantic compiler of a long-term memory system.
@@ -606,8 +627,8 @@ class SemanticCompiler:
             raise ValueError("assistant_policy must be 'attributed' or 'context_only'")
         if schema not in ("flat", "tree", "points", "entries", "moves"):
             raise ValueError("schema must be 'flat', 'tree', 'points', 'entries' or 'moves'")
-        if schema == "moves" and scene != "work":
-            raise ValueError("schema 'moves' is the work scene's (centred on the person)")
+        if schema == "moves" and scene != "work" and step1 != "slim4":
+            raise ValueError("schema 'moves' is the work scene's (centred on the person) unless step1 is 'slim4'")
         if scene not in ("chat", "work"):
             raise ValueError("scene must be 'chat' or 'work'")
         if schema == "entries" and assistant_policy != "attributed":
@@ -715,15 +736,18 @@ class SemanticCompiler:
         *,
         window: bool = False,
         trace: dict | None = None,
+        tail: bool = True,
     ):
         """``trace`` (entries only) is filled with what the journal keeps besides the
-        blocks: the pieces, the model's entries and the assembly audit."""
+        blocks: the pieces, the model's entries and the assembly audit. ``tail`` (moves):
+        the window may leave its unfinished end to the next one; False for the last window,
+        which still may stop where its SBs close (the flush compiles the rest)."""
         if not new:
             return ((), 0) if window else ()
         if self.schema == "entries":
             return self._compile_entries(new, context, known_lines, window, trace)
         if self.schema == "moves":
-            return self._compile_moves(new, context, known_lines, window, trace)
+            return self._compile_moves(new, context, known_lines, window, trace, tail)
         prompt = self.prompt(new, context, known_lines)
         last = ""
         for _ in range(self.attempts):
@@ -821,12 +845,12 @@ class SemanticCompiler:
                 retry = prompt + f"\n\nYour previous output was invalid ({last}). Return only the JSON."
         raise CompileError(f"invalid compiler output after {self.attempts} attempts: {last}")
 
-    def _compile_moves(self, new, context, known_lines, window: bool, trace: dict | None):
+    def _compile_moves(self, new, context, known_lines, window: bool, trace: dict | None, tail: bool = True):
         """Step 1 of the work scene's two steps: write the SBs, no links (moves.py).
         ``known_lines`` carries only the language decided for this user."""
         lang = (known_lines or {}).get("language", "zh") if isinstance(known_lines, dict) else "zh"
         roles = [m.role for m in new]
-        start = move_mode.tail_start(roles) if window else None
+        start = move_mode.tail_start(roles, self.scene) if window and tail else None
         carry = start is not None and len(new) // 2 <= start  # a window always moves on
         kept = start if carry else len(new)
         # background notices and other noise are not the person's or the agent's words
@@ -840,11 +864,31 @@ class SemanticCompiler:
                if not entry_mode.is_noise(m.role, m.content)][-6:]
         used_roles = [roles[i] for i in use]
         sessions = [new[i].session_id for i in use]
-        if self.step1 == "slim4":
-            data = self._ask_json(move_mode.step1_prompt_slim4(material, ctx),
+        paras = [len(move_mode.paragraphs(m["text"])) for m in material]
+        texts = [m["text"] for m in material]
+        if self.step1 == "slim4" and self.scene == "chat":
+            prompt = move_mode.step1_prompt_slim4(lang, material, ctx, self.scene)
+            check = lambda d: move_mode.check_step1_chat(d, used_roles, paras, texts)  # noqa: E731
+            answer: list[str] = []
+
+            def extract(raw: str):
+                answer[:] = [raw]
+                return move_mode.extract_after_json(raw.split("STOP:")[0])
+            data = self._ask_json(prompt, check, extract)
+            sbs = move_mode.parse_step1_chat(data, used_roles, paras, texts)
+            # the compiler stops where its SBs close (design 4.7); what it left opens the next window
+            done = move_mode.stop_at(answer[0], len(material)) if window else len(material)
+            if done < len(material):
+                sbs = move_mode.compiled_before(sbs, done)
+                kept = use[done]
+            if trace is not None:  # audit only: the person's words no SB holds (nothing is asked again)
+                trace["uncovered"] = [len(t) for _, t in move_mode.uncovered(sbs, used_roles[:done], texts[:done])]
+                trace["stopped_at"] = done
+        elif self.step1 == "slim4":
+            data = self._ask_json(move_mode.step1_prompt_slim4(lang, material, ctx, self.scene),
                                   lambda d: move_mode.check_step1_slim4(d, used_roles),
                                   move_mode.extract_json_array)
-            sbs = move_mode.parse_step1_slim4(data, used_roles)
+            sbs = move_mode.parse_step1_slim4(data, used_roles, paras)
         else:
             data = self._ask_json(move_mode.step1_prompt(lang, material, ctx),
                                   lambda d: move_mode.check_step1(d, used_roles, sessions))
@@ -854,12 +898,18 @@ class SemanticCompiler:
             content = move_mode.content_of(sb["situation"], sb["move"], lang)
             if len(content.encode("utf-8")) > CONTENT_BYTES:
                 content = content.encode("utf-8")[:CONTENT_BYTES].decode("utf-8", "ignore") + "…"
+            spans = tuple((new[use[i]].record_id, tuple(p)) for i, p in sorted(sb.get("spans", {}).items()))
+            ptr = sb.get("pointers")
+            pointers = json.dumps({**ptr, "own": {new[use[i]].record_id: p for i, p in ptr["own"].items()},
+                                   "parts": [{new[use[i]].record_id: p for i, p in d.items()} for d in ptr["parts"]]}
+                                  ) if ptr else ""
             sb["sources"] = [use[i] for i in sb["sources"]]
             out.append(CompiledBlock(
                 content=content, source_record_ids=tuple(new[i].record_id for i in sb["sources"]),
                 thread=None, commit=None,
                 # every SB gets a place in the graph; its links come from step 2 (placement)
                 lines=(LineOut(thread=None, after=None, committed=sb["happened"], summary=None),),
+                standing=sb.get("standing", False), spans=spans, pointers=pointers, under=sb.get("under"),
             ))
         if trace is not None:
             trace.update({"language": lang, "step1": data,
@@ -874,7 +924,7 @@ class SemanticCompiler:
         builds on, and which steps in progress it settles. Touches no store."""
         if not sbs:
             return {"after": {}, "why": {}, "settles": {}, "raw": {}}
-        data = self._ask_json(move_mode.step2_prompt(lang, sbs, cands, per_sb),
+        data = self._ask_json(move_mode.step2_prompt(lang, sbs, cands, per_sb, self.scene),
                               lambda d: move_mode.parse_step2(d, len(sbs), len(cands)))
         return {**move_mode.parse_step2(data, len(sbs), len(cands)), "raw": data}
 
@@ -1005,6 +1055,10 @@ def blocks_to_json(blocks: tuple[CompiledBlock, ...], version: str = PROMPT_VERS
                     for x in b.lines
                 ]} if b.lines else {}),
                 **({"settles": list(b.settles)} if b.settles else {}),
+                **({"standing": True} if b.standing else {}),
+                **({"spans": {r: list(p) for r, p in b.spans}} if b.spans else {}),
+                **({"pointers": b.pointers} if b.pointers else {}),
+                **({"under": b.under} if b.under is not None else {}),
             }
             for b in blocks
         ],
@@ -1020,6 +1074,10 @@ def blocks_from_json(data: dict) -> tuple[CompiledBlock, ...]:
             commit=None if b["commit"] is None else CommitOut(**b["commit"]),
             lines=tuple(LineOut(**x) for x in b.get("lines", ())),
             settles=tuple(b.get("settles", ())),
+            standing=b.get("standing") is True,
+            spans=tuple((r, tuple(tuple(x) if isinstance(x, list) else x for x in p)) for r, p in (b.get("spans") or {}).items()),
+            pointers=b.get("pointers", ""),
+            under=b.get("under"),
         )
         for b in data["blocks"]
     )

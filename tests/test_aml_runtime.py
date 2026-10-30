@@ -526,3 +526,26 @@ def test_tree_schema_understands_matters_first_then_places_blocks():
     assert (cont.thread, cont.after, cont.committed) == ("m:a", None, False)
     assert second.settles == ("b1",) and egg.lines == ()
     assert blocks_from_json(blocks_to_json((first, second, egg))) == (first, second, egg)
+
+
+def test_an_untimed_message_is_dated_by_its_session_so_far_never_by_storage(tmp_path):
+    from datetime import UTC, datetime
+
+    from mr_mem_aml.line_read import _when
+    from mr_mem_aml.source_store import AmlSourceStore
+
+    store = AmlSourceStore(tmp_path / "s.sqlite")
+    stored = datetime(2026, 10, 14, tzinfo=UTC)
+    store.put_request({"request_id": "q1", "user_id": "u", "session_id": "a", "messages": [
+        {"role": "user", "content": "before any time"},
+        {"role": "user", "content": "timed", "timestamp": 1_710_432_000_000},  # 2024-03-14
+        {"role": "user", "content": "after it"},
+    ]}, received_at=stored)
+    store.put_request({"request_id": "q2", "user_id": "u", "session_id": "b", "messages": [
+        {"role": "user", "content": "other session, untimed"}]}, received_at=stored)
+    at = store.session_times("u")
+    assert set(at) == {"q1:2"}  # not from a later message, another session, or the storage time
+    assert at["q1:2"].date().isoformat() == "2024-03-14"
+    assert _when(None, 0, (1, 3), at["q1:2"], "en") == "S1 #3, session began 03-14"
+    assert _when(None, 0, (2, 4), None, "en") == "S2 #4"
+    store.close()

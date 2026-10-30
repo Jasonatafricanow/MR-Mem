@@ -156,3 +156,24 @@ def test_knowledge_time_is_required():
 
     signature = inspect.signature(LineGraphStore.add_edge)
     assert signature.parameters["knowledge_at"].default is inspect.Parameter.empty
+
+
+def test_a_store_written_before_edge_kinds_reads_its_edges_as_carrying_on(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.sqlite"
+    tree = Tree(tmp_path)
+    tree.store.close()
+    tree.store = LineGraphStore(path)
+    line = tree.line("a")
+    a, b = tree.node(line, "a", 0), tree.node(line, "b", 1)
+    tree.store.add_edge(line, a, b, knowledge_at=at(1))
+    tree.store.close()
+    conn = sqlite3.connect(path)  # back to the old table: no kind column
+    conn.executescript("CREATE TABLE e AS SELECT line_id, parent_node_id, child_node_id FROM line_edges;"
+                       "PRAGMA foreign_keys=OFF; DROP TABLE line_edges; ALTER TABLE e RENAME TO line_edges;")
+    conn.close()
+    store = LineGraphStore(path)
+    assert store.parents_at(b, at(2), kind="after") == (a,)
+    assert store.edge_kind(line, a, b) == "after"
+    store.close()

@@ -251,3 +251,31 @@ def test_a_block_citing_several_messages_spans_their_times(env):
     env.tree.apply([BlockLines(memory.memory_id, (A(),))], {}, at(3), open_matters=False)
     node = env.tree.lines.states_for_node(env.node("span"))[0]
     assert (node.occurred_start, node.occurred_end) == (at(0), at(3))
+
+
+def test_a_plan_whose_date_has_passed_is_frozen_but_not_confirmed(tmp_path):
+    from mr_mem.lce.path_a import TenseStore
+
+    tense = TenseStore(tmp_path / "tense.sqlite")
+    t = datetime(2024, 3, 1, tzinfo=UTC)
+    tense.record("plan", happened=False, known_at=t)
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    content = "sprint from 2024-03-15 to 2024-03-29"
+    assert tense.side("plan", now, content) == PAST          # past the terminator: frozen
+    assert tense.confirmed("plan", now) is False              # time passing is no evidence (design 1.3)
+    tense.settle("plan", at=datetime(2024, 3, 30, tzinfo=UTC), by="done")
+    assert tense.confirmed("plan", now) is True
+    assert tense.confirmed("plan", datetime(2024, 3, 29, tzinfo=UTC)) is False
+
+
+def test_a_part_and_what_carries_on_are_told_apart(env):
+    """Step 1 nesting (a part of the matter) and step 2 links (carrying it on) are different edges."""
+    env.step(0, (WANT, [A(happened=False)]),
+             (BOOKED, [Attachment(None, "b1", True, None, part=True)]))
+    env.look(30)
+    env.step(30, (ARRIVED, [A(after=env.ref(node_id=env.node(BOOKED)))]))
+    lines, now = env.tree.lines, at(31)
+    assert lines.parents_at(env.node(BOOKED), now, kind="part") == (env.node(WANT),)
+    assert lines.parents_at(env.node(BOOKED), now, kind="after") == ()
+    assert lines.parents_at(env.node(ARRIVED), now, kind="after") == (env.node(BOOKED),)
+    assert set(lines.children_at(env.node(WANT), now)) == {env.node(BOOKED)}  # no kind: both

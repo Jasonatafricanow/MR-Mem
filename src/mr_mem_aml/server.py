@@ -74,8 +74,23 @@ class RuntimeHost:
     def search(self, payload: object, mode: str | None) -> dict:
         return self.call(self.runtime.search, payload, mode=mode)
 
-    def flush(self) -> dict:
-        return self.call(self.runtime.flush)
+    def flush(self, user_id: str | None = None) -> dict:
+        """Compile what is left of one user's history (or every user's), tail included: as Add does,
+        under that user's lock with the model call off the owner thread, so a user still adding
+        is never compiled from two threads at once."""
+        runtime = self.runtime
+        if runtime.config.compile_window is None:
+            return self.call(runtime.flush)
+        users = [user_id] if user_id else list(self.call(runtime.source.users_with_pending))
+        windows = 0
+        for user in users:
+            with self._user_lock({"user_id": user}):
+                while (job := self.call(runtime._window_job, user, final=True)) is not None:
+                    with self._compile_slots:
+                        compiled = runtime.compile_job(job)
+                    self.call(runtime.finish_add, job, compiled)
+                    windows += 1
+        return {"status": "ok", "windows": windows}
 
     def health(self) -> dict:
         runtime = self.runtime

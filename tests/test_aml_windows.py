@@ -3,6 +3,7 @@ compiler runs on windows that close at natural breakpoints, and flush compiles
 the rest."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -168,3 +169,47 @@ def test_a_work_block_running_past_the_feedback_is_counted_not_refused(tmp_path)
         assert len(rt.core.load_all()) == 2  # counted, the Block still stands
     finally:
         rt.close()
+
+
+def test_a_window_can_be_counted_in_characters(tmp_path):
+    backend = TreeBackend()
+    rt = runtime(tmp_path, backend, soft=10, hard=1000, measure="chars")
+    try:
+        add(rt, "r1", "u1", "a much longer answer")  # 22 characters: past soft already
+        add(rt, "r2", "u2", "a2", start_minute=2)
+        assert backend.windows == [["u1", "a much longer answer"]]  # closed at the person's next turn
+    finally:
+        rt.close()
+
+
+def test_a_window_compiled_twice_applies_the_first_journal_entry_not_its_own(tmp_path):
+    rt = runtime(tmp_path, TreeBackend())
+    try:
+        add(rt, "r1", "u1", "a1", "u2", "a2", "u3", "a3")
+        rt.source.put_request({"request_id": "r2", "user_id": "u1", "session_id": "s1", "messages": [
+            {"role": "user", "content": t} for t in ("u4", "a4", "u5", "a5")]},
+            received_at=datetime(2026, 10, 30, tzinfo=UTC))
+        first, second = rt._window_job("u1", final=True), rt._window_job("u1", final=True)
+        assert first.window[0] == second.window[0]  # two threads took the same window
+        mine = rt.compile_job(second)
+        mine["blocks"] = [{**b, "content": b["content"] + " (other output)"} for b in mine["blocks"]]
+        rt.finish_add(first, rt.compile_job(first))
+        assert rt.finish_add(second, mine).get("replayed")  # no identity conflict, nothing twice
+    finally:
+        rt.close()
+
+
+def test_flushing_one_users_history_leaves_another_users_alone(tmp_path):
+    from mr_mem_aml.server import RuntimeHost
+
+    backend = TreeBackend()
+    host = RuntimeHost(lambda: runtime(tmp_path, backend, soft=100, hard=200))
+    try:
+        for user in ("a", "b"):
+            host.add({"request_id": f"r{user}", "user_id": user, "session_id": user, "messages": [
+                {"role": "user", "content": f"{user}1"}, {"role": "assistant", "content": f"{user}2"}]})
+        host.flush("a")
+        assert backend.windows == [["a1", "a2"]]  # b is still adding: its tail is not closed for it
+        assert host.call(host.runtime.source.users_with_pending) == ("b",)
+    finally:
+        host.call(host.runtime.close)

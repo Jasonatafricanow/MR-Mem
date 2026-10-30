@@ -16,13 +16,15 @@ left resumable and the caller gets a retryable error.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from mr_mem import MemoryCore, SemanticMemoryCandidate, ThreadStatus
+from mr_mem import MemoryCore, MemoryLifecycle, SemanticMemoryCandidate, ThreadStatus
 from mr_mem.contracts import Scope
 from mr_mem.integrations.path_a_ingest import (
     BlockSignals,
@@ -233,6 +235,11 @@ class MemoryRuntime:
         self.past_feedback: list[str] = []
         # upward link raw record -> Blocks compiled from it
         self._blocks_by_record: dict[str, list[str]] = {}
+        self._standing: dict[object, list[str]] = {}  # scope -> standing instructions and preferences
+        # downward link Block -> {raw record: the paragraphs it points to} where it points to a part
+        self._spans: dict[str, dict[str, tuple[int, ...]]] = {}
+        # Block -> {"own": {record: items | None}, "parts": [...]}: what its turns and each part point to
+        self._pointers: dict[str, dict] = {}
         for memory in self.core.canonical.load_all():
             self._link_blocks(memory)
         self.raw = None
@@ -327,6 +334,16 @@ class MemoryRuntime:
             linked = self._blocks_by_record.setdefault(ref.record_id, [])
             if memory.memory_id not in linked:
                 linked.append(memory.memory_id)
+        standing = self._standing.setdefault(memory.scope, [])
+        if ("standing", "true") in memory.attributes and memory.memory_id not in standing:
+            standing.append(memory.memory_id)
+        pointers = dict(memory.attributes).get("pointers")
+        if pointers:
+            self._pointers[memory.memory_id] = json.loads(pointers)
+        spans = dict(memory.attributes).get("spans")
+        if spans:
+            self._spans[memory.memory_id] = {r: tuple(tuple(x) if isinstance(x, list) else x for x in p)
+                                             for r, p in json.loads(spans).items()}
 
     def _embed_cached(self, text: str) -> tuple[float, ...]:
         """Projection texts are re-ranked per query; embed each text once."""
@@ -432,6 +449,7 @@ class MemoryRuntime:
     def _window_end(self, pending, final: bool) -> int | None:
         """How many pending messages the next window takes, or None to wait."""
         soft, hard = self.config.compile_window["soft"], self.config.compile_window["hard"]
+        chars = self.config.compile_window.get("measure") == "chars"
         gap = self.config.compile_window.get("gap_minutes", 120) * 60
         work = self.config.scene == "work"
 
@@ -446,20 +464,20 @@ class MemoryRuntime:
                         and (nxt.occurred_at - prev.occurred_at).total_seconds() >= gap)
                     or turn(prev, nxt))
 
-        # size[i]: what the first i pending messages count toward the caps; entries
-        # placement drops background notices, so they do not count
+        # size[i]: what the first i pending messages count toward the caps (messages or
+        # characters); entries placement drops background notices, so they do not count
         size = [0]
         for _, m in pending:
-            size.append(size[-1] + int(self.config.placement not in ("entries", "moves")
-                                       or not is_noise(m.role, m.content)))
+            counted = self.config.placement not in ("entries", "moves") or not is_noise(m.role, m.content)
+            size.append(size[-1] + (len(m.content) if chars else 1) * int(counted))
         n = len(pending)
         for i in range(1, n):
             if size[i] > hard:
                 break
             if size[i] >= soft and breaks(pending[i - 1][1], pending[i][1]):
                 return i
-        if size[n] >= hard:
-            return size.index(hard)
+        if size[n] >= hard:  # the most that fits under hard, at least one message
+            return max(1, max(i for i in range(n + 1) if size[i] <= hard))
         return n if final and n else None
 
     def _window_job(self, user_id: str, *, final: bool, request: dict | None = None
@@ -594,9 +612,11 @@ class MemoryRuntime:
         trace: dict = {}  # entries placement: pieces, entries and audit for the journal
         try:
             started = time.monotonic()
-            if job.window is not None and job.window[2]:
+            if job.window is not None and (job.window[2] or self.config.placement == "moves"):
+                # moves: even the last window may stop where its SBs close; the flush goes on
                 blocks, kept = self.compiler.compile(
-                    job.messages, job.context, job.known_lines, window=True, trace=trace)
+                    job.messages, job.context, job.known_lines, window=True, trace=trace,
+                    tail=job.window[2])
             else:
                 blocks = self.compiler.compile(
                     job.messages, job.context, job.known_lines, trace=trace)
@@ -673,6 +693,12 @@ class MemoryRuntime:
         user_id = job.request["user_id"]
         kept = compiled.get("kept", len(job.messages))
         self.source.put_window(wid, user_id, seqs[0], seqs[kept - 1], compiled)
+        # the first journal entry wins: a second compile of the same window applies that one, never
+        # its own output, and a window already applied is not applied again
+        status, compiled = self.source.window(wid)
+        kept = compiled.get("kept", len(job.messages))
+        if status == "done":
+            return {"window": wid, "messages": kept, "blocks": 0, "replayed": True}
         scope = user_scope(user_id)
         blocks = blocks_from_json(compiled)
         committed = self._admit(scope, wid, blocks)
@@ -710,6 +736,9 @@ class MemoryRuntime:
             committed.append(admission.admit(SemanticMemoryCandidate(
                 semantic_id=f"aml:{rid}:{index}", scope=scope, content=block.content,
                 source_refs=tuple(refs), compiler_version=PROMPT_VERSION,
+                attributes=((("standing", "true"),) if block.standing else ())
+                + ((("spans", json.dumps({r: list(p) for r, p in block.spans})),) if block.spans else ())
+                + ((("pointers", block.pointers),) if block.pointers else ()),
             )))
             self._link_blocks(committed[-1])
         return committed
@@ -745,6 +774,25 @@ class MemoryRuntime:
             log.warning("Path A relation(s) refused: %s", "; ".join(result.failures)[:500])
         return 0
 
+    def _said_by_person(self, memory) -> bool:
+        said = [self.source.message_by_record(r.record_id) for r in memory.provenance.source_refs]
+        return any(m is not None and m.role == "user" for m in said)
+
+    def _matter(self, j: int, hist: list[dict], node_of: dict, j_of: dict, tree, far: datetime) -> int:
+        """The person's earlier SB that step j follows: j itself when it is the person's, else its
+        nearest ancestor that is (j when there is none)."""
+        todo, seen = [node_of[hist[j]["memory"].memory_id]], set()
+        while todo:
+            node = todo.pop(0)
+            if node in seen:
+                continue
+            seen.add(node)
+            k = j_of.get(node)
+            if k is not None and self._said_by_person(hist[k]["memory"]):
+                return k
+            todo += tree.lines.parents_at(node, far)
+        return j
+
     def _place(self, user_id: str, scope, compiled: dict, committed, at: datetime) -> dict:
         """Placement "moves", step 2 (owner thread: reads the store, then one model call).
         Candidates of each SB: the top k earlier SBs by each of four searches - its text
@@ -774,7 +822,14 @@ class MemoryRuntime:
             return {"memory": memory, "text": memory.content, "move": move or memory.content,
                     "words": words(memory), "time": memory.occurred_at.strftime("%Y-%m-%d %H:%M")}
         hist = [item(m) for m in earlier]
-        sbs = [item(m) for m in committed]
+        # chat scene: an SB that builds on one of this window goes on with it; only the window's
+        # starts look for what they build on earlier. Any SB of the person may report that an
+        # earlier step came to a result, so those are asked for settles only
+        unders = [b.get("under") for b in compiled.get("blocks", [])]
+        start = [self.config.scene != "chat" or i >= len(unders) or unders[i] is None for i in range(len(committed))]
+        asked = [i for i in range(len(committed))
+                 if start[i] or (self.config.scene == "chat" and self._said_by_person(committed[i]))]
+        sbs = [{**item(committed[i]), "settles_only": not start[i]} for i in asked]
         k, latest = self.config.place_policy["k"], self.config.place_policy["latest"]
         base = list(range(max(0, len(hist) - latest), len(hist)))
         open_steps = [j for j, h in enumerate(hist)
@@ -794,28 +849,45 @@ class MemoryRuntime:
                 per_sb.append(list(dict.fromkeys(picked + base + open_steps)))
         else:
             per_sb = [list(dict.fromkeys(base + open_steps)) for _ in sbs]
+        chat = self.config.scene == "chat"
+        if chat:  # each step shown under the person's matter it follows (design 4.1), the matter too
+            j_of = {node_of[h["memory"].memory_id]: j for j, h in enumerate(hist)}
+            far_ = datetime(9999, 1, 1, tzinfo=UTC)
+            matter_of = {j: self._matter(j, hist, node_of, j_of, tree, far_) for js in per_sb for j in js}
+            per_sb = [list(dict.fromkeys(x for j in js for x in (matter_of[j], j))) for js in per_sb]
         shown = sorted({j for js in per_sb for j in js},
                        key=lambda j: (hist[j]["memory"].occurred_at, j))
         pos = {j: n for n, j in enumerate(shown)}
         cands = [{"text": hist[j]["text"], "time": hist[j]["time"],
                   "state": tree.side(node_of[hist[j]["memory"].memory_id], at)} for j in shown]
+        if chat:
+            for n, j in enumerate(shown):
+                m = matter_of.get(j, j)
+                cands[n].update(matter=pos.get(m, n), who="person" if self._said_by_person(hist[j]["memory"]) else "assistant")
         lists = [sorted(pos[j] for j in js) for js in per_sb]
         try:
             placed = self.compiler.place(
-                lang, [{"text": s["text"], "time": s["time"]} for s in sbs], cands, lists)
+                lang, [{"text": s["text"], "time": s["time"], "settles_only": s["settles_only"]} for s in sbs], cands, lists)
         except CompileError as exc:
             raise CompileFailed(f"placement: {exc}") from exc
 
+        if chat:  # only what the person reports settles a step (the assistant saying so does not)
+            placed["settles"] = {i: [j for j in js if cands[j]["state"] == "in progress"]
+                                 for i, js in placed["settles"].items() if self._said_by_person(sbs[i]["memory"])}
+            placed["after"] = {i: rs for i, rs in placed["after"].items() if not sbs[i]["settles_only"]}
+
         def ref(kind: str, n: int) -> str:
-            return f"N{n + 1}" if kind == "N" else f"b{n + 1}"
-        n_sbs = range(len(sbs))
+            return f"N{n + 1}" if kind == "N" else f"b{asked[n] + 1}"
+        at_of = {i: n for n, i in enumerate(asked)}  # window index -> its s number in the prompt
+        rows = [at_of.get(i) for i in range(len(committed))]
         return {
             "language": lang,
             "refs": {f"N{n + 1}": node_of[hist[j]["memory"].memory_id] for n, j in enumerate(shown)},
-            "after": [[ref(*r) for r in placed["after"].get(i, [])] for i in n_sbs],
-            "why": [[placed["why"].get((i, r), "") for r in placed["after"].get(i, [])] for i in n_sbs],
-            "settles": [[f"N{n + 1}" for n in placed["settles"].get(i, [])] for i in n_sbs],
-            "candidates": [[f"N{n + 1}" for n in ls] for ls in lists],
+            "after": [[ref(*r) for r in placed["after"].get(n, [])] if n is not None else [] for n in rows],
+            "why": [[placed["why"].get((n, r), "") for r in placed["after"].get(n, [])] if n is not None else []
+                    for n in rows],
+            "settles": [[f"N{j + 1}" for j in placed["settles"].get(n, [])] if n is not None else [] for n in rows],
+            "candidates": [[f"N{j + 1}" for j in lists[n]] if n is not None else [] for n in rows],
             "raw": placed["raw"],
         }
 
@@ -827,9 +899,13 @@ class MemoryRuntime:
         lines = []
         for i, (block, memory) in enumerate(zip(blocks, committed, strict=True)):
             happened = block.lines[0].committed if block.lines else True
-            refs = (after[i] if i < len(after) else []) or [None]
+            refs = list(after[i] if i < len(after) else [])
+            part = f"b{block.under + 1}" if block.under is not None and block.under != i else None
+            if part is not None:  # what step 1 put it under, in the words: it is a part of that
+                refs = [part] + [r for r in refs if r != part]
+            refs = refs or [None]
             lines.append(BlockLines(memory.memory_id, tuple(
-                Attachment(None, r, happened, None) for r in refs),
+                Attachment(None, r, happened, None, part=r is not None and r == part) for r in refs),
                 tuple(settles[i]) if i < len(settles) else ()))
         result = self.tree_for(scope).apply(lines, placement.get("refs", {}), at,
                                             open_matters=False)
@@ -862,11 +938,11 @@ class MemoryRuntime:
             self.thread_failures += 1
         return result.promotion_failures
 
-    def flush(self) -> dict:
-        """Rescan every user Scope and retry pending mature-Thread handoffs."""
+    def flush(self, user_id: str | None = None) -> dict:
+        """Rescan every user Scope (or only ``user_id``'s) and retry pending mature-Thread handoffs."""
         if self.config.compile_window is not None:  # compile what is left, tail included
             windows = 0
-            for user_id in self.source.users_with_pending():
+            for user_id in ([user_id] if user_id else self.source.users_with_pending()):
                 while (job := self._window_job(user_id, final=True)) is not None:
                     self.finish_add(job, self.compile_job(job))
                     windows += 1
@@ -968,29 +1044,44 @@ class MemoryRuntime:
             c.memory_id for c in self.index.retrieval().search(
                 MemoryRetrievalQuery(scope=scope, text=text, limit=min(policy.sb_k, 100)))]
         tree = self.tree_for(scope)
-        lines, far, now = tree.lines, datetime(9999, 1, 1, tzinfo=UTC), datetime.now(UTC)
+        # now: the person's latest message, so a replayed or offline history reads as it stood then
+        lines, far, now = tree.lines, datetime(9999, 1, 1, tzinfo=UTC), self.source.last_time(user_id) or datetime.now(UTC)
 
         def nodes(block: str):
             return lines.nodes_for_state(block)
 
-        def parents(block: str) -> list[str]:
+        def parents(block: str, kind: str | None = None) -> list[str]:
             return list(dict.fromkeys(lines.get_node(p).block_id for n in nodes(block)
-                                      for p in lines.parents_at(n.node_id, far)))
+                                      for p in lines.parents_at(n.node_id, far, kind=kind)))
 
-        def children(block: str) -> list[str]:
+        def children(block: str, kind: str | None = None) -> list[str]:
             return list(dict.fromkeys(lines.get_node(c).block_id for n in nodes(block)
-                                      for c in lines.children_at(n.node_id, far)))
+                                      for c in lines.children_at(n.node_id, far, kind=kind)))
         steps: dict[str, line_read.Step] = {}
+        places = self.source.places(user_id)
+        session_at = self.source.session_times(user_id)
 
         def step(block: str) -> line_read.Step:
             if block not in steps:
                 memory = self.core.canonical.get(block)
                 given = [] if memory is None else [r.occurred_at for r in memory.provenance.source_refs
                                                     if self.source.time_given(r.record_id)]
+                at = [] if memory is None else [places[r.record_id] for r in memory.provenance.source_refs
+                                                 if r.record_id in places]
                 on = nodes(block)
-                side = tree.side(on[0].node_id, now) if on else None
+                later = []
+                for by in tree.tense.settled_by(block, now):
+                    m = self.core.canonical.get(by)
+                    got = [] if m is None else [places[r.record_id] for r in m.provenance.source_refs if r.record_id in places]
+                    if got and min(got) not in later:
+                        later.append(min(got))
                 steps[block] = line_read.Step("" if memory is None else memory.content,
-                                              min(given) if given else None, side != "in progress")
+                                              min(given) if given else None,
+                                              bool(on) and bool(tree.confirmed(on[0].node_id, now)),
+                                              min(at) if at else None, tuple(later),
+                                              None if memory is None or given else min(
+                                                  (session_at[r.record_id] for r in memory.provenance.source_refs
+                                                   if r.record_id in session_at), default=None))
             return steps[block]
 
         def sources(block: str) -> list[str]:
@@ -1000,13 +1091,36 @@ class MemoryRuntime:
         def message(record: str):
             m = self.source.message_by_record(record)
             return None if m is None else line_read.RawMessage(
-                m.content, m.role, m.occurred_at if m.time_given else None)
+                m.content, m.role, m.occurred_at if m.time_given else None, places.get(record),
+                None if m.time_given else session_at.get(record))
+        standing = [b for b in self._standing.get(scope, ())
+                    if (m := self.core.canonical.get(b)) is not None and m.lifecycle is MemoryLifecycle.ACTIVE]
+        question: list = []
+
+        def relevance(block: str) -> float:  # how close the step's text is to the question
+            import numpy as np
+
+            memory = self.core.canonical.get(block)
+            if memory is None or self.embedding is None:
+                return 0.0
+            if not question:
+                question.append(np.array(self._embed_cached(text)))
+            q, v = question[0], np.array(self._embed_cached(memory.content.split("\n")[0]))
+            return float(q @ v) / (np.linalg.norm(q) * np.linalg.norm(v) or 1)
         ranked = [b for b in line_read.rank_blocks(records, lambda r: self._blocks_by_record.get(r, ()),
-                                                   sb_hits, policy.rrf_k)
+                                                   sb_hits, policy.rrf_k,
+                                                   closest=lambda blocks: max(blocks, key=relevance))
                   if self.core.canonical.get(b) is not None]
         return line_read.compose(text, ranked, records, step=step, sources=sources, parents=parents,
                                  children=children, message=message, lang=self.language_of(user_id),
-                                 policy=policy)
+                                 policy=policy, standing=standing,
+                                 span=lambda block, record: self._spans.get(block, {}).get(record),
+                                 relevance=relevance, pointers=self._pointers.get,
+                                 part_of=lambda b: parents(b, "part"), parts=lambda b: children(b, "part"),
+                                 carries=lambda b: [*parents(b, "after"), *children(b, "after")],
+                                 everything=lambda: [b for b in self._pointers
+                                                     if (m := self.core.canonical.get(b)) is not None
+                                                     and m.scope == scope])
 
 
 def _past_feedback(roles: list[str]) -> bool:
