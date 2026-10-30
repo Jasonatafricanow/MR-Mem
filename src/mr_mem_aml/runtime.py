@@ -484,8 +484,11 @@ class MemoryRuntime:
                 )
             )
         if self.config.hyde != "off":
-            backend = (build_backend(self.config.hyde_backend) if self.config.hyde_backend
-                       else self.backend)
+            backend = (
+                build_backend(self.config.hyde_backend)
+                if self.config.hyde_backend
+                else self.backend
+            )
             if backend is None:
                 raise ValueError("HyDE needs a configured completion backend")
             expander = PromptHyDEExpander(backend.complete)
@@ -1366,7 +1369,8 @@ class MemoryRuntime:
         return result.promotion_failures
 
     def flush(self, user_id: str | None = None) -> dict:
-        """Rescan every user Scope (or only ``user_id``'s) and retry pending mature-Thread handoffs."""
+        """Rescan every user Scope (or only ``user_id``'s) and retry pending mature-Thread
+        handoffs."""
         if self.config.compile_window is not None:  # compile what is left, tail included
             windows = 0
             for user in [user_id] if user_id else self.source.users_with_pending():
@@ -1482,12 +1486,16 @@ class MemoryRuntime:
         }
 
     def _hyde_passage(self, text: str) -> str:
-        """The hypothetical passage HyDE searches with ("" when it cannot be had: the question alone)."""
+        """The hypothetical passage HyDE searches with ("" when it cannot be had: the question
+        alone)."""
         from mr_mem.memory.providers.hybrid import PromptHyDEExpander
 
         if self._hyde is None:
-            backend = (build_backend(self.config.hyde_backend) if self.config.hyde_backend
-                       else self.backend)
+            backend = (
+                build_backend(self.config.hyde_backend)
+                if self.config.hyde_backend
+                else self.backend
+            )
             self._hyde = PromptHyDEExpander(backend.complete) if backend is not None else False
         if not self._hyde:
             return ""
@@ -1504,11 +1512,18 @@ class MemoryRuntime:
         from mr_mem_aml import line_read
 
         policy = line_read.LineReadPolicy.of(self.config.line_read)
-        records = list(
-            dict.fromkeys(u.record_id for u, _ in self.raw.search(user_id, text, policy.raw_k))
+        # P1's raw list: its head finds the anchors; with raw_fill the whole list backs the Lines up
+        # (LCE shares P1's evidence: what the Lines do not cover is still given, as P1 gives it)
+        pool = list(
+            dict.fromkeys(
+                u.record_id
+                for u, _ in self.raw.search(user_id, text, max(policy.raw_k, policy.raw_fill))
+            )
         )
+        records = pool[: policy.raw_k]
         sb_search = None if self.index is None else self.index.retrieval()
-        if self.config.hyde == "augmented":  # HyDE: a hypothetical passage searched beside the question
+        # HyDE: a hypothetical passage searched beside the question
+        if self.config.hyde == "augmented":
             hypo = self._hyde_passage(text)
             if hypo:
                 from mr_mem.memory.providers.hybrid import HyDEAugmentedProvider
@@ -1716,6 +1731,7 @@ class MemoryRuntime:
             text,
             ranked,
             records,
+            fill_records=pool,
             step=step,
             sources=sources,
             parents=up,

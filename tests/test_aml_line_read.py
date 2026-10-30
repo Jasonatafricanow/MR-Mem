@@ -523,3 +523,15 @@ def test_fusion_fills_in_only_the_raw_hits_no_given_sb_comes_from():
     )
     filled = [i["id"] for i in items if i["kind"] == "source" and "Other raw" in i["content"]]
     assert filled == ["raw:m2"]  # m1 is covered by the SB; one fill only
+
+
+def test_p1s_whole_list_backs_the_lines_up_not_only_the_anchor_hits():
+    steps = {"plan": lr.Step("The person plans the trip", None, True, (1, 1))}
+    names = ["m1", "m2", "m3", "m4"]
+    msgs = {r: lr.RawMessage(f"text of {r}", "user", None, (1, n)) for n, r in enumerate(names, 1)}
+    items = lr.compose("q", ["plan"], ["m1"], fill_records=names, step=steps.__getitem__,
+                       sources=lambda b: ["m1"], parents=lambda b: [], children=lambda b: [],
+                       message=msgs.get, lang="en",
+                       policy=lr.LineReadPolicy(sbs=1, projection="hits", raw_fill=100))
+    filled = [i["id"] for i in items if i["kind"] == "source" and i["id"] != "raw:m1"]
+    assert filled == ["raw:m2", "raw:m3", "raw:m4"]  # beyond the one anchor hit, in P1's order

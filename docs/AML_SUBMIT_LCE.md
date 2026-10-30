@@ -23,7 +23,7 @@ mr-mem-aml serve --config examples/runtime.aml-lce.json
 | `keep_raw_on_compile_failure` | true | 编译失败也让 Add 返回 200，原文照样可检索（退回 P1） |
 | `compile_before_search` | true | 平台不会调 flush；Search 前先把这个用户还没收口的尾巴窗口编完（Search 最多 30 分钟） |
 | `compile_window` | 软 4 万 / 硬 8 万字符，自然断点收口 | 窗口收口的那次 Add 会等编译完成再返回（1–3 分钟） |
-| `line_read` | relay（原文命中 → SB → 沿承接取局部 + 精确原文片段），助手部分 `told` | 见下面的验证；段承接（`carry: threads`）和融合（`raw_fill`）在定版编译上没有帮助，保留为开关、默认关 |
+| `line_read` | relay（原文命中 → SB → 沿承接取局部 + 精确原文片段），助手部分 `told`，`raw_fill: 100` | LCE 与 P1 共用证据：线和片段在前，后面按 P1 检索顺序补满到 top_k=100（不重复已被 SB 引用的原文），保证不低于 P1；这一项尚未实测。段承接（`carry: threads`）保留为开关、默认关 |
 
 ## 验证（holdout beam_100k 60 题，DeepSeek 答题，每组两遍）
 

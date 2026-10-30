@@ -30,7 +30,7 @@
   "compile_window": {"soft": 40000, "hard": 80000, "measure": "chars"},
   "compile_concurrency": 8,
   "line_read": {"raw_k": 30, "sb_k": 30, "sbs": 16, "code_diff": true, "projection": "relay",
-                "reach": 3, "extend": 32, "assistant": "told"},
+                "reach": 3, "extend": 32, "assistant": "told", "raw_fill": 100},
   "read_policy": {"lce_limit": 5, "thread_limit": 3, "support_limit": 4, "source_limit": 0,
                   "include_source_text": false, "support_rank_window": 10, "min_cosine": 0.6},
   "auth_token_env": "MRMEM_AML_TOKEN",

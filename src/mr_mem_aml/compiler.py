@@ -1040,7 +1040,8 @@ class SemanticCompiler:
     def assign_threads(
         self, lang: str, sbs: list[dict], threads: list[dict], cands: list[dict] = ()
     ) -> dict:
-        """Which thread each SB of the window is in, and what a new one came from. Touches no store."""
+        """Which thread each SB of the window is in, and what a new one came from. Touches no
+        store."""
         if not sbs:
             return {"thread": {}, "from": {}}
         data = self._ask_json(
@@ -1050,7 +1051,8 @@ class SemanticCompiler:
         return move_mode.parse_threads(data, len(sbs), len(threads))
 
     def summarize(self, lang: str, threads: list[dict]) -> dict[int, str]:
-        """Each thread's summary rewritten from its summary so far and its SBs since. Touches no store."""
+        """Each thread's summary rewritten from its summary so far and its SBs since. Touches no
+        store."""
         if not threads:
             return {}
         data = self._ask_json(

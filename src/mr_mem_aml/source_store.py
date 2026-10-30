@@ -250,7 +250,8 @@ class AmlSourceStore:
         summaries: dict[str, str],
         origins: dict[str, dict] | None = None,
     ) -> None:
-        """A window's threads (design: a thread is a stretch of a Line): which thread each of its SBs
+        """A window's threads (design: a thread is a stretch of a Line): which thread each of its
+        SBs
         is in, and each touched thread's summary as it stood after this window, kept beside the
         earlier ones (git-like). Applied again on replay, the first entry wins."""
         with self._lock, self._conn:
@@ -259,17 +260,13 @@ class AmlSourceStore:
                 [(m, user_id, t) for m, t in members.items()],
             )
             self._conn.executemany(
-                (
-                    "INSERT OR IGNORE INTO threads(user_id,thread_id,window_id,last_seq,summary) VAL"
-                    "UES (?,?,?,?,?)"
-                ),
+                "INSERT OR IGNORE INTO threads(user_id,thread_id,window_id,last_seq,summary) "
+                "VALUES (?,?,?,?,?)",
                 [(user_id, t, window_id, last_seq, text) for t, text in summaries.items()],
             )
             self._conn.executemany(  # a new thread branches off the step its first SB carries on
-                (
-                    "INSERT OR IGNORE INTO thread_origins(thread_id,user_id,from_thread,from_memory,"
-                    "why) VALUES (?,?,?,?,?)"
-                ),
+                "INSERT OR IGNORE INTO thread_origins(thread_id,user_id,from_thread,"
+                "from_memory,why) VALUES (?,?,?,?,?)",
                 [
                     (t, user_id, o["thread"], o["step"], o.get("why", ""))
                     for t, o in (origins or {}).items()
@@ -277,14 +274,13 @@ class AmlSourceStore:
             )
 
     def threads(self, user_id: str) -> dict[str, dict]:
-        """thread_id -> {"summary": the latest, "last_seq": its window's last message, "members": [...],
+        """thread_id -> {"summary": the latest, "last_seq": its window's last message, "members":
+        [...],
         "origin": {"thread", "step", "why"} when it branched off another thread's step}."""
         with self._lock:
             versions = self._conn.execute(
-                (
-                    "SELECT thread_id, summary, last_seq FROM threads WHERE user_id=? ORDER BY last_"
-                    "seq"
-                ),
+                "SELECT thread_id, summary, last_seq FROM threads WHERE user_id=? "
+                "ORDER BY last_seq",
                 (user_id,),
             ).fetchall()
             members = self._conn.execute(
@@ -292,10 +288,8 @@ class AmlSourceStore:
                 (user_id,),
             ).fetchall()
             origins = self._conn.execute(
-                (
-                    "SELECT thread_id, from_thread, from_memory, why FROM thread_origins WHERE user_"
-                    "id=?"
-                ),
+                "SELECT thread_id, from_thread, from_memory, why FROM thread_origins "
+                "WHERE user_id=?",
                 (user_id,),
             ).fetchall()
         out: dict[str, dict] = {}
@@ -418,10 +412,8 @@ class AmlSourceStore:
         it was stored, nor a time borrowed from a later message or another session."""
         with self._lock:
             rows = self._conn.execute(
-                (
-                    "SELECT record_id, session_id, occurred_at, time_given FROM messages WHERE user_"
-                    "id=? ORDER BY seq"
-                ),
+                "SELECT record_id, session_id, occurred_at, time_given FROM messages "
+                "WHERE user_id=? ORDER BY seq",
                 (user_id,),
             ).fetchall()
         reached: dict[str, datetime] = {}

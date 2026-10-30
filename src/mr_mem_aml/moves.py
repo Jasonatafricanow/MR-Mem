@@ -6,17 +6,20 @@ The work scene is centred on the person: the person decides, the agent carries o
   step 1 (one call per window) writes the SBs: one per point the person makes (a message with
          several independent points gives several), each with the agent messages it responds to,
          the situation in plain words (the agent's own wording, self-assessment and pet phrases
-         washed out) and the person's move. An SB is a projection, not a notebook (user 2026-10-22/24): the
+         washed out) and the person's move. An SB is a projection, not a notebook (user
+         2026-10-22/24): the
          situation in one or two sentences, the move as what the person settled; the details stay
          in the raw text. A report nobody answered is no SB of its own: when the person answers
-         it, it goes into that point's situation. No earlier steps are shown: writing and linking are separate.
+         it, it goes into that point's situation. No earlier steps are shown: writing and linking
+         are separate.
   step 2 (one call per window) places them: each SB gets candidates retrieved with its own text
          (runtime), and the model says which of them it builds on - the decision being carried
          out, or the person's own earlier decision or judgement brought back, changed or reversed,
          however far back. Sharing a concept is not building on.
 
 The chat scene is centred on the dialogue (the interaction is the content) and does not use this
-module. The prompt follows the person's language, decided once per user ("zh" or "en"); the rules are
+module. The prompt follows the person's language, decided once per user ("zh" or "en"); the rules
+are
 the same in both, only the wording, the examples and the output language differ.
 Strings never quote with ASCII double quotes inside the JSON (models break the JSON with them)."""
 
@@ -48,7 +51,8 @@ def content_of(situation: str, move: str, lang: str) -> str:
 
 
 def split_content(content: str) -> tuple[str, str]:
-    """(situation, move) of an SB written by this module; move is "" for content without the arrow."""
+    """(situation, move) of an SB written by this module; move is "" for content without the
+    arrow."""
     for arrow in ARROW.values():
         if content.startswith(arrow.lstrip()):
             return "", content[len(arrow.lstrip()) :]
@@ -218,7 +222,8 @@ def piece_spans(text: str) -> list[tuple[int, int]]:
 
 
 def item_spans(text: str, items) -> list[list[int]]:
-    """Paragraph numbers k and (k, first line, last line) of a code paragraph, as character spans."""
+    """Paragraph numbers k and (k, first line, last line) of a code paragraph, as character
+    spans."""
     spans, out = piece_spans(text), []
     for item in sorted(items, key=span_key):
         k = item if isinstance(item, int) else item[0]
@@ -244,7 +249,8 @@ PLAIN = {"\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"'}
 
 
 def _fold(text: str) -> tuple[str, list[int]]:
-    """Lowercased, whitespace runs as one space, quotes made plain; with each kept character's place."""
+    """Lowercased, whitespace runs as one space, quotes made plain; with each kept character's
+    place."""
     out, where, space = [], [], False
     for i, ch in enumerate(text):
         if ch.isspace():
@@ -325,7 +331,8 @@ def step1_prompt(lang: str, new: list[dict], context: list[dict]) -> str:
 def parse_step1(data: dict, roles: list[str], sessions: list | None = None) -> list[dict]:
     """SBs in the order their last message was said: {"sources": [message indexes], "situation",
     "move", "happened"}. Unknown ids are dropped; a move whose msg is not the person's is dropped;
-    about keeps only earlier agent messages of the person's own session (``sessions`` per message)."""
+    about keeps only earlier agent messages of the person's own session (``sessions`` per
+    message)."""
     if not isinstance(data, dict) or not isinstance(data.get("moves"), list):
         raise ValueError("'moves' must be a list")
     ids = {f"M{i + 1}": i for i in range(len(roles))}
@@ -503,7 +510,11 @@ STEP1_SLIM4 = {
 
 
 SUMMARY = {
-    "zh": "- summary: 一段短摘要，只写这一件事的三样东西：做了什么、结果怎样、人在其中的决定或保留（没有就不写这一样）。细节、数字、原话都留在原文，不要写进来。摘要不是复述。",
+    "zh": (
+        "- summary: 一段短摘要，只写这一件事的三样东西：做了什么、结果怎样、"
+        "人在其中的决定或保留（没有就不写这一样）。细节、数字、原话都留在原文，"
+        "不要写进来。摘要不是复述。"
+    ),
     "en": (
         "- summary: a short summary of only three things about this matter: what was done or s"
         "aid, how it came out, and the person's decision or reservation in it (leave out what "
@@ -774,7 +785,8 @@ _TURN = re.compile(r"M(\d+)(?:\.(\d+))?(?:\s*[-–~～至]\s*(M?)(\d+)(?:\.(\d+)
 
 
 def span_key(item) -> tuple:
-    """Order of span items: a paragraph number k, or (k, first line, last line) of a code paragraph."""
+    """Order of span items: a paragraph number k, or (k, first line, last line) of a code
+    paragraph."""
     return (item, 0) if isinstance(item, int) else (item[0], item[1])
 
 
@@ -867,7 +879,8 @@ def _stamp(x: dict) -> str:
 
 def _fragments(texts, idxs, items: dict, first, last) -> tuple[dict, int]:
     """{message: [[start, end], ...] or None (whole)} for the messages idxs: the copied words when
-    they are found, else the numbered paragraphs or lines; and 1 when copied words were not found."""
+    they are found, else the numbered paragraphs or lines; and 1 when copied words were not
+    found."""
     found, out = False, {}
     for i in sorted(idxs):
         if first and (span := anchor(texts[i], first, last)) is not None:
@@ -1271,7 +1284,8 @@ THREADS = {
 
 def threads_prompt(lang: str, sbs: list[dict], threads: list[dict], cands: list[dict] = ()) -> str:
     """sbs: {"text", "time", "cands": [N indexes]}; cands: the concrete earlier steps step 2 was
-    shown, {"text", "thread": T index or None}, so a thread is judged against steps, not summaries."""
+    shown, {"text", "thread": T index or None}, so a thread is judged against steps, not
+    summaries."""
     word = {"zh": "候选", "en": "candidates"}[lang]
     lines = [
         f"s{i + 1} [{x.get('time', '')}] {x['text']}"
@@ -1279,17 +1293,19 @@ def threads_prompt(lang: str, sbs: list[dict], threads: list[dict], cands: list[
         for i, x in enumerate(sbs)
     ]
     shown = [f"T{t + 1} {x['summary']}" for t, x in enumerate(threads)]
-    steps = [
-        f"N{j + 1}{' T' + str(c['thread'] + 1) if c.get('thread') is not None else ''} {c['text'].split(chr(10))[0]}"
-        for j, c in enumerate(cands)
-    ]
+
+    def tag(c: dict) -> str:  # the thread a step is in, when shown
+        return f" T{c['thread'] + 1}" if c.get("thread") is not None else ""
+
+    steps = [f"N{j + 1}{tag(c)} {c['text'].split(chr(10))[0]}" for j, c in enumerate(cands)]
     return THREADS[lang].format(
         sbs="\n".join(lines), threads="\n".join(shown) or "-", cands="\n".join(steps) or "-"
     )
 
 
 def parse_threads(data: dict, n_sbs: int, n_threads: int) -> dict:
-    """{"thread": {i: ("T", t) | ("s", k)}, "from": {i: (("T", t) | ("s", k), why)}} for the window's SBs."""
+    """{"thread": {i: ("T", t) | ("s", k)}, "from": {i: (("T", t) | ("s", k), why)}} for the
+    window's SBs."""
     if not isinstance(data, dict) or not isinstance(data.get("threads", []), list):
         raise ValueError("'threads' must be a list")
 
@@ -1359,7 +1375,8 @@ SUMMARIZE = {
 
 
 def summarize_prompt(lang: str, threads: list[dict]) -> str:
-    """threads: {"before": its summary so far or "", "new": the texts of its SBs since}; T1.. in order."""
+    """threads: {"before": its summary so far or "", "new": the texts of its SBs since}; T1.. in
+    order."""
     so_far = {"zh": "之前的总结", "en": "Summary so far"}[lang]
     since = {"zh": "之后的经过", "en": "Since then"}[lang]
     blocks = [
@@ -1418,7 +1435,8 @@ def step2_prompt(
     )
     only = {"zh": "（只看 settles）", "en": " (settles only)"}[lang]
     lines = [
-        f"s{i + 1}{only if s.get('settles_only') else ''} [{s.get('time', '')}] {s['text']}\n   {word}: "
+        f"s{i + 1}{only if s.get('settles_only') else ''} [{s.get('time', '')}] "
+        f"{s['text']}\n   {word}: "
         + " ".join(f"N{j + 1}" for j in dict.fromkeys(matter[j] for j in per_sb[i]))
         for i, s in enumerate(sbs)
     ]

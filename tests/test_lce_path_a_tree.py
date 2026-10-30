@@ -335,7 +335,8 @@ def test_a_plan_whose_date_has_passed_is_frozen_but_not_confirmed(tmp_path):
 
 
 def test_a_part_and_what_carries_on_are_told_apart(env):
-    """Step 1 nesting (a part of the matter) and step 2 links (carrying it on) are different edges."""
+    """Step 1 nesting (a part of the matter) and step 2 links (carrying it on) are different
+    edges."""
     env.step(
         0, (WANT, [A(happened=False)]), (BOOKED, [Attachment(None, "b1", True, None, part=True)])
     )

@@ -165,10 +165,8 @@ class TenseStore:
         return [
             r[0]
             for r in self.conn.execute(
-                (
-                    "SELECT by_memory_id FROM settled WHERE memory_id = ? AND settled_at <= ? ORDER BY s"
-                    "ettled_at"
-                ),
+                "SELECT by_memory_id FROM settled WHERE memory_id = ? AND settled_at <= ? "
+                "ORDER BY settled_at",
                 (memory_id, now.isoformat()),
             )
         ]

@@ -8,7 +8,8 @@ the chosen SBs point to, for the details an SB leaves there.
      an SB is scored by reciprocal rank over both: two routes agreeing only raise its rank, they are
      not two pieces of evidence;
   2. the top SBs are walked on the Line graph: up a few steps (where it came from) and down to the
-     latest step (what it turned into), in time order, each step marked as happened or not confirmed (time passing confirms nothing);
+     latest step (what it turned into), in time order, each step marked as happened or not confirmed
+     (time passing confirms nothing);
      or (projection "hits", design 5.3) only the steps the question hits, and the steps on the Line
      between two of them by their first line: bounded by the hits, however long the Line;
   3. by the downward index, the raw the chosen SBs were compiled from: the paragraphs each points
@@ -186,7 +187,8 @@ def walk(
     up: int,
     down: int,
 ) -> set[str]:
-    """The block, ``up`` levels of where it came from, and at most ``down`` steps of what it became."""
+    """The block, ``up`` levels of where it came from, and at most ``down`` steps of what it
+    became."""
     out, frontier = {block}, [block]
     for _ in range(up):
         frontier = [p for f in frontier for p in parents(f)]
@@ -333,7 +335,8 @@ def _when(
     lang: str = "en",
 ) -> str:
     """The message time when the source gave one, then where it sits: session and message number.
-    With no message time, the date the source gave its session, said as the session's, not the step's."""
+    With no message time, the date the source gave its session, said as the session's, not the
+    step's."""
     at = "" if t is None else (t + timedelta(minutes=tz_minutes)).strftime("%m-%d %H:%M")
     where = "" if place is None else f"S{place[0]} #{place[1]}"
     if t is None and session is not None:
@@ -352,6 +355,7 @@ def compose(
     ranked: Sequence[str],
     raw_records: Sequence[str],
     *,
+    fill_records: Sequence[str] | None = None,
     step: Callable[[str], Step],
     sources: Callable[[str], Sequence[str]],
     parents: Callable[[str], Sequence[str]],
@@ -376,9 +380,17 @@ def compose(
     that source message the block points to, None for the whole message. ``relevance(block)``:
     how close a step is to the question ("relay" only). ``pointers(block)``: the fragments of the
     words it comes from ({"own": {record: spans | None}, "parts": [...]}), None for the old spans.
-    "event": ``part_of``/``parts`` walk the part edges (step 1 put it under), ``carries`` the carry-on
-    edges either way (step 2); "all": ``everything`` is every SB (a baseline: no selection at all)."""
+    "event": ``part_of``/``parts`` walk the part edges (step 1 put it under), ``carries`` the
+    carry-on edges either way (step 2); "all": ``everything`` is every SB (a baseline: no
+    selection at all)."""
     side, who, (line_head, raw_head) = SIDE[lang], WHO[lang], HEAD[lang]
+
+    def at_b(b: str) -> str:  # where and when a step sits
+        return _when(step(b).time, policy.tz_minutes, step(b).place, step(b).session, lang)
+
+    def at_m(m: RawMessage) -> str:  # where and when a message sits
+        return _when(m.time, policy.tz_minutes, m.place, m.session, lang)
+
     top = list(ranked[: policy.sbs])
     items, seen = [], set()
     if standing:
@@ -387,9 +399,7 @@ def compose(
             STANDING[lang]
             + "\n"
             + "\n".join(
-                f"[{_when(step(b).time, policy.tz_minutes, step(b).place, step(b).session, lang)}] {step(b).text}".replace(
-                    "[ ", "[", 1
-                ).replace("[] ", "", 1)
+                f"[{at_b(b)}] {step(b).text}".replace("[ ", "[", 1).replace("[] ", "", 1)
                 for b in chain
             )
         )
@@ -415,12 +425,8 @@ def compose(
                 if step(b).later
                 else ""
             )
-            return f"[{_when(step(b).time, policy.tz_minutes, step(b).place, step(b).session, lang)}] {text}{later}".replace(
-                "[ ", "[", 1
-            ).replace("[] ", "", 1)
-        return f"[{_when(step(b).time, policy.tz_minutes, step(b).place, step(b).session, lang)} {side['past' if step(b).past else 'day']}] {text}".replace(
-            "[ ", "[", 1
-        )
+            return f"[{at_b(b)}] {text}{later}".replace("[ ", "[", 1).replace("[] ", "", 1)
+        return f"[{at_b(b)} {side['past' if step(b).past else 'day']}] {text}".replace("[ ", "[", 1)
 
     said = lambda b: any((m := message(r)) is not None and m.role == "user" for r in sources(b))  # noqa: E731
 
@@ -442,9 +448,7 @@ def compose(
 
         def told(b: str, indent: str) -> str:
             text = STAMP.sub("", step(b).text.split("\n")[0]).rstrip()
-            return f"{indent}[{_when(step(b).time, policy.tz_minutes, step(b).place, step(b).session, lang)} {TOLD[lang]}] {text}".replace(
-                "[ ", "[", 1
-            )
+            return f"{indent}[{at_b(b)} {TOLD[lang]}] {text}".replace("[ ", "[", 1)
 
         out = []
         for b in chain:
@@ -493,7 +497,7 @@ def compose(
     if policy.outline:
 
         def at(b: str) -> str:
-            return _when(step(b).time, policy.tz_minutes, step(b).place, step(b).session, lang)
+            return at_b(b)
 
         known, span = threads(), {}
         for t, x in known.items():
@@ -515,11 +519,9 @@ def compose(
                 return
             done.add(t)
             pad, (a, b), o = "  " * depth, span[t], known[t].get("origin")
+            origin = (at(o["step"]) if step(o["step"]).text else o["step"]) if o else ""
             came = (
-                (
-                    f"{pad}({BRANCH[lang].format(at(o['step']) if step(o['step']).text else o['step'])}"
-                    f"{': ' + o['why'] if o.get('why') else ''})\n"
-                )
+                (f"{pad}({BRANCH[lang].format(origin)}{': ' + o['why'] if o.get('why') else ''})\n")
                 if depth and o
                 else ""
             )
@@ -615,7 +617,7 @@ def compose(
                         "kind": "source",
                         "score": -float(n),
                         "occurred_at": m.time,
-                        "content": f"[{_when(m.time, policy.tz_minutes, m.place, m.session, lang)} {who.get(m.role, m.role)}] {m.text}".replace(
+                        "content": f"[{at_m(m)} {who.get(m.role, m.role)}] {m.text}".replace(
                             "[ ", "[", 1
                         ),
                     }
@@ -689,11 +691,8 @@ def compose(
         if policy.code_diff:
             given = changes(given, _when(None, 0, m.place) or record)
         text = (
-            (raw_head + "\n" if n == 0 else "")
-            + f"[{_when(m.time, policy.tz_minutes, m.place, m.session, lang)} {who.get(m.role, m.role)}] {given}".replace(
-                "[ ", "[", 1
-            )
-        )
+            raw_head + "\n" if n == 0 else ""
+        ) + f"[{at_m(m)} {who.get(m.role, m.role)}] {given}".replace("[ ", "[", 1)
         items.append(
             {
                 "id": f"raw:{record}",
@@ -705,16 +704,16 @@ def compose(
         )
     if policy.raw_fill:  # fusion: the raw search fills in what the compiled Lines do not cover
         covered = {*keep, *chars, *(r for b in {*top, *seen} for r in sources(b))}
-        extra = [(r, m) for r in raw_records if r not in covered and (m := message(r)) is not None][
+        pool = (
+            raw_records if fill_records is None else fill_records
+        )  # P1's own list, as deep as it goes
+        extra = [(r, m) for r in pool if r not in covered and (m := message(r)) is not None][
             : policy.raw_fill
         ]
         for k, (record, m) in enumerate(extra):
             text = (
-                (FILL[lang] + "\n" if k == 0 else "")
-                + f"[{_when(m.time, policy.tz_minutes, m.place, m.session, lang)} {who.get(m.role, m.role)}] {m.text}".replace(
-                    "[ ", "[", 1
-                )
-            )
+                FILL[lang] + "\n" if k == 0 else ""
+            ) + f"[{at_m(m)} {who.get(m.role, m.role)}] {m.text}".replace("[ ", "[", 1)
             items.append(
                 {
                     "id": f"raw:{record}",

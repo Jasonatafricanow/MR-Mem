@@ -1,5 +1,6 @@
 ("""Work scene, two-step compile (mr_mem_aml/moves.py): step 1 writes the SBs ("what happened ->
-what the person did"), step 2 places them among candidates; the prompt follows the person's language.""")
+what the person did"), step 2 places them among candidates; the prompt follows the person's
+language.""")
 
 import json
 import re
