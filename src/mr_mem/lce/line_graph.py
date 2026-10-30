@@ -171,7 +171,9 @@ class LineGraphStore:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(_SCHEMA)
         if "kind" not in {row[1] for row in self.conn.execute("PRAGMA table_info(line_edges)")}:
-            self.conn.execute("ALTER TABLE line_edges ADD COLUMN kind TEXT NOT NULL DEFAULT 'after'")
+            self.conn.execute(
+                "ALTER TABLE line_edges ADD COLUMN kind TEXT NOT NULL DEFAULT 'after'"
+            )
         self.conn.commit()
         # Path A: the compiler prompt version that produced the relations.
         self._fingerprint = "unset"
@@ -227,9 +229,10 @@ class LineGraphStore:
         return self.get_line(line_id)
 
     def has_line(self, line_id: str) -> bool:
-        return self.conn.execute(
-            "SELECT 1 FROM lines WHERE line_id = ?", (line_id,)
-        ).fetchone() is not None
+        return (
+            self.conn.execute("SELECT 1 FROM lines WHERE line_id = ?", (line_id,)).fetchone()
+            is not None
+        )
 
     def get_line(self, line_id: str) -> LineRecord:
         row = self.conn.execute(
@@ -261,8 +264,11 @@ class LineGraphStore:
         Memory ID of this version of the Block; a corrected Block keeps the node.
         """
         self.get_line(line_id)
-        for value, name in ((occurred_start, "occurred_start"), (occurred_end, "occurred_end"),
-                            (knowledge_at, "knowledge_at")):
+        for value, name in (
+            (occurred_start, "occurred_start"),
+            (occurred_end, "occurred_end"),
+            (knowledge_at, "knowledge_at"),
+        ):
             _require_utc(value, name)
         if occurred_end < occurred_start:
             raise ValueError("occurred_end must not precede occurred_start")
@@ -278,11 +284,20 @@ class LineGraphStore:
                 "INSERT INTO line_nodes VALUES (?, ?, ?, ?)", (node_id, line_id, block_id, now)
             )
         self._activate_membership(node_id, knowledge_at)
-        added_state = self.conn.execute(
-            "INSERT OR IGNORE INTO line_node_states VALUES (?, ?, ?, ?, ?, ?)",
-            (node_id, state_id, occurred_start.isoformat(), occurred_end.isoformat(),
-             knowledge_at.isoformat(), now),
-        ).rowcount > 0
+        added_state = (
+            self.conn.execute(
+                "INSERT OR IGNORE INTO line_node_states VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    node_id,
+                    state_id,
+                    occurred_start.isoformat(),
+                    occurred_end.isoformat(),
+                    knowledge_at.isoformat(),
+                    now,
+                ),
+            ).rowcount
+            > 0
+        )
         if commit:
             self.conn.commit()
         return self.get_node(node_id), added_node, added_state
@@ -303,8 +318,14 @@ class LineGraphStore:
             (node_id,),
         ).fetchall()
         return tuple(
-            LineNodeState(str(r[0]), str(r[1]), _parse(str(r[2])), _parse(str(r[3])),
-                          _parse(str(r[4])), _parse(str(r[5])))
+            LineNodeState(
+                str(r[0]),
+                str(r[1]),
+                _parse(str(r[2])),
+                _parse(str(r[3])),
+                _parse(str(r[4])),
+                _parse(str(r[5])),
+            )
             for r in rows
         )
 
@@ -342,40 +363,59 @@ class LineGraphStore:
     def membership_active_at(self, node_id: str, cutoff: datetime) -> bool:
         _require_utc(cutoff, "cutoff")
         at = cutoff.isoformat()
-        return self.conn.execute(
-            "SELECT 1 FROM line_node_memberships WHERE node_id = ? AND known_at <= ? "
-            "AND (retired_at IS NULL OR retired_at > ?) LIMIT 1",
-            (node_id, at, at),
-        ).fetchone() is not None
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM line_node_memberships WHERE node_id = ? AND known_at <= ? "
+                "AND (retired_at IS NULL OR retired_at > ?) LIMIT 1",
+                (node_id, at, at),
+            ).fetchone()
+            is not None
+        )
 
     def _activate_membership(self, node_id: str, known_at: datetime) -> bool:
         if self.membership_active_at(node_id, known_at):
             return False
-        ordinal = self.conn.execute(
-            "SELECT COUNT(*) FROM line_node_memberships WHERE node_id = ?", (node_id,)
-        ).fetchone()[0] + 1
+        ordinal = (
+            self.conn.execute(
+                "SELECT COUNT(*) FROM line_node_memberships WHERE node_id = ?", (node_id,)
+            ).fetchone()[0]
+            + 1
+        )
         iso = known_at.isoformat()
-        return self.conn.execute(
-            "INSERT OR IGNORE INTO line_node_memberships VALUES (?, ?, ?, NULL, ?, ?)",
-            ("membership_" + _digest("membership", node_id, iso, str(ordinal)), node_id, iso,
-             datetime.now(UTC).isoformat(), self._fingerprint),
-        ).rowcount > 0
+        return (
+            self.conn.execute(
+                "INSERT OR IGNORE INTO line_node_memberships VALUES (?, ?, ?, NULL, ?, ?)",
+                (
+                    "membership_" + _digest("membership", node_id, iso, str(ordinal)),
+                    node_id,
+                    iso,
+                    datetime.now(UTC).isoformat(),
+                    self._fingerprint,
+                ),
+            ).rowcount
+            > 0
+        )
 
     def active_node_ids_at(self, line_id: str, cutoff: datetime) -> tuple[str, ...]:
         return tuple(
-            node.node_id for node in self.nodes_for_line(line_id)
+            node.node_id
+            for node in self.nodes_for_line(line_id)
             if self.membership_active_at(node.node_id, cutoff)
         )
 
     def edge_active_at(self, line_id: str, parent_id: str, child_id: str, cutoff: datetime) -> bool:
         _require_utc(cutoff, "cutoff")
         at = cutoff.isoformat()
-        return self.conn.execute(
-            "SELECT 1 FROM line_edge_revisions WHERE line_id = ? AND parent_node_id = ? "
-            "AND child_node_id = ? AND known_at <= ? AND (retired_at IS NULL OR retired_at > ?) "
-            "LIMIT 1",
-            (line_id, parent_id, child_id, at, at),
-        ).fetchone() is not None
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM line_edge_revisions WHERE line_id = ? AND parent_node_id = ? "
+                "AND child_node_id = ? AND known_at <= ? AND (retired_at IS NULL OR retired_at >"
+                 " ?) "
+                "LIMIT 1",
+                (line_id, parent_id, child_id, at, at),
+            ).fetchone()
+            is not None
+        )
 
     def edges_for_line_at(self, line_id: str, cutoff: datetime) -> tuple[tuple[str, str], ...]:
         _require_utc(cutoff, "cutoff")
@@ -394,27 +434,34 @@ class LineGraphStore:
         _require_utc(cutoff, "cutoff")
         node = self.get_node(node_id)
         at = cutoff.isoformat()
-        mine, other = ("child_node_id", "parent_node_id") if parents else (
-            "parent_node_id", "child_node_id")
+        mine, other = (
+            ("child_node_id", "parent_node_id") if parents else ("parent_node_id", "child_node_id")
+        )
         rows = self.conn.execute(
             f"SELECT DISTINCT r.{other} FROM line_edge_revisions r JOIN line_edges e "
             "USING (line_id, parent_node_id, child_node_id) "
             f"WHERE r.line_id = ? AND r.{mine} = ? AND r.known_at <= ? "
-            "AND (r.retired_at IS NULL OR r.retired_at > ?) AND (? IS NULL OR e.kind = ?) ORDER BY 1",
+            "AND (r.retired_at IS NULL OR r.retired_at > ?) AND (? IS NULL OR e.kind = ?) "
+            "ORDER BY 1",
             (node.line_id, node_id, at, at, kind, kind),
         ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
-    def parents_at(self, node_id: str, cutoff: datetime, kind: str | None = None) -> tuple[str, ...]:
+    def parents_at(
+        self, node_id: str, cutoff: datetime, kind: str | None = None
+    ) -> tuple[str, ...]:
         """``kind``: "part" (what it is part of), "after" (what it carries on), None (both)."""
         return self._related_at(node_id, cutoff, parents=True, kind=kind)
 
-    def children_at(self, node_id: str, cutoff: datetime, kind: str | None = None) -> tuple[str, ...]:
+    def children_at(
+        self, node_id: str, cutoff: datetime, kind: str | None = None
+    ) -> tuple[str, ...]:
         return self._related_at(node_id, cutoff, parents=False, kind=kind)
 
     def edge_kind(self, line_id: str, parent_id: str, child_id: str) -> str | None:
         row = self.conn.execute(
-            "SELECT kind FROM line_edges WHERE line_id = ? AND parent_node_id = ? AND child_node_id = ?",
+            ("SELECT kind FROM line_edges WHERE line_id = ? AND parent_node_id = ? AND child_node"
+             "_id = ?"),
             (line_id, parent_id, child_id),
         ).fetchone()
         return None if row is None else str(row[0])
@@ -473,8 +520,14 @@ class LineGraphStore:
         return tuple(sorted(cutoffs))
 
     def add_edge(
-        self, line_id: str, parent_id: str, child_id: str, *, knowledge_at: datetime,
-        commit: bool = True, kind: str = "after",
+        self,
+        line_id: str,
+        parent_id: str,
+        child_id: str,
+        *,
+        knowledge_at: datetime,
+        commit: bool = True,
+        kind: str = "after",
     ) -> bool:
         """Relate two nodes of one Line. False when already implied (no shortcut edges).
 
@@ -495,19 +548,34 @@ class LineGraphStore:
         for cutoff in self._boundaries_from(line_id, knowledge_at):
             if self._reachable(child_id, parent_id, cutoff):
                 raise ValueError(f"Line edge would create a cycle at {cutoff.isoformat()}")
-        self.conn.execute("INSERT OR IGNORE INTO line_edges VALUES (?, ?, ?, ?)",
-                          (line_id, parent_id, child_id, kind))
-        ordinal = self.conn.execute(
-            "SELECT COUNT(*) FROM line_edge_revisions WHERE line_id = ? AND parent_node_id = ? "
-            "AND child_node_id = ?",
-            (line_id, parent_id, child_id),
-        ).fetchone()[0] + 1
+        self.conn.execute(
+            "INSERT OR IGNORE INTO line_edges VALUES (?, ?, ?, ?)",
+            (line_id, parent_id, child_id, kind),
+        )
+        ordinal = (
+            self.conn.execute(
+                "SELECT COUNT(*) FROM line_edge_revisions WHERE line_id = ? AND parent_node_id = ? "
+                "AND child_node_id = ?",
+                (line_id, parent_id, child_id),
+            ).fetchone()[0]
+            + 1
+        )
         iso = knowledge_at.isoformat()
-        added = self.conn.execute(
-            "INSERT OR IGNORE INTO line_edge_revisions VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
-            ("edge_" + _digest("edge", line_id, parent_id, child_id, iso, str(ordinal)),
-             line_id, parent_id, child_id, iso, datetime.now(UTC).isoformat(), self._fingerprint),
-        ).rowcount > 0
+        added = (
+            self.conn.execute(
+                "INSERT OR IGNORE INTO line_edge_revisions VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+                (
+                    "edge_" + _digest("edge", line_id, parent_id, child_id, iso, str(ordinal)),
+                    line_id,
+                    parent_id,
+                    child_id,
+                    iso,
+                    datetime.now(UTC).isoformat(),
+                    self._fingerprint,
+                ),
+            ).rowcount
+            > 0
+        )
         if commit:
             self.conn.commit()
         return added
@@ -515,8 +583,14 @@ class LineGraphStore:
     def reset_derived(self) -> None:
         """Delete the rebuildable Line graph generation (metadata is kept)."""
         with self.conn:
-            for table in ("line_edge_revisions", "line_node_memberships", "line_edges",
-                          "line_node_states", "line_nodes", "lines"):
+            for table in (
+                "line_edge_revisions",
+                "line_node_memberships",
+                "line_edges",
+                "line_node_states",
+                "line_nodes",
+                "lines",
+            ):
                 self.conn.execute(f"DELETE FROM {table}")
 
 
@@ -542,14 +616,16 @@ class LineGraphView:
         node without source evidence stays visible (``evidence_complete=False``).
         """
         return tuple(
-            node_id for node_id in self.store.active_node_ids_at(line_id, cutoff)
+            node_id
+            for node_id in self.store.active_node_ids_at(line_id, cutoff)
             if self.state_for_node_at_cutoff(node_id, cutoff=cutoff) is not None
         )
 
     def frontier(self, line_id: str, *, cutoff: datetime) -> tuple[str, ...]:
         visible = set(self.visible_node_ids(line_id, cutoff=cutoff))
         with_children = {
-            parent for parent, child in self.store.edges_for_line_at(line_id, cutoff)
+            parent
+            for parent, child in self.store.edges_for_line_at(line_id, cutoff)
             if parent in visible and child in visible
         }
         return tuple(sorted(visible - with_children))

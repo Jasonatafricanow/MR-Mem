@@ -42,7 +42,10 @@ class RawMessage:
     @property
     def ref(self) -> SourceRef:
         return SourceRef(
-            NAMESPACE, self.session_id, self.record_id, self.occurred_at,
+            NAMESPACE,
+            self.session_id,
+            self.record_id,
+            self.occurred_at,
             fingerprint=self.fingerprint,
         )
 
@@ -103,6 +106,26 @@ class AmlSourceStore:
                 compiled TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'compiled'
             );
+            CREATE TABLE IF NOT EXISTS threads (
+                user_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                window_id TEXT NOT NULL,
+                last_seq INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                PRIMARY KEY(user_id, thread_id, window_id)
+            );
+            CREATE TABLE IF NOT EXISTS thread_origins (
+                thread_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                from_thread TEXT NOT NULL,
+                from_memory TEXT NOT NULL,
+                why TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS thread_members (
+                memory_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS lineage_questions (
                 user_id TEXT NOT NULL,
                 question TEXT NOT NULL,
@@ -150,8 +173,13 @@ class AmlSourceStore:
                 self._conn.execute(
                     "INSERT INTO requests(request_id,user_id,session_id,payload_hash,received_at)"
                     " VALUES (?,?,?,?,?)",
-                    (payload["request_id"], payload["user_id"], payload["session_id"],
-                     digest, received_at.isoformat()),
+                    (
+                        payload["request_id"],
+                        payload["user_id"],
+                        payload["session_id"],
+                        digest,
+                        received_at.isoformat(),
+                    ),
                 )
                 for index, message in enumerate(payload["messages"]):
                     occurred = _occurred_at(message.get("timestamp"), received_at, index)
@@ -161,10 +189,16 @@ class AmlSourceStore:
                         "role,content,occurred_at,fingerprint,seq,time_given)"
                         " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (
-                            f"{payload['request_id']}:{index}", payload["user_id"],
-                            payload["session_id"], payload["request_id"], index,
-                            message["role"], content, occurred.isoformat(),
-                            hashlib.sha256(content.encode("utf-8")).hexdigest(), seq + index + 1,
+                            f"{payload['request_id']}:{index}",
+                            payload["user_id"],
+                            payload["session_id"],
+                            payload["request_id"],
+                            index,
+                            message["role"],
+                            content,
+                            occurred.isoformat(),
+                            hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                            seq + index + 1,
                             int(_has_time(message.get("timestamp"))),
                         ),
                     )
@@ -190,22 +224,96 @@ class AmlSourceStore:
                 "UPDATE requests SET error=? WHERE request_id=?", (error[:2000], request_id)
             )
 
-    def put_window(self, window_id: str, user_id: str, first_seq: int, last_seq: int,
-                   compiled: dict) -> None:
+    def put_window(
+        self, window_id: str, user_id: str, first_seq: int, last_seq: int, compiled: dict
+    ) -> None:
         """Journal one compile window; the first journal entry wins (replay)."""
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR IGNORE INTO windows(window_id,user_id,first_seq,last_seq,compiled)"
                 " VALUES (?,?,?,?,?)",
-                (window_id, user_id, first_seq, last_seq,
-                 json.dumps(compiled, ensure_ascii=False, sort_keys=True)),
+                (
+                    window_id,
+                    user_id,
+                    first_seq,
+                    last_seq,
+                    json.dumps(compiled, ensure_ascii=False, sort_keys=True),
+                ),
             )
+
+    def put_threads(
+        self,
+        user_id: str,
+        window_id: str,
+        last_seq: int,
+        members: dict[str, str],
+        summaries: dict[str, str],
+        origins: dict[str, dict] | None = None,
+    ) -> None:
+        """A window's threads (design: a thread is a stretch of a Line): which thread each of its SBs
+        is in, and each touched thread's summary as it stood after this window, kept beside the
+        earlier ones (git-like). Applied again on replay, the first entry wins."""
+        with self._lock, self._conn:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO thread_members(memory_id,user_id,thread_id) VALUES (?,?,?)",
+                [(m, user_id, t) for m, t in members.items()],
+            )
+            self._conn.executemany(
+                (
+                    "INSERT OR IGNORE INTO threads(user_id,thread_id,window_id,last_seq,summary) VAL"
+                    "UES (?,?,?,?,?)"
+                ),
+                [(user_id, t, window_id, last_seq, text) for t, text in summaries.items()],
+            )
+            self._conn.executemany(  # a new thread branches off the step its first SB carries on
+                (
+                    "INSERT OR IGNORE INTO thread_origins(thread_id,user_id,from_thread,from_memory,"
+                    "why) VALUES (?,?,?,?,?)"
+                ),
+                [
+                    (t, user_id, o["thread"], o["step"], o.get("why", ""))
+                    for t, o in (origins or {}).items()
+                ],
+            )
+
+    def threads(self, user_id: str) -> dict[str, dict]:
+        """thread_id -> {"summary": the latest, "last_seq": its window's last message, "members": [...],
+        "origin": {"thread", "step", "why"} when it branched off another thread's step}."""
+        with self._lock:
+            versions = self._conn.execute(
+                (
+                    "SELECT thread_id, summary, last_seq FROM threads WHERE user_id=? ORDER BY last_"
+                    "seq"
+                ),
+                (user_id,),
+            ).fetchall()
+            members = self._conn.execute(
+                "SELECT memory_id, thread_id FROM thread_members WHERE user_id=? ORDER BY rowid",
+                (user_id,),
+            ).fetchall()
+            origins = self._conn.execute(
+                (
+                    "SELECT thread_id, from_thread, from_memory, why FROM thread_origins WHERE user_"
+                    "id=?"
+                ),
+                (user_id,),
+            ).fetchall()
+        out: dict[str, dict] = {}
+        for t, text, last in versions:
+            out.setdefault(t, {"members": []}).update(summary=text, last_seq=last)
+        for m, t in members:
+            out.setdefault(t, {"summary": "", "last_seq": 0, "members": []})["members"].append(m)
+        for t, frm, step, why in origins:
+            if t in out:
+                out[t]["origin"] = {"thread": frm, "step": step, "why": why}
+        return out
 
     def window(self, window_id: str) -> tuple[str, dict] | None:
         """(status, compiled) of a journaled window: the first journal entry, which wins."""
         with self._lock:
             row = self._conn.execute(
-                "SELECT status, compiled FROM windows WHERE window_id=?", (window_id,)).fetchone()
+                "SELECT status, compiled FROM windows WHERE window_id=?", (window_id,)
+            ).fetchone()
         return None if row is None else (row[0], json.loads(row[1]))
 
     def add_to_window(self, window_id: str, key: str, value: object) -> None:
@@ -213,15 +321,16 @@ class AmlSourceStore:
         "moves": step 2). A key already there wins (replay never pays twice)."""
         with self._lock, self._conn:
             row = self._conn.execute(
-                "SELECT compiled FROM windows WHERE window_id=? AND status='compiled'",
-                (window_id,)).fetchone()
+                "SELECT compiled FROM windows WHERE window_id=? AND status='compiled'", (window_id,)
+            ).fetchone()
             if row is None:
                 return
             compiled = json.loads(row[0])
             compiled.setdefault(key, value)
             self._conn.execute(
                 "UPDATE windows SET compiled=? WHERE window_id=?",
-                (json.dumps(compiled, ensure_ascii=False, sort_keys=True), window_id))
+                (json.dumps(compiled, ensure_ascii=False, sort_keys=True), window_id),
+            )
 
     def set_window_done(self, window_id: str) -> None:
         with self._lock, self._conn:
@@ -263,25 +372,33 @@ class AmlSourceStore:
             done = self._conn.execute(
                 "SELECT COALESCE(MAX(last_seq),0) FROM windows WHERE user_id=?", (user_id,)
             ).fetchone()[0]
-            seqs = [r[0] for r in self._conn.execute(
-                "SELECT seq FROM messages WHERE user_id=? AND seq>? ORDER BY seq",
-                (user_id, done),
-            )]
+            seqs = [
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT seq FROM messages WHERE user_id=? AND seq>? ORDER BY seq",
+                    (user_id, done),
+                )
+            ]
         rows = self._select("WHERE user_id=? AND seq>? ORDER BY seq", (user_id, done))
         return tuple(zip(seqs, rows, strict=True))
 
     def seqs_between(self, user_id: str, first_seq: int, last_seq: int) -> tuple[int, ...]:
         with self._lock:
-            return tuple(r[0] for r in self._conn.execute(
-                "SELECT seq FROM messages WHERE user_id=? AND seq BETWEEN ? AND ? ORDER BY seq",
-                (user_id, first_seq, last_seq)))
+            return tuple(
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT seq FROM messages WHERE user_id=? AND seq BETWEEN ? AND ? ORDER BY seq",
+                    (user_id, first_seq, last_seq),
+                )
+            )
 
     def last_time(self, user_id: str) -> datetime | None:
         """Message time of the person's latest message: "now" for an offline history."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT occurred_at FROM messages WHERE user_id=? ORDER BY seq DESC LIMIT 1",
-                (user_id,)).fetchone()
+                (user_id,),
+            ).fetchone()
         return None if row is None else datetime.fromisoformat(row[0])
 
     def places(self, user_id: str) -> dict[str, tuple[int, int]]:
@@ -290,7 +407,8 @@ class AmlSourceStore:
         with self._lock:
             rows = self._conn.execute(
                 "SELECT record_id, session_id, seq FROM messages WHERE user_id=? ORDER BY seq",
-                (user_id,)).fetchall()
+                (user_id,),
+            ).fetchall()
         sessions: dict[str, int] = {}
         return {r: (sessions.setdefault(s, len(sessions) + 1), q) for r, s, q in rows}
 
@@ -300,8 +418,12 @@ class AmlSourceStore:
         it was stored, nor a time borrowed from a later message or another session."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT record_id, session_id, occurred_at, time_given FROM messages WHERE user_id=? ORDER BY seq",
-                (user_id,)).fetchall()
+                (
+                    "SELECT record_id, session_id, occurred_at, time_given FROM messages WHERE user_"
+                    "id=? ORDER BY seq"
+                ),
+                (user_id,),
+            ).fetchall()
         reached: dict[str, datetime] = {}
         out: dict[str, datetime] = {}
         for record, session, at, given in rows:
@@ -311,10 +433,12 @@ class AmlSourceStore:
                 out[record] = reached[session]
         return out
 
-    def messages_between(self, user_id: str, first_seq: int, last_seq: int
-                         ) -> tuple[RawMessage, ...]:
-        return self._select("WHERE user_id=? AND seq BETWEEN ? AND ? ORDER BY seq",
-                            (user_id, first_seq, last_seq))
+    def messages_between(
+        self, user_id: str, first_seq: int, last_seq: int
+    ) -> tuple[RawMessage, ...]:
+        return self._select(
+            "WHERE user_id=? AND seq BETWEEN ? AND ? ORDER BY seq", (user_id, first_seq, last_seq)
+        )
 
     def users_with_pending(self) -> tuple[str, ...]:
         with self._lock:
@@ -369,8 +493,18 @@ class AmlSourceStore:
                 args,
             ).fetchall()
         return tuple(
-            RawMessage(r[0], r[1], r[2], r[3], r[4], r[5], r[6],
-                       datetime.fromisoformat(r[7]), r[8], r[9] is None or bool(r[9]))
+            RawMessage(
+                r[0],
+                r[1],
+                r[2],
+                r[3],
+                r[4],
+                r[5],
+                r[6],
+                datetime.fromisoformat(r[7]),
+                r[8],
+                r[9] is None or bool(r[9]),
+            )
             for r in rows
         )
 

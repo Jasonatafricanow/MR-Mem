@@ -72,7 +72,15 @@ class RuntimeHost:
             return self.call(runtime.finish_add, job, compiled)
 
     def search(self, payload: object, mode: str | None) -> dict:
-        return self.call(self.runtime.search, payload, mode=mode)
+        runtime = self.runtime
+        if (
+            runtime.config.compile_before_search
+            and runtime.config.compile_window is not None
+            and isinstance(payload, dict)
+            and isinstance(payload.get("user_id"), str)
+        ):
+            self.flush(payload["user_id"])  # nothing to do once the user's history is compiled
+        return self.call(runtime.search, payload, mode=mode)
 
     def flush(self, user_id: str | None = None) -> dict:
         """Compile what is left of one user's history (or every user's), tail included: as Add does,
@@ -195,7 +203,10 @@ def serve(config: RuntimeConfig) -> None:
     server = build_server(config, host)
     log.info(
         "MR-Mem Path A listening on http://%s:%s (mode=%s, lce=%s, compile_concurrency=%s)",
-        config.host, config.port, config.search_mode, config.lce_enabled,
+        config.host,
+        config.port,
+        config.search_mode,
+        config.lce_enabled,
         config.compile_concurrency,
     )
     try:

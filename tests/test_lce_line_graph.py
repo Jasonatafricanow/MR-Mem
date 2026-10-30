@@ -41,8 +41,12 @@ class Tree:
         self.states.setdefault(state, (block, at(hours), True))
         known = known or at(hours)
         node, _, _ = self.store.ensure_node(
-            line_id, block_id=block, state_id=state, occurred_start=at(hours),
-            occurred_end=at(hours), knowledge_at=known,
+            line_id,
+            block_id=block,
+            state_id=state,
+            occurred_start=at(hours),
+            occurred_end=at(hours),
+            knowledge_at=known,
         )
         if parent is not None:
             self.store.add_edge(line_id, parent, node.node_id, knowledge_at=known)
@@ -68,7 +72,8 @@ def test_one_experience_branches_under_a_shared_step(tree):
     now = at(60)
     assert set(tree.view.frontier(line, cutoff=now)) == {shop, porto}
     assert set(tree.view.paths_to_frontier(line, cutoff=now)) == {
-        (booked, flew, arrived, shop), (booked, flew, arrived, dinner, porto),
+        (booked, flew, arrived, shop),
+        (booked, flew, arrived, dinner, porto),
     }
     assert tree.view.ancestors(shop, cutoff=now) == (arrived, flew, booked)  # background
     assert set(tree.view.descendants(arrived, cutoff=now)) == {dinner, shop, porto}
@@ -170,8 +175,10 @@ def test_a_store_written_before_edge_kinds_reads_its_edges_as_carrying_on(tmp_pa
     tree.store.add_edge(line, a, b, knowledge_at=at(1))
     tree.store.close()
     conn = sqlite3.connect(path)  # back to the old table: no kind column
-    conn.executescript("CREATE TABLE e AS SELECT line_id, parent_node_id, child_node_id FROM line_edges;"
-                       "PRAGMA foreign_keys=OFF; DROP TABLE line_edges; ALTER TABLE e RENAME TO line_edges;")
+    conn.executescript(
+        "CREATE TABLE e AS SELECT line_id, parent_node_id, child_node_id FROM line_edges;"
+        "PRAGMA foreign_keys=OFF; DROP TABLE line_edges; ALTER TABLE e RENAME TO line_edges;"
+    )
     conn.close()
     store = LineGraphStore(path)
     assert store.parents_at(b, at(2), kind="after") == (a,)

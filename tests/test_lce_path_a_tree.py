@@ -14,8 +14,10 @@ from mr_mem.lce.path_a import DAY, PAST, Attachment, BlockLines, PathATree
 from tests.test_native_semantics import SCOPE
 
 T0 = datetime(2026, 5, 1, 8, tzinfo=UTC)
-POLICY = {"threads_policy": {"recent": 9, "cued": 9, "due": 9},
-          "steps_policy": {"recent": 20, "cued": 20}}
+POLICY = {
+    "threads_policy": {"recent": 9, "cued": 9, "due": 9},
+    "steps_policy": {"recent": 20, "cued": 20},
+}
 
 
 def at(hours):
@@ -39,20 +41,31 @@ class Env:
     def __init__(self, tmp_path):
         self.core = MemoryCore(tmp_path / "m.sqlite")
         self.host = Host()
-        self.tree = PathATree(tmp_path / "lce", SCOPE, canonical=self.core.canonical,
-                              products=self.core.products, fingerprint="test")
+        self.tree = PathATree(
+            tmp_path / "lce",
+            SCOPE,
+            canonical=self.core.canonical,
+            products=self.core.products,
+            fingerprint="test",
+        )
         self.known = None
         self.memory_of = {}
 
     def block(self, content, hours):
         ref = SourceRef("host", "s1", f"r{hours}-{len(self.host.refs)}", at(hours), "1")
         self.host.refs[ref.source_key] = ref
-        admission = SemanticAdmissionService(store=self.core.canonical, sources=self.host,
-                                             clock=Clock(), origin_runtime_id="t")
-        memory = admission.admit(SemanticMemoryCandidate(
-            semantic_id=ref.record_id, scope=SCOPE, content=content, source_refs=(ref,),
-            compiler_version="test",
-        ))
+        admission = SemanticAdmissionService(
+            store=self.core.canonical, sources=self.host, clock=Clock(), origin_runtime_id="t"
+        )
+        memory = admission.admit(
+            SemanticMemoryCandidate(
+                semantic_id=ref.record_id,
+                scope=SCOPE,
+                content=content,
+                source_refs=(ref,),
+                compiler_version="test",
+            )
+        )
         self.memory_of[content] = memory.memory_id
         return memory
 
@@ -67,18 +80,24 @@ class Env:
 
     def step(self, hours, *items, settles=()):
         """items: (content, [Attachment, ...]) compiled in one batch at ``hours``."""
-        blocks = [BlockLines(self.block(c, hours).memory_id, tuple(lines),
-                             tuple(settles) if n == 0 else ())
-                  for n, (c, lines) in enumerate(items)]
+        blocks = [
+            BlockLines(
+                self.block(c, hours).memory_id, tuple(lines), tuple(settles) if n == 0 else ()
+            )
+            for n, (c, lines) in enumerate(items)
+        ]
         refs = self.known.refs if self.known else {}
         self.known = None
         return self.tree.apply(blocks, refs, at(hours))
 
     def node(self, content):
         block_id = self.memory_of[content]
-        return next(n.node_id for line in self.tree.lines.list_lines()
-                    for n in self.tree.lines.nodes_for_line(line.line_id)
-                    if n.block_id == block_id)
+        return next(
+            n.node_id
+            for line in self.tree.lines.list_lines()
+            for n in self.tree.lines.nodes_for_line(line.line_id)
+            if n.block_id == block_id
+        )
 
     def matter(self, thread_id):
         return self.core.products.get_thread(thread_id)
@@ -117,8 +136,7 @@ def test_every_connected_block_is_on_its_line_and_time_moves_the_terminator(env)
     assert env.tree.lines.parents_at(env.node(BOOKED), at(2)) == (env.node(WANT),)
     env.look(24)
     t = env.ref(trip)
-    env.step(24, (TRAFFIC, [A(t, after=t)]),
-             (MAY_MISS, [A(t, after="b1", happened=False)]))
+    env.step(24, (TRAFFIC, [A(t, after=t)]), (MAY_MISS, [A(t, after="b1", happened=False)]))
     assert env.tree.side(env.node(MAY_MISS), at(24.5)) == DAY
     # the time stated in the content passed (two time axes only: the stated time is
     # content): frozen is "this was feared then", whatever happened next
@@ -127,12 +145,17 @@ def test_every_connected_block_is_on_its_line_and_time_moves_the_terminator(env)
     env.step(30, (ARRIVED, [A(env.ref(trip), after=env.ref(node_id=env.node(MAY_MISS)))]))
     env.look(31, "dinner with Ana")
     arrived = env.ref(node_id=env.node(ARRIVED))
-    env.step(31, (AGREED, [A(after=arrived)]),
-             (DINNER, [A("b1", after="b1", happened=False)]),
-             (SHOPPING, [A(after=arrived)]))
+    env.step(
+        31,
+        (AGREED, [A(after=arrived)]),
+        (DINNER, [A("b1", after="b1", happened=False)]),
+        (SHOPPING, [A(after=arrived)]),
+    )
     # dinner and shopping are parallel branches under "arrived"
     assert set(env.tree.lines.children_at(env.node(ARRIVED), at(32))) == {
-        env.node(AGREED), env.node(SHOPPING)}
+        env.node(AGREED),
+        env.node(SHOPPING),
+    }
     assert env.tree.side(env.node(DINNER), at(40)) == DAY
     assert env.tree.side(env.node(DINNER), at(60)) == PAST  # the terminator moved on
     assert len(env.tree.lines.list_lines()) == 1  # one trip, one tree
@@ -143,18 +166,26 @@ def test_an_intention_without_time_grows_several_branches_and_is_settled_by_mean
     laptop = env.step(0, (want, [A(happened=False, summary="Wants a laptop")])).opened[0]
     env.look(5, "laptop")
     w = env.ref(node_id=env.node(want))
-    branches = ("Laptop prices went up this month.", "The user's salary is not paid yet.",
-                "The user saw nothing appealing.", "The user's old laptop still works fine.")
+    branches = (
+        "Laptop prices went up this month.",
+        "The user's salary is not paid yet.",
+        "The user saw nothing appealing.",
+        "The user's old laptop still works fine.",
+    )
     env.step(5, *[(b, [A(env.ref(laptop), after=w)]) for b in branches])
-    assert set(env.tree.lines.children_at(env.node(want), at(6))) == {
-        env.node(b) for b in branches}
+    assert set(env.tree.lines.children_at(env.node(want), at(6))) == {env.node(b) for b in branches}
     # no stated time: still on the day side however much time passes...
     assert env.tree.side(env.node(want), at(24 * 60)) == DAY
     # ...until a block settles it by meaning
     env.look(24 * 61, "laptop")
-    env.step(24 * 61, ("The user decided not to buy a laptop: the old one is enough.",
-                       [A(env.ref(laptop), after=env.ref(node_id=env.node(branches[3])))]),
-             settles=(env.ref(node_id=env.node(want)),))
+    env.step(
+        24 * 61,
+        (
+            "The user decided not to buy a laptop: the old one is enough.",
+            [A(env.ref(laptop), after=env.ref(node_id=env.node(branches[3])))],
+        ),
+        settles=(env.ref(node_id=env.node(want)),),
+    )
     assert env.tree.side(env.node(want), at(24 * 61)) == PAST
     assert env.tree.side(env.node(want), at(24 * 60)) == DAY  # history is kept
 
@@ -164,23 +195,35 @@ def test_a_block_that_connects_to_nothing_stays_alone(env):
     egg = "The user said the egg they just ate was tasty."
     result = env.step(1, (egg, []))
     assert result.attached == 0
-    assert all(n.block_id != env.memory_of[egg]
-               for line in env.tree.lines.list_lines()
-               for n in env.tree.lines.nodes_for_line(line.line_id))
+    assert all(
+        n.block_id != env.memory_of[egg]
+        for line in env.tree.lines.list_lines()
+        for n in env.tree.lines.nodes_for_line(line.line_id)
+    )
 
 
 def test_a_matter_has_no_name_and_its_summary_follows_it(env):
     trip = env.step(0, (WANT, [A(happened=False, summary="Trip: Portugal")])).opened[0]
     env.look(5)
-    env.step(5, ("The user decided to go on to Spain and Morocco as well.",
-                 [A(env.ref(trip), summary="Trip: Portugal, then Spain and Morocco")]))
+    env.step(
+        5,
+        (
+            "The user decided to go on to Spain and Morocco as well.",
+            [A(env.ref(trip), summary="Trip: Portugal, then Spain and Morocco")],
+        ),
+    )
     assert env.matter(trip).working_summary == "Trip: Portugal, then Spain and Morocco"
     known = env.look(6, "Morocco")
     assert known.payload["threads"][0]["summary"] == "Trip: Portugal, then Spain and Morocco"
     assert {s["state"] for s in known.payload["steps"]} == {DAY, PAST}
     # null is a new matter even with similar words
-    other = env.step(6, ("The user plans a Portugal trip next year with family.",
-                         [A(happened=False, summary="Trip: Portugal with family")]))
+    other = env.step(
+        6,
+        (
+            "The user plans a Portugal trip next year with family.",
+            [A(happened=False, summary="Trip: Portugal with family")],
+        ),
+    )
     assert other.opened and other.opened[0] != trip
 
 
@@ -199,8 +242,13 @@ def test_one_block_meets_two_trees_of_different_kinds(env):
 def test_known_shows_rejections(env):
     env.step(0, (ARRIVED, [A(summary="Trip to Lisbon")]))
     line_id = env.tree.lines.list_lines()[0].line_id
-    env.tree.rejections.reject(region_id=line_id, content="The user dislikes Lisbon.",
-                               source_refs=("x",), authority_ref="user", rejected_at=at(1))
+    env.tree.rejections.reject(
+        region_id=line_id,
+        content="The user dislikes Lisbon.",
+        source_refs=("x",),
+        authority_ref="user",
+        rejected_at=at(1),
+    )
     known = env.look(2, "Lisbon")
     assert known.payload["threads"] == [{"ref": "T1", "summary": "Trip to Lisbon", "latest": "N1"}]
     assert known.payload["rejected"] == ["The user dislikes Lisbon."]
@@ -212,8 +260,10 @@ def test_a_matter_new_in_the_batch_joins_its_blocks_and_b_refs_settle(env):
     setup = env.ref(node_id=env.matter(project).anchor_node_id)
     plan = "The user will fix the 404 handler."
     fixed = "The user fixed the 404 handler with a JSON response."
-    blocks = [BlockLines(env.block(plan, 1).memory_id, (A("m:a", after=setup, happened=False),)),
-              BlockLines(env.block(fixed, 1).memory_id, (A("m:a", after="b1"),), ("b1",))]
+    blocks = [
+        BlockLines(env.block(plan, 1).memory_id, (A("m:a", after=setup, happened=False),)),
+        BlockLines(env.block(fixed, 1).memory_id, (A("m:a", after="b1"),), ("b1",)),
+    ]
     result = env.tree.apply(blocks, env.known.refs, at(1))
     assert len(result.opened) == 1 and result.settled == 1  # one new matter for both blocks
     assert env.tree.lines.parents_at(env.node(fixed), at(2)) == (env.node(plan),)
@@ -224,16 +274,21 @@ def test_a_matter_new_in_the_batch_joins_its_blocks_and_b_refs_settle(env):
 
 def test_points_keep_only_refs_to_an_earlier_place_and_log_the_rest(env):
     first = BlockLines(env.block("The user asked for a window test.", 0).memory_id, (A(),))
-    later = BlockLines(env.block("The assistant added the test; the user approved.", 0).memory_id,
-                       (A(after="b1"), A(after="b3"), A(after="b9a"), A(after="N99")))
-    alone = BlockLines(env.block("The user said the egg was tasty.", 0).memory_id,
-                       (A(after="b3"),))
+    later = BlockLines(
+        env.block("The assistant added the test; the user approved.", 0).memory_id,
+        (A(after="b1"), A(after="b3"), A(after="b9a"), A(after="N99")),
+    )
+    alone = BlockLines(env.block("The user said the egg was tasty.", 0).memory_id, (A(after="b3"),))
     result = env.tree.apply([first, later, alone], {}, at(0), open_matters=False)
     assert env.tree.lines.parents_at(
-        env.node("The assistant added the test; the user approved."), at(1)) == (
-        env.node("The user asked for a window test."),)
+        env.node("The assistant added the test; the user approved."), at(1)
+    ) == (env.node("The user asked for a window test."),)
     assert sorted(f.split("dropped ref ")[1] for f in result.failures) == [
-        "N99", "b3", "b3", "b9a"]  # forward, made-up and unknown refs are logged
+        "N99",
+        "b3",
+        "b3",
+        "b9a",
+    ]  # forward, made-up and unknown refs are logged
     assert env.tree.lines.parents_at(env.node("The user said the egg was tasty."), at(1)) == ()
 
 
@@ -244,9 +299,19 @@ def test_a_block_citing_several_messages_spans_their_times(env):
         env.host.refs[ref.source_key] = ref
         refs.append(ref)
     memory = SemanticAdmissionService(
-        store=env.core.canonical, sources=env.host, clock=Clock(), origin_runtime_id="t",
-    ).admit(SemanticMemoryCandidate(semantic_id="span", scope=SCOPE, content="span",
-                                    source_refs=tuple(refs), compiler_version="test"))
+        store=env.core.canonical,
+        sources=env.host,
+        clock=Clock(),
+        origin_runtime_id="t",
+    ).admit(
+        SemanticMemoryCandidate(
+            semantic_id="span",
+            scope=SCOPE,
+            content="span",
+            source_refs=tuple(refs),
+            compiler_version="test",
+        )
+    )
     env.memory_of["span"] = memory.memory_id
     env.tree.apply([BlockLines(memory.memory_id, (A(),))], {}, at(3), open_matters=False)
     node = env.tree.lines.states_for_node(env.node("span"))[0]
@@ -261,8 +326,9 @@ def test_a_plan_whose_date_has_passed_is_frozen_but_not_confirmed(tmp_path):
     tense.record("plan", happened=False, known_at=t)
     now = datetime(2024, 4, 1, tzinfo=UTC)
     content = "sprint from 2024-03-15 to 2024-03-29"
-    assert tense.side("plan", now, content) == PAST          # past the terminator: frozen
-    assert tense.confirmed("plan", now) is False              # time passing is no evidence (design 1.3)
+    assert tense.side("plan", now, content) == PAST  # past the terminator: frozen
+    # time passing is no evidence (design 1.3)
+    assert tense.confirmed("plan", now) is False
     tense.settle("plan", at=datetime(2024, 3, 30, tzinfo=UTC), by="done")
     assert tense.confirmed("plan", now) is True
     assert tense.confirmed("plan", datetime(2024, 3, 29, tzinfo=UTC)) is False
@@ -270,8 +336,9 @@ def test_a_plan_whose_date_has_passed_is_frozen_but_not_confirmed(tmp_path):
 
 def test_a_part_and_what_carries_on_are_told_apart(env):
     """Step 1 nesting (a part of the matter) and step 2 links (carrying it on) are different edges."""
-    env.step(0, (WANT, [A(happened=False)]),
-             (BOOKED, [Attachment(None, "b1", True, None, part=True)]))
+    env.step(
+        0, (WANT, [A(happened=False)]), (BOOKED, [Attachment(None, "b1", True, None, part=True)])
+    )
     env.look(30)
     env.step(30, (ARRIVED, [A(after=env.ref(node_id=env.node(BOOKED)))]))
     lines, now = env.tree.lines, at(31)

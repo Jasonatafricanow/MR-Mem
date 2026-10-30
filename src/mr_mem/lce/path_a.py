@@ -102,8 +102,9 @@ def stated_end(content: str) -> datetime | None:
             if hour is None:
                 ends.append(datetime(int(year), int(month), int(day), 23, 59, tzinfo=UTC))
             else:
-                ends.append(datetime(int(year), int(month), int(day), int(hour), int(minute),
-                                     tzinfo=UTC))
+                ends.append(
+                    datetime(int(year), int(month), int(day), int(hour), int(minute), tzinfo=UTC)
+                )
         except ValueError:
             continue
     return max(ends) if ends else None
@@ -140,8 +141,9 @@ class TenseStore:
 
     def settle(self, memory_id: str, *, at: datetime, by: str) -> None:
         with self.conn:
-            self.conn.execute("INSERT OR IGNORE INTO settled VALUES (?, ?, ?)",
-                              (memory_id, at.isoformat(), by))
+            self.conn.execute(
+                "INSERT OR IGNORE INTO settled VALUES (?, ?, ?)", (memory_id, at.isoformat(), by)
+            )
 
     def side(self, memory_id: str, now: datetime, content: str) -> str | None:
         """Which side of the terminator at message time ``now``; None when not on a line."""
@@ -160,9 +162,16 @@ class TenseStore:
 
     def settled_by(self, memory_id: str, now: datetime) -> list[str]:
         """The Blocks that settled this one by ``now``, in order."""
-        return [r[0] for r in self.conn.execute(
-            "SELECT by_memory_id FROM settled WHERE memory_id = ? AND settled_at <= ? ORDER BY settled_at",
-            (memory_id, now.isoformat()))]
+        return [
+            r[0]
+            for r in self.conn.execute(
+                (
+                    "SELECT by_memory_id FROM settled WHERE memory_id = ? AND settled_at <= ? ORDER BY s"
+                    "ettled_at"
+                ),
+                (memory_id, now.isoformat()),
+            )
+        ]
 
     def confirmed(self, memory_id: str, now: datetime) -> bool | None:
         """Said as happened, or settled by a later Block by ``now``. Unlike ``side``, a stated time
@@ -173,10 +182,14 @@ class TenseStore:
         ).fetchone()
         if row is None:
             return None
-        return bool(row[0]) or self.conn.execute(
-            "SELECT 1 FROM settled WHERE memory_id = ? AND settled_at <= ? LIMIT 1",
-            (memory_id, now.isoformat()),
-        ).fetchone() is not None
+        return (
+            bool(row[0])
+            or self.conn.execute(
+                "SELECT 1 FROM settled WHERE memory_id = ? AND settled_at <= ? LIMIT 1",
+                (memory_id, now.isoformat()),
+            ).fetchone()
+            is not None
+        )
 
 
 class PathATree:
@@ -215,7 +228,9 @@ class PathATree:
         if memory is None:
             return None
         return StateView(
-            state_id, memory.content, memory.occurred_at,
+            state_id,
+            memory.content,
+            memory.occurred_at,
             tuple(ref.source_key for ref in memory.provenance.source_refs),
             memory.lifecycle is MemoryLifecycle.ACTIVE,
         )
@@ -262,27 +277,49 @@ class PathATree:
         refs: dict[str, str] = {}
         matters = {t.thread_id: t for t in self.matters()}
         cards = [
-            LineCard(t.thread_id, t.working_summary, False, t.updated_at,
-                     "\n".join(x for x in (t.working_summary or "", self._text(t, now)) if x))
+            LineCard(
+                t.thread_id,
+                t.working_summary,
+                False,
+                t.updated_at,
+                "\n".join(x for x in (t.working_summary or "", self._text(t, now)) if x),
+            )
             for t in matters.values()
         ]
-        chosen = select_known_lines(cards, batch_text=batch_text, now=now, embed=embed,
-                                    **threads_policy).lines
+        chosen = select_known_lines(
+            cards, batch_text=batch_text, now=now, embed=embed, **threads_policy
+        ).lines
         nodes = self.nodes(now)
         state_of = {node_id: state for _, node_id, state in nodes}
         line_of = {node_id: line_id for line_id, node_id, _ in nodes}
-        day = sorted((n for _, n, _ in nodes if self.side(n, now) == DAY),
-                     key=lambda n: state_of[n].occurred_at)[-steps_policy.get("recent", 10):]
-        latest = sorted((n for _, n, _ in nodes), key=lambda n: state_of[n].occurred_at)[
-            len(nodes) - steps_policy.get("latest", 0):] if steps_policy.get("latest") else []
-        picked = [c.question for c in select_known_lines(
-            [LineCard(n, None, True, s.occurred_at, s.content) for _, n, s in nodes],
-            batch_text=batch_text, now=now, embed=embed, due=0,
-            **{k: v for k, v in steps_policy.items() if k != "latest"},
-        ).lines]
+        day = sorted(
+            (n for _, n, _ in nodes if self.side(n, now) == DAY),
+            key=lambda n: state_of[n].occurred_at,
+        )[-steps_policy.get("recent", 10) :]
+        latest = (
+            sorted((n for _, n, _ in nodes), key=lambda n: state_of[n].occurred_at)[
+                len(nodes) - steps_policy.get("latest", 0) :
+            ]
+            if steps_policy.get("latest")
+            else []
+        )
+        picked = [
+            c.question
+            for c in select_known_lines(
+                [LineCard(n, None, True, s.occurred_at, s.content) for _, n, s in nodes],
+                batch_text=batch_text,
+                now=now,
+                embed=embed,
+                due=0,
+                **{k: v for k, v in steps_policy.items() if k != "latest"},
+            ).lines
+        ]
         anchors = [matters[c.question].anchor_node_id for c in chosen]
-        steps = list(dict.fromkeys(
-            n for n in (*day, *latest, *picked, *anchors) if n is not None and n in state_of))
+        steps = list(
+            dict.fromkeys(
+                n for n in (*day, *latest, *picked, *anchors) if n is not None and n in state_of
+            )
+        )
         step_ref: dict[str, str] = {}
         payload_steps = []
         for node_id in sorted(steps, key=lambda n: (state_of[n].occurred_at, n)):
@@ -291,10 +328,14 @@ class PathATree:
             state = state_of[node_id]
             memory = self.canonical.get(state.state_id)
             said = None if memory is None else self.evidence_time(memory)
-            payload_steps.append({
-                "ref": ref, "text": state.content[:snippet], "state": self.side(node_id, now),
-                **({"time": said.strftime("%Y-%m-%d %H:%M")} if said else {}),
-            })
+            payload_steps.append(
+                {
+                    "ref": ref,
+                    "text": state.content[:snippet],
+                    "state": self.side(node_id, now),
+                    **({"time": said.strftime("%Y-%m-%d %H:%M")} if said else {}),
+                }
+            )
         payload_threads = []
         for i, card in enumerate(chosen, 1):
             t = matters[card.question]
@@ -304,10 +345,14 @@ class PathATree:
                 entry["latest"] = step_ref[t.anchor_node_id]
             payload_threads.append(entry)
         rejected = self.rejections.relevant(
-            region_ids=tuple({line_of[n] for n in steps if n in line_of} | set(matters)))
+            region_ids=tuple({line_of[n] for n in steps if n in line_of} | set(matters))
+        )
         return Known(
-            {"threads": payload_threads, "steps": payload_steps,
-             "rejected": [r.rejected_content for r in rejected]},
+            {
+                "threads": payload_threads,
+                "steps": payload_steps,
+                "rejected": [r.rejected_content for r in rejected],
+            },
             refs,
         )
 
@@ -323,8 +368,12 @@ class PathATree:
     # -- apply compiler signals ------------------------------------------
 
     def apply(
-        self, blocks: Sequence[BlockLines], refs: dict[str, str], at: datetime,
-        *, open_matters: bool = True,
+        self,
+        blocks: Sequence[BlockLines],
+        refs: dict[str, str],
+        at: datetime,
+        *,
+        open_matters: bool = True,
     ) -> ApplyResult:
         """Put each Block on the lines it connects to, in the tense it was said.
 
@@ -363,8 +412,19 @@ class PathATree:
                 lines = [replace(block.lines[0], after=None)]
             for k, line in enumerate(lines):
                 try:
-                    node = self._attach(line, memory, refs, nodes_of_block, opened_by_block,
-                                        opened_by_key, index, k, at, result, open_matters)
+                    node = self._attach(
+                        line,
+                        memory,
+                        refs,
+                        nodes_of_block,
+                        opened_by_block,
+                        opened_by_key,
+                        index,
+                        k,
+                        at,
+                        result,
+                        open_matters,
+                    )
                 except ValueError as exc:  # a refused relation never loses the Block
                     result.failures.append(f"{block.memory_id}: {exc}")
                     continue
@@ -372,7 +432,10 @@ class PathATree:
         return result
 
     def _matter(
-        self, ref: str | None, refs: dict[str, str], opened_by_block: dict[int, list[str]],
+        self,
+        ref: str | None,
+        refs: dict[str, str],
+        opened_by_block: dict[int, list[str]],
         opened_by_key: dict[str, str],
     ) -> MemoryThread | None:
         """Identity is the code id behind a ref, never a name or wording."""
@@ -395,7 +458,10 @@ class PathATree:
         return ref in refs
 
     def _parent(
-        self, after: str | None, matter: MemoryThread | None, refs: dict[str, str],
+        self,
+        after: str | None,
+        matter: MemoryThread | None,
+        refs: dict[str, str],
         nodes_of_block: dict[int, list[str]],
     ) -> str | None:
         node_id = None
@@ -415,9 +481,17 @@ class PathATree:
         return node_id
 
     def _attach(
-        self, line: Attachment, memory: CommittedMemory, refs: dict[str, str],
-        nodes_of_block: dict[int, list[str]], opened_by_block: dict[int, list[str]],
-        opened_by_key: dict[str, str], index: int, k: int, at: datetime, result: ApplyResult,
+        self,
+        line: Attachment,
+        memory: CommittedMemory,
+        refs: dict[str, str],
+        nodes_of_block: dict[int, list[str]],
+        opened_by_block: dict[int, list[str]],
+        opened_by_key: dict[str, str],
+        index: int,
+        k: int,
+        at: datetime,
+        result: ApplyResult,
         open_matters: bool = True,
     ) -> str:
         matter = self._matter(line.thread, refs, opened_by_block, opened_by_key)
@@ -429,13 +503,21 @@ class PathATree:
         # a Block citing several messages spans from the earliest to the latest (design 2)
         times = [ref.occurred_at for ref in memory.provenance.source_refs] or [memory.occurred_at]
         node, _, _ = self.lines.ensure_node(
-            line_id, block_id=memory.memory_id, state_id=memory.memory_id,
-            occurred_start=min(times), occurred_end=max(times),
+            line_id,
+            block_id=memory.memory_id,
+            state_id=memory.memory_id,
+            occurred_start=min(times),
+            occurred_end=max(times),
             knowledge_at=at,
         )
         if parent is not None and parent != node.node_id:
-            self.lines.add_edge(line_id, parent, node.node_id, knowledge_at=at,
-                                kind="part" if line.part else "after")
+            self.lines.add_edge(
+                line_id,
+                parent,
+                node.node_id,
+                knowledge_at=at,
+                kind="part" if line.part else "after",
+            )
         self.tense.record(memory.memory_id, happened=line.happened, known_at=at)
         result.attached += 1
         if matter is None and not open_matters:
@@ -444,9 +526,12 @@ class PathATree:
             # a new matter: its id comes from the Block that started it, never from words
             matter = self.products.open_thread(
                 thread_id=_thread_identity(self.scope, f"{memory.memory_id}\n{k}"),
-                scope=self.scope, open_question=(line.summary or memory.content)[:2048],
-                supporting_memory_ids=(memory.memory_id,), at=at,
-                working_summary=line.summary, anchor_node_id=node.node_id,
+                scope=self.scope,
+                open_question=(line.summary or memory.content)[:2048],
+                supporting_memory_ids=(memory.memory_id,),
+                at=at,
+                working_summary=line.summary,
+                anchor_node_id=node.node_id,
             )
             opened_by_block.setdefault(index, []).append(matter.thread_id)
             if line.thread and line.thread.startswith("m:"):
@@ -454,8 +539,10 @@ class PathATree:
             result.opened.append(matter.thread_id)
         else:
             self.products.update_thread(
-                matter.thread_id, supporting_memory_ids=(memory.memory_id,),
-                at=max(at, matter.updated_at), working_summary=line.summary,
+                matter.thread_id,
+                supporting_memory_ids=(memory.memory_id,),
+                at=max(at, matter.updated_at),
+                working_summary=line.summary,
                 anchor_node_id=node.node_id,
             )
         return node.node_id

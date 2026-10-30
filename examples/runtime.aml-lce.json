@@ -1,0 +1,39 @@
+{
+  "data_dir": "data",
+  "compiler": {
+    "type": "openai",
+    "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+    "model": "doubao-seed-2-1-pro",
+    "api_key_env": "ARK_API_KEY",
+    "max_tokens": 16000,
+    "extra_body": {"thinking": {"type": "disabled"}},
+    "timeout": 300
+  },
+  "embedding": {
+    "type": "ark",
+    "model": "doubao-embedding-vision",
+    "dimension": 2048,
+    "cache_path": "cache/ark_embed.sqlite",
+    "requests_per_second": 3
+  },
+  "search_mode": "path_a",
+  "lce_enabled": true,
+  "raw_base": true,
+  "append_options": true,
+  "skip_rejected_compiles": true,
+  "keep_raw_on_compile_failure": true,
+  "compile_before_search": true,
+  "path_a_engine": "tree",
+  "placement": "moves",
+  "step1": "slim4",
+  "scene": "chat",
+  "compile_window": {"soft": 40000, "hard": 80000, "measure": "chars"},
+  "compile_concurrency": 8,
+  "line_read": {"raw_k": 30, "sb_k": 30, "sbs": 16, "code_diff": true, "projection": "relay",
+                "reach": 3, "extend": 32, "assistant": "told"},
+  "read_policy": {"lce_limit": 5, "thread_limit": 3, "support_limit": 4, "source_limit": 0,
+                  "include_source_text": false, "support_rank_window": 10, "min_cosine": 0.6},
+  "auth_token_env": "MRMEM_AML_TOKEN",
+  "host": "127.0.0.1",
+  "port": 8765
+}

@@ -32,9 +32,18 @@ class RuntimeConfig:
     # A request the compiler endpoint permanently rejects (HTTP 4xx, e.g. content
     # moderation) keeps its raw evidence but yields no Blocks instead of failing Add.
     skip_rejected_compiles: bool = False
+    # Any compile that still fails after its retries keeps its raw evidence (searchable as P1 is)
+    # and
+    # yields no Blocks, so Add answers 200 as the AML contract requires; counted, never silent.
+    keep_raw_on_compile_failure: bool = False
+    # Search first compiles what is left of that user's history (the tail window an Add has not
+    # closed);
+    # AML never calls flush, and Search may run 30 minutes.
+    compile_before_search: bool = False
     # existing lines shown to the compiler per batch (path_a_lines.select_known_lines)
     line_policy: dict[str, int] = field(
-        default_factory=lambda: {"recent": 10, "cued": 10, "due": 10})
+        default_factory=lambda: {"recent": 10, "cued": 10, "due": 10}
+    )
     # LCE engine: "flat" = Thread handoff into per-Thread Baselines (older);
     # "tree" = Thread + Path A Line trees ported from LCE (design v6 4.4-4.5).
     path_a_engine: str = "flat"
@@ -77,9 +86,12 @@ class RuntimeConfig:
             raise ValueError("path_a_engine must be 'flat' or 'tree'")
         if self.placement not in ("lines", "points", "entries", "moves"):
             raise ValueError("placement must be 'lines', 'points', 'entries' or 'moves'")
-        if self.placement == "moves" and ((self.scene != "work" and self.step1 != "slim4")
-                                          or self.compile_window is None):
-            raise ValueError("placement 'moves' compiles in windows, in the work scene unless step1 is 'slim4'")
+        if self.placement == "moves" and (
+            (self.scene != "work" and self.step1 != "slim4") or self.compile_window is None
+        ):
+            raise ValueError(
+                "placement 'moves' compiles in windows, in the work scene unless step1 is 'slim4'"
+            )
         if self.scene not in ("chat", "work"):
             raise ValueError("scene must be 'chat' or 'work'")
         if self.step1 not in ("moves", "slim4"):
@@ -88,8 +100,14 @@ class RuntimeConfig:
             from mr_mem_aml.line_read import LineReadPolicy
 
             LineReadPolicy.of(self.line_read)
-            if not (self.raw_base and self.path_a_engine == "tree" and self.placement in ("points", "moves")):
-                raise ValueError("line_read needs raw_base and the tree engine's Line graph (points or moves)")
+            if not (
+                self.raw_base
+                and self.path_a_engine == "tree"
+                and self.placement in ("points", "moves")
+            ):
+                raise ValueError(
+                    "line_read needs raw_base and the tree engine's Line graph (points or moves)"
+                )
         if self.compile_window is not None:
             w = self.compile_window
             if self.path_a_engine != "tree":
@@ -106,7 +124,12 @@ class RuntimeConfig:
             raise ValueError("compiler.type must be 'command' or 'openai'")
         if type(self.compile_concurrency) is not int or not 1 <= self.compile_concurrency <= 64:
             raise ValueError("compile_concurrency must be an integer in [1, 64]")
-        if self.embedding and self.embedding.get("type") not in ("fastembed", "openai", "gemini", "ark"):
+        if self.embedding and self.embedding.get("type") not in (
+            "fastembed",
+            "openai",
+            "gemini",
+            "ark",
+        ):
             raise ValueError("embedding.type must be fastembed, openai, gemini or ark")
         if type(self.context_messages) is not int or not 0 <= self.context_messages <= 200:
             raise ValueError("context_messages must be an integer in [0, 200]")

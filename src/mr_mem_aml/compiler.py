@@ -52,8 +52,9 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
     if os.name == "nt":  # agy spawns helpers; kill the whole tree
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                       capture_output=True, check=False)
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False
+        )
     else:
         proc.kill()
     proc.wait()
@@ -69,7 +70,11 @@ class CommandBackend:
     """
 
     def __init__(
-        self, argv: list[str], *, timeout: float = 600, attempts: int = 4,
+        self,
+        argv: list[str],
+        *,
+        timeout: float = 600,
+        attempts: int = 4,
         stream_json: bool = False,
     ) -> None:
         if not argv:
@@ -81,8 +86,13 @@ class CommandBackend:
         """``--output-format stream-json``: agy prints its final ``result`` event and
         may then stay alive; take the result and stop the process ourselves."""
         proc = subprocess.Popen(
-            self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
+            self.argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         timer = threading.Timer(self.timeout, proc.kill)
         timer.start()
@@ -113,8 +123,14 @@ class CommandBackend:
         via_file = any("{prompt_file}" in part for part in self.argv)
         if not inline and not via_file:
             return subprocess.run(
-                self.argv, input=prompt, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=self.timeout, check=False,
+                self.argv,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.timeout,
+                check=False,
             )
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "prompt.txt"
@@ -124,8 +140,14 @@ class CommandBackend:
                 for part in self.argv
             ]
             return subprocess.run(
-                argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=self.timeout, check=False,
+                argv,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=self.timeout,
+                check=False,
             )
 
     # Agent CLIs act on instructions they read; the conversation being compiled is
@@ -164,10 +186,18 @@ class OpenAICompatibleBackend:
     """
 
     def __init__(
-        self, *, base_url: str, model: str, api_key_env: str | None = None,
-        timeout: float = 600, attempts: int = 6, json_mode: bool = False,
-        max_tokens: int | None = None, temperature: float = 0,
-        headers: dict[str, str] | None = None, extra_body: dict | None = None,
+        self,
+        *,
+        base_url: str,
+        model: str,
+        api_key_env: str | None = None,
+        timeout: float = 600,
+        attempts: int = 6,
+        json_mode: bool = False,
+        max_tokens: int | None = None,
+        temperature: float = 0,
+        headers: dict[str, str] | None = None,
+        extra_body: dict | None = None,
     ) -> None:
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.model, self.api_key_env = model, api_key_env
@@ -175,10 +205,18 @@ class OpenAICompatibleBackend:
         self.json_mode, self.max_tokens, self.temperature = json_mode, max_tokens, temperature
         self.headers, self.extra_body = dict(headers or {}), dict(extra_body or {})
         # what the calls cost: answered calls, characters and the tokens the endpoint reports
-        self.usage = {"calls": 0, "chars_in": 0, "chars_out": 0, "prompt_tokens": 0, "completion_tokens": 0,
-                      "cut_at_max_tokens": 0}
+        self.usage = {
+            "calls": 0,
+            "chars_in": 0,
+            "chars_out": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cut_at_max_tokens": 0,
+        }
         self._usage_lock = threading.Lock()
-        self.last_finish: str | None = None  # why the last answer stopped ("length": cut at max_tokens)
+        self.last_finish: str | None = (
+            None  # why the last answer stopped ("length": cut at max_tokens)
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", **self.headers}
@@ -218,7 +256,9 @@ class OpenAICompatibleBackend:
                         self.usage["chars_out"] += len(content)
                         self.usage["prompt_tokens"] += int(tokens.get("prompt_tokens") or 0)
                         self.usage["completion_tokens"] += int(tokens.get("completion_tokens") or 0)
-                        self.usage["cut_at_max_tokens"] += data["choices"][0].get("finish_reason") == "length"
+                        self.usage["cut_at_max_tokens"] += (
+                            data["choices"][0].get("finish_reason") == "length"
+                        )
                     self.last_finish = data["choices"][0].get("finish_reason")
                     return content
                 last = "empty completion"
@@ -274,7 +314,8 @@ class CompiledBlock:
     standing: bool = False  # chat scene: an instruction or preference meant to hold from now on
     # (record id, paragraph numbers) for the source messages this block points to only in part
     spans: tuple[tuple[str, tuple[int, ...]], ...] = ()
-    # chat scene, JSON: {"own": {record: span items | null}, "parts": [{record: span items | null}]},
+    # chat scene, JSON: {"own": {record: span items | null}, "parts": [{record: span items |
+    # null}]},
     # what the person's turns and each part point to, apart (null: the whole message)
     pointers: str = ""
     under: int | None = None  # chat scene: the block of this window it builds on (step 1)
@@ -565,7 +606,7 @@ compiled with the messages that follow. Otherwise null.
 POINTS_ASSISTANT_RULES = {
     **ASSISTANT_RULES,
     "attributed": "Attribute every statement to who made it; never present the "
-                  "assistant's words as the user's view.",
+    "assistant's words as the user's view.",
 }
 
 # Tree mode: a person working with an assistant decides, and the work is the
@@ -628,7 +669,9 @@ class SemanticCompiler:
         if schema not in ("flat", "tree", "points", "entries", "moves"):
             raise ValueError("schema must be 'flat', 'tree', 'points', 'entries' or 'moves'")
         if schema == "moves" and scene != "work" and step1 != "slim4":
-            raise ValueError("schema 'moves' is the work scene's (centred on the person) unless step1 is 'slim4'")
+            raise ValueError(
+                "schema 'moves' is the work scene's (centred on the person) unless step1 is 'slim4'"
+            )
         if scene not in ("chat", "work"):
             raise ValueError("scene must be 'chat' or 'work'")
         if schema == "entries" and assistant_policy != "attributed":
@@ -639,9 +682,12 @@ class SemanticCompiler:
         self.schema = schema
         self.scene = scene  # entries: how code assembles blocks (work or chat)
         self.step1 = step1  # moves: which step-1 prompt writes the SBs
-        self.version = {"tree": TREE_PROMPT_VERSION, "points": POINTS_PROMPT_VERSION,
-                        "entries": ENTRIES_PROMPT_VERSION, "moves": MOVES_PROMPT_VERSION
-                        }.get(schema, PROMPT_VERSION) + ("-slim4" if step1 == "slim4" else "")
+        self.version = {
+            "tree": TREE_PROMPT_VERSION,
+            "points": POINTS_PROMPT_VERSION,
+            "entries": ENTRIES_PROMPT_VERSION,
+            "moves": MOVES_PROMPT_VERSION,
+        }.get(schema, PROMPT_VERSION) + ("-slim4" if step1 == "slim4" else "")
 
     def prompt(
         self,
@@ -659,25 +705,25 @@ class SemanticCompiler:
             head = {"LINES": {k: v for k, v in lines.items() if v and not k.startswith("_")}}
         else:
             # str entries (older journals) or {"question", "state", "summary"}
-            head = {"KNOWN_LINES": [
-                line if isinstance(line, (str, dict)) else line.__dict__
-                for line in known_lines
-            ]}
+            head = {
+                "KNOWN_LINES": [
+                    line if isinstance(line, (str, dict)) else line.__dict__ for line in known_lines
+                ]
+            }
         material = {
             **head,
-            "CONTEXT": [
-                {"role": m.role, **_time(m), "text": m.content}
-                for m in context
-            ],
+            "CONTEXT": [{"role": m.role, **_time(m), "text": m.content} for m in context],
             "NEW": [
                 {"id": f"m{i + 1}", "role": m.role, **_time(m), "text": m.content}
                 for i, m in enumerate(new)
             ],
         }
         template = {"tree": TREE_INSTRUCTIONS, "points": POINTS_INSTRUCTIONS}.get(
-            self.schema, INSTRUCTIONS)
+            self.schema, INSTRUCTIONS
+        )
         table = {"flat": ASSISTANT_RULES, "points": POINTS_ASSISTANT_RULES}.get(
-            self.schema, TREE_ASSISTANT_RULES)
+            self.schema, TREE_ASSISTANT_RULES
+        )
         rules = template.format(assistant_rule=table[self.assistant_policy])
         return rules + "\nINPUT:\n" + json.dumps(material, ensure_ascii=False, indent=1)
 
@@ -704,16 +750,22 @@ class SemanticCompiler:
                 cited = [m for m in cited if m.role == "user"]
                 if not cited:
                     raise ValueError("context_only policy: block cites no user message")
-            out.append(CompiledBlock(
-                content=content,
-                source_record_ids=tuple(m.record_id for m in cited),
-                thread=None if self.schema != "flat" else _thread(item.get("thread")),
-                commit=None if self.schema != "flat" else _commit(item.get("commit"), cited),
-                lines=(_placed(item.get("in"), matters, last_in, len(out) + 1)
-                       if self.schema == "tree" else _linked(item)
-                       if self.schema == "points" else ()),
-                settles=_refs(item.get("settles")) if self.schema != "flat" else (),
-            ))
+            out.append(
+                CompiledBlock(
+                    content=content,
+                    source_record_ids=tuple(m.record_id for m in cited),
+                    thread=None if self.schema != "flat" else _thread(item.get("thread")),
+                    commit=None if self.schema != "flat" else _commit(item.get("commit"), cited),
+                    lines=(
+                        _placed(item.get("in"), matters, last_in, len(out) + 1)
+                        if self.schema == "tree"
+                        else _linked(item)
+                        if self.schema == "points"
+                        else ()
+                    ),
+                    settles=_refs(item.get("settles")) if self.schema != "flat" else (),
+                )
+            )
         if not window:
             return tuple(out)
         carry = data.get("carry_from")
@@ -765,10 +817,13 @@ class SemanticCompiler:
     def _entry_material(self, new, context, known_lines) -> dict:
         steps = dict(known_lines) if isinstance(known_lines, dict) else {}
         return entry_mode.material(
-            [{"id": f"m{i + 1}", "role": m.role, **_time(m), "text": m.content}
-             for i, m in enumerate(new)],
+            [
+                {"id": f"m{i + 1}", "role": m.role, **_time(m), "text": m.content}
+                for i, m in enumerate(new)
+            ],
             [{"role": m.role, "text": m.content} for m in context],
-            steps.get("steps", []), steps.get("rejected", []),
+            steps.get("steps", []),
+            steps.get("rejected", []),
         )
 
     def _compile_entries(self, new, context, known_lines, window: bool, trace: dict | None):
@@ -794,8 +849,10 @@ class SemanticCompiler:
                 break
             except (ValueError, TypeError) as exc:
                 last = str(exc)
-                prompt = (entry_mode.prompt(material)
-                          + f"\n\nYour previous output was invalid ({last}). Return only the JSON.")
+                prompt = (
+                    entry_mode.prompt(material)
+                    + f"\n\nYour previous output was invalid ({last}). Return only the JSON."
+                )
         else:
             raise CompileError(f"invalid compiler output after {self.attempts} attempts: {last}")
         result = entry_mode.assemble(material, raw_entries, self.scene, carry=carry)
@@ -809,23 +866,29 @@ class SemanticCompiler:
             if len(content.encode("utf-8")) > CONTENT_BYTES:  # never silent: kept in the audit
                 content = content.encode("utf-8")[:CONTENT_BYTES].decode("utf-8", "ignore") + "…"
                 result["audit"].setdefault("trimmed", []).append(f"b{b}")
-            out.append(CompiledBlock(
-                content=content,
-                source_record_ids=tuple(ids[s].record_id for s in block["sources"]),
-                thread=None, commit=None,
-                lines=_linked({"after": block["after"], "happened": block["happened"]}),
-                settles=tuple(block["settles"]),
-            ))
+            out.append(
+                CompiledBlock(
+                    content=content,
+                    source_record_ids=tuple(ids[s].record_id for s in block["sources"]),
+                    thread=None,
+                    commit=None,
+                    lines=_linked({"after": block["after"], "happened": block["happened"]}),
+                    settles=tuple(block["settles"]),
+                )
+            )
         if trace is not None:
-            trace.update({
-                "language": entry_mode.language(material),
-                "messages": {m["id"]: ids[m["id"]].record_id for m in material["NEW"]},
-                "pieces": material_text,
-                "entries": result["entries"],
-                "blocks": [{"pieces": b["pieces"], "entries": b["entries"]}
-                           for b in result["blocks"]],
-                "audit": result["audit"],
-            })
+            trace.update(
+                {
+                    "language": entry_mode.language(material),
+                    "messages": {m["id"]: ids[m["id"]].record_id for m in material["NEW"]},
+                    "pieces": material_text,
+                    "entries": result["entries"],
+                    "blocks": [
+                        {"pieces": b["pieces"], "entries": b["entries"]} for b in result["blocks"]
+                    ],
+                    "audit": result["audit"],
+                }
+            )
         if not window:
             return tuple(out)
         carried = result["carry_from"]
@@ -842,10 +905,14 @@ class SemanticCompiler:
                 return data
             except (ValueError, TypeError) as exc:
                 last = str(exc)
-                retry = prompt + f"\n\nYour previous output was invalid ({last}). Return only the JSON."
+                retry = (
+                    prompt + f"\n\nYour previous output was invalid ({last}). Return only the JSON."
+                )
         raise CompileError(f"invalid compiler output after {self.attempts} attempts: {last}")
 
-    def _compile_moves(self, new, context, known_lines, window: bool, trace: dict | None, tail: bool = True):
+    def _compile_moves(
+        self, new, context, known_lines, window: bool, trace: dict | None, tail: bool = True
+    ):
         """Step 1 of the work scene's two steps: write the SBs, no links (moves.py).
         ``known_lines`` carries only the language decided for this user."""
         lang = (known_lines or {}).get("language", "zh") if isinstance(known_lines, dict) else "zh"
@@ -857,11 +924,24 @@ class SemanticCompiler:
         use = [i for i in range(kept) if not entry_mode.is_noise(new[i].role, new[i].content)]
         if not use:
             return ((), kept) if window else ()
-        material = [{"role": new[i].role, "text": new[i].content, "session": new[i].session_id,
-                     **({"time": new[i].occurred_at.strftime("%Y-%m-%d %H:%M")}
-                        if getattr(new[i], "time_given", True) else {})} for i in use]
-        ctx = [{"role": m.role, "text": m.content, "session": m.session_id} for m in context
-               if not entry_mode.is_noise(m.role, m.content)][-6:]
+        material = [
+            {
+                "role": new[i].role,
+                "text": new[i].content,
+                "session": new[i].session_id,
+                **(
+                    {"time": new[i].occurred_at.strftime("%Y-%m-%d %H:%M")}
+                    if getattr(new[i], "time_given", True)
+                    else {}
+                ),
+            }
+            for i in use
+        ]
+        ctx = [
+            {"role": m.role, "text": m.content, "session": m.session_id}
+            for m in context
+            if not entry_mode.is_noise(m.role, m.content)
+        ][-6:]
         used_roles = [roles[i] for i in use]
         sessions = [new[i].session_id for i in use]
         paras = [len(move_mode.paragraphs(m["text"])) for m in material]
@@ -874,58 +954,135 @@ class SemanticCompiler:
             def extract(raw: str):
                 answer[:] = [raw]
                 return move_mode.extract_after_json(raw.split("STOP:")[0])
+
             data = self._ask_json(prompt, check, extract)
             sbs = move_mode.parse_step1_chat(data, used_roles, paras, texts)
-            # the compiler stops where its SBs close (design 4.7); what it left opens the next window
+            # the compiler stops where its SBs close (design 4.7); what it left opens the next
+            # window
             done = move_mode.stop_at(answer[0], len(material)) if window else len(material)
             if done < len(material):
                 sbs = move_mode.compiled_before(sbs, done)
                 kept = use[done]
-            if trace is not None:  # audit only: the person's words no SB holds (nothing is asked again)
-                trace["uncovered"] = [len(t) for _, t in move_mode.uncovered(sbs, used_roles[:done], texts[:done])]
+            if (
+                trace is not None
+            ):  # audit only: the person's words no SB holds (nothing is asked again)
+                trace["uncovered"] = [
+                    len(t) for _, t in move_mode.uncovered(sbs, used_roles[:done], texts[:done])
+                ]
                 trace["stopped_at"] = done
         elif self.step1 == "slim4":
-            data = self._ask_json(move_mode.step1_prompt_slim4(lang, material, ctx, self.scene),
-                                  lambda d: move_mode.check_step1_slim4(d, used_roles),
-                                  move_mode.extract_json_array)
+            data = self._ask_json(
+                move_mode.step1_prompt_slim4(lang, material, ctx, self.scene),
+                lambda d: move_mode.check_step1_slim4(d, used_roles),
+                move_mode.extract_json_array,
+            )
             sbs = move_mode.parse_step1_slim4(data, used_roles, paras)
         else:
-            data = self._ask_json(move_mode.step1_prompt(lang, material, ctx),
-                                  lambda d: move_mode.check_step1(d, used_roles, sessions))
+            data = self._ask_json(
+                move_mode.step1_prompt(lang, material, ctx),
+                lambda d: move_mode.check_step1(d, used_roles, sessions),
+            )
             sbs = move_mode.parse_step1(data, used_roles, sessions)
         out = []
         for sb in sbs:
             content = move_mode.content_of(sb["situation"], sb["move"], lang)
             if len(content.encode("utf-8")) > CONTENT_BYTES:
                 content = content.encode("utf-8")[:CONTENT_BYTES].decode("utf-8", "ignore") + "…"
-            spans = tuple((new[use[i]].record_id, tuple(p)) for i, p in sorted(sb.get("spans", {}).items()))
+            spans = tuple(
+                (new[use[i]].record_id, tuple(p)) for i, p in sorted(sb.get("spans", {}).items())
+            )
             ptr = sb.get("pointers")
-            pointers = json.dumps({**ptr, "own": {new[use[i]].record_id: p for i, p in ptr["own"].items()},
-                                   "parts": [{new[use[i]].record_id: p for i, p in d.items()} for d in ptr["parts"]]}
-                                  ) if ptr else ""
+            pointers = (
+                json.dumps(
+                    {
+                        **ptr,
+                        "own": {new[use[i]].record_id: p for i, p in ptr["own"].items()},
+                        "parts": [
+                            {new[use[i]].record_id: p for i, p in d.items()} for d in ptr["parts"]
+                        ],
+                    }
+                )
+                if ptr
+                else ""
+            )
             sb["sources"] = [use[i] for i in sb["sources"]]
-            out.append(CompiledBlock(
-                content=content, source_record_ids=tuple(new[i].record_id for i in sb["sources"]),
-                thread=None, commit=None,
-                # every SB gets a place in the graph; its links come from step 2 (placement)
-                lines=(LineOut(thread=None, after=None, committed=sb["happened"], summary=None),),
-                standing=sb.get("standing", False), spans=spans, pointers=pointers, under=sb.get("under"),
-            ))
+            out.append(
+                CompiledBlock(
+                    content=content,
+                    source_record_ids=tuple(new[i].record_id for i in sb["sources"]),
+                    thread=None,
+                    commit=None,
+                    # every SB gets a place in the graph; its links come from step 2 (placement)
+                    lines=(
+                        LineOut(thread=None, after=None, committed=sb["happened"], summary=None),
+                    ),
+                    standing=sb.get("standing", False),
+                    spans=spans,
+                    pointers=pointers,
+                    under=sb.get("under"),
+                )
+            )
         if trace is not None:
-            trace.update({"language": lang, "step1": data,
-                          "moves": [{"sources": [new[i].record_id for i in sb["sources"]],
-                                     "move": sb["move"]} for sb in sbs]})
+            trace.update(
+                {
+                    "language": lang,
+                    "step1": data,
+                    "moves": [
+                        {"sources": [new[i].record_id for i in sb["sources"]], "move": sb["move"]}
+                        for sb in sbs
+                    ],
+                }
+            )
         if not window:
             return tuple(out)
         return tuple(out), kept
 
-    def place(self, lang: str, sbs: list[dict], cands: list[dict], per_sb: list[list[int]]) -> dict:
+    def assign_threads(
+        self, lang: str, sbs: list[dict], threads: list[dict], cands: list[dict] = ()
+    ) -> dict:
+        """Which thread each SB of the window is in, and what a new one came from. Touches no store."""
+        if not sbs:
+            return {"thread": {}, "from": {}}
+        data = self._ask_json(
+            move_mode.threads_prompt(lang, sbs, threads, list(cands)),
+            lambda d: move_mode.parse_threads(d, len(sbs), len(threads)),
+        )
+        return move_mode.parse_threads(data, len(sbs), len(threads))
+
+    def summarize(self, lang: str, threads: list[dict]) -> dict[int, str]:
+        """Each thread's summary rewritten from its summary so far and its SBs since. Touches no store."""
+        if not threads:
+            return {}
+        data = self._ask_json(
+            move_mode.summarize_prompt(lang, threads),
+            lambda d: move_mode.parse_summaries(d, len(threads)),
+        )
+        return move_mode.parse_summaries(data, len(threads))
+
+    def place(
+        self,
+        lang: str,
+        sbs: list[dict],
+        cands: list[dict],
+        per_sb: list[list[int]],
+        threads: list[dict] | None = None,
+    ) -> dict:
         """Step 2 of the work scene: which candidates (or earlier SBs of the window) each SB
         builds on, and which steps in progress it settles. Touches no store."""
         if not sbs:
-            return {"after": {}, "why": {}, "settles": {}, "raw": {}}
-        data = self._ask_json(move_mode.step2_prompt(lang, sbs, cands, per_sb, self.scene),
-                              lambda d: move_mode.parse_step2(d, len(sbs), len(cands)))
+            return {
+                "after": {},
+                "why": {},
+                "settles": {},
+                "thread": {},
+                "summaries": {},
+                "from": {},
+                "raw": {},
+            }
+        data = self._ask_json(
+            move_mode.step2_prompt(lang, sbs, cands, per_sb, self.scene),
+            lambda d: move_mode.parse_step2(d, len(sbs), len(cands)),
+        )
         return {**move_mode.parse_step2(data, len(sbs), len(cands)), "raw": data}
 
 
@@ -972,17 +1129,22 @@ def _matters(value: object) -> dict[str, dict]:
             continue
         thread, after, summary = entry.get("thread"), entry.get("after"), entry.get("summary")
         out[entry["id"].strip()] = {
-            "thread": thread.strip() if isinstance(thread, str) and thread.strip()
-            and thread.strip().lower() not in ("null", "none", "new") else None,
+            "thread": thread.strip()
+            if isinstance(thread, str)
+            and thread.strip()
+            and thread.strip().lower() not in ("null", "none", "new")
+            else None,
             "after": after.strip() if isinstance(after, str) and after.strip() else None,
-            "summary": summary.strip()[:4000] if isinstance(summary, str) and summary.strip()
+            "summary": summary.strip()[:4000]
+            if isinstance(summary, str) and summary.strip()
             else None,
         }
     return out
 
 
-def _placed(value: object, matters: dict[str, dict], last_in: dict[str, int],
-            index: int) -> tuple[LineOut, ...]:
+def _placed(
+    value: object, matters: dict[str, dict], last_in: dict[str, int], index: int
+) -> tuple[LineOut, ...]:
     """Step 3: a block's place in the batch's matters, as line signals.
 
     A new matter is referred to as "m:<id>" so all its blocks join one matter.
@@ -1004,9 +1166,14 @@ def _placed(value: object, matters: dict[str, dict], last_in: dict[str, int],
         after = after.strip() if isinstance(after, str) and after.strip() else None
         if after is None and key not in last_in:
             after = matter["after"]  # where step 1 said the matter grows from
-        out.append(LineOut(matter["thread"] or f"m:{key}", after,
-                           entry.get("happened", entry.get("committed")) is True,
-                           matter["summary"]))
+        out.append(
+            LineOut(
+                matter["thread"] or f"m:{key}",
+                after,
+                entry.get("happened", entry.get("committed")) is True,
+                matter["summary"],
+            )
+        )
         last_in[key] = index
     return tuple(out)
 
@@ -1014,10 +1181,12 @@ def _placed(value: object, matters: dict[str, dict], last_in: dict[str, int],
 def _linked(item: dict) -> tuple[LineOut, ...]:
     """Points: one line signal per step the block carries on; none -> a new line."""
     happened = item.get("happened") is True
-    afters = _refs(item.get("after") if isinstance(item.get("after"), list)
-                   else [item.get("after")])
+    afters = _refs(
+        item.get("after") if isinstance(item.get("after"), list) else [item.get("after")]
+    )
     return tuple(LineOut(None, a, happened, None) for a in afters) or (
-        LineOut(None, None, happened, None),)
+        LineOut(None, None, happened, None),
+    )
 
 
 def _refs(value: object) -> tuple[str, ...]:
@@ -1042,18 +1211,37 @@ def blocks_to_json(blocks: tuple[CompiledBlock, ...], version: str = PROMPT_VERS
             {
                 "content": b.content,
                 "sources": list(b.source_record_ids),
-                "thread": None if b.thread is None else {
-                    "action": b.thread.action, "question": b.thread.question,
-                    "summary": b.thread.summary, "mature": b.thread.mature,
+                "thread": None
+                if b.thread is None
+                else {
+                    "action": b.thread.action,
+                    "question": b.thread.question,
+                    "summary": b.thread.summary,
+                    "mature": b.thread.mature,
                 },
-                "commit": None if b.commit is None else {
-                    "question": b.commit.question, "summary": b.commit.summary,
+                "commit": None
+                if b.commit is None
+                else {
+                    "question": b.commit.question,
+                    "summary": b.commit.summary,
                 },
-                **({"lines": [
-                    {"thread": x.thread, "after": x.after, "committed": x.committed,
-                     "summary": x.summary, "done": x.done, "due": x.due}
-                    for x in b.lines
-                ]} if b.lines else {}),
+                **(
+                    {
+                        "lines": [
+                            {
+                                "thread": x.thread,
+                                "after": x.after,
+                                "committed": x.committed,
+                                "summary": x.summary,
+                                "done": x.done,
+                                "due": x.due,
+                            }
+                            for x in b.lines
+                        ]
+                    }
+                    if b.lines
+                    else {}
+                ),
                 **({"settles": list(b.settles)} if b.settles else {}),
                 **({"standing": True} if b.standing else {}),
                 **({"spans": {r: list(p) for r, p in b.spans}} if b.spans else {}),
@@ -1075,7 +1263,10 @@ def blocks_from_json(data: dict) -> tuple[CompiledBlock, ...]:
             lines=tuple(LineOut(**x) for x in b.get("lines", ())),
             settles=tuple(b.get("settles", ())),
             standing=b.get("standing") is True,
-            spans=tuple((r, tuple(tuple(x) if isinstance(x, list) else x for x in p)) for r, p in (b.get("spans") or {}).items()),
+            spans=tuple(
+                (r, tuple(tuple(x) if isinstance(x, list) else x for x in p))
+                for r, p in (b.get("spans") or {}).items()
+            ),
             pointers=b.get("pointers", ""),
             under=b.get("under"),
         )
