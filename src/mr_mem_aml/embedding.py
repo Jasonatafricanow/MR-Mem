@@ -52,8 +52,13 @@ def _key(env: str) -> str:
 
 class GeminiEmbedding:
     def __init__(
-        self, *, model: str, dimension: int, api_key_env: str = "GEMINI_API_KEY",
-        timeout: float = 60, attempts: int = 4,
+        self,
+        *,
+        model: str,
+        dimension: int,
+        api_key_env: str = "GEMINI_API_KEY",
+        timeout: float = 60,
+        attempts: int = 4,
     ) -> None:
         self._identity = EmbeddingIdentity("gemini-http", model, dimension, "api")
         self.model, self.api_key_env = model, api_key_env
@@ -64,10 +69,7 @@ class GeminiEmbedding:
         return self._identity
 
     def embed(self, text: str) -> tuple[float, ...]:
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.model}:embedContent"
-        )
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:embedContent"
         data = _post(
             url,
             {
@@ -76,7 +78,8 @@ class GeminiEmbedding:
                 "outputDimensionality": self._identity.dimension,
             },
             {"x-goog-api-key": _key(self.api_key_env)},
-            self.timeout, self.attempts,
+            self.timeout,
+            self.attempts,
         )
         return tuple(float(v) for v in data["embedding"]["values"])
 
@@ -121,9 +124,19 @@ class _VectorCache:
 
 class OpenAICompatibleEmbedding:
     def __init__(
-        self, *, base_url: str, model: str, dimension: int, api_key_env: str | None = None,
-        send_dimensions: bool = False, headers: dict[str, str] | None = None,
-        timeout: float = 60, attempts: int = 4, cache_path: str | Path | None = None,
+        self,
+        *,
+        base_url: str,
+        model: str,
+        dimension: int,
+        api_key_env: str | None = None,
+        send_dimensions: bool = False,
+        headers: dict[str, str] | None = None,
+        timeout: float = 60,
+        attempts: int = 4,
+        cache_path: str | Path | None = None,
+        batch: int = 10,
+        workers: int = 4,
     ) -> None:
         self._identity = EmbeddingIdentity("openai-compatible-http", model, dimension, "api")
         self.url = base_url.rstrip("/") + "/embeddings"
@@ -131,6 +144,52 @@ class OpenAICompatibleEmbedding:
         self.send_dimensions, self.headers = send_dimensions, dict(headers or {})
         self.timeout, self.attempts = timeout, attempts
         self._cache = _VectorCache(cache_path, model, dimension) if cache_path else None
+        # texts per request and requests in flight: one request per message made an Add of a
+        # few dozen messages take 10+ seconds (2026-10-31, behind a 20-second gateway)
+        self.batch, self.workers = max(1, int(batch)), max(1, int(workers))
+
+    def embed_many(self, texts: list[str]) -> list[tuple[float, ...]]:
+        """Vectors of ``texts`` in input order: cached ones from the cache, the rest in batches
+        of ``batch`` texts, ``workers`` requests at a time."""
+        out: dict[str, tuple[float, ...]] = {}
+        missing = []
+        for text in dict.fromkeys(texts):
+            known = self._cache.get(text) if self._cache is not None else None
+            if known is not None:
+                out[text] = known
+            else:
+                missing.append(text)
+        chunks = [missing[i : i + self.batch] for i in range(0, len(missing), self.batch)]
+        if chunks:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(min(self.workers, len(chunks))) as pool:
+                for chunk, vectors in zip(
+                    chunks, pool.map(self._request_many, chunks), strict=True
+                ):
+                    for text, vector in zip(chunk, vectors, strict=True):
+                        out[text] = vector
+                        if self._cache is not None:
+                            self._cache.put(text, vector)
+        return [out[t] for t in texts]
+
+    def _request_many(self, texts: list[str]) -> list[tuple[float, ...]]:
+        if len(texts) == 1:
+            return [self._request(texts[0])]
+        headers = dict(self.headers)
+        if self.api_key_env:
+            headers["Authorization"] = f"Bearer {_key(self.api_key_env)}"
+        body: dict = {"model": self.model, "input": texts}
+        if self.send_dimensions:
+            body["dimensions"] = self._identity.dimension
+        data = _post(self.url, body, headers, self.timeout, self.attempts)["data"]
+        if len(data) != len(texts):
+            raise RuntimeError(f"embedding endpoint returned {len(data)} rows for {len(texts)}")
+        rows = sorted(data, key=lambda d: d.get("index", 0))
+        vectors = [tuple(float(v) for v in d["embedding"]) for d in rows]
+        if any(len(v) != self._identity.dimension for v in vectors):
+            raise RuntimeError("embedding endpoint returned vectors of the wrong dimension")
+        return vectors
 
     @property
     def identity(self) -> EmbeddingIdentity:
@@ -206,14 +265,25 @@ class ArkEmbedding:
     reruns and other processes sharing the cache pay nothing (see ark_embed.py).
     """
 
-    def __init__(self, *, model: str, dimension: int, cache_path: str | Path,
-                 base_url: str | None = None, requests_per_second: float = 4.0,
-                 concurrency: int = 16) -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        dimension: int,
+        cache_path: str | Path,
+        base_url: str | None = None,
+        requests_per_second: float = 4.0,
+        concurrency: int = 16,
+    ) -> None:
         from mr_mem_aml.ark_embed import ArkEmbedder
 
         self._client = ArkEmbedder(
-            model, dimensions=dimension, concurrency=concurrency, cache_path=Path(cache_path),
-            base_url=base_url, requests_per_second=requests_per_second,
+            model,
+            dimensions=dimension,
+            concurrency=concurrency,
+            cache_path=Path(cache_path),
+            base_url=base_url,
+            requests_per_second=requests_per_second,
         )
         self._identity = EmbeddingIdentity("ark", model, dimension, "v1")
 

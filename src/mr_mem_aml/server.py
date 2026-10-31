@@ -48,6 +48,15 @@ class RuntimeHost:
         self._compile_slots = threading.Semaphore(max(1, concurrency))
         self._user_locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
+        # background compile (config background_compile): Add returns once the raw text is
+        # stored and searchable; a user's due windows compile here, one user at a time per user
+        self._background = getattr(self.runtime.config, "background_compile", None)
+        self._bg: dict[str, dict] = {}
+        self._bg_pool = (
+            ThreadPoolExecutor(max(2, 2 * concurrency), thread_name_prefix="mr-mem-compile")
+            if self._background
+            else None
+        )
 
     def call(self, fn, *args, **kwargs):
         return self._owner.submit(fn, *args, **kwargs).result()
@@ -59,6 +68,18 @@ class RuntimeHost:
 
     def add(self, payload: object) -> dict:
         runtime = self.runtime
+        if self._background and runtime.config.compile_window is not None:
+            # stored and searchable before this returns (AML's Add contract); the compile of the
+            # windows now due goes on in the background (a 20-second gateway cut synchronous Adds)
+            job = self.call(runtime.prepare_add, payload)
+            request = job if isinstance(job, dict) else job.request
+            if isinstance(payload, dict) and isinstance(payload.get("user_id"), str):
+                self._kick(payload["user_id"])
+            if isinstance(job, dict):
+                return job
+            from mr_mem_aml.runtime import _echo
+
+            return {**_echo(request), "blocks": 0}
         with self._user_lock(payload):
             job = self.call(runtime.prepare_add, payload)
             if isinstance(job, dict):
@@ -100,6 +121,62 @@ class RuntimeHost:
         with self._compile_slots:
             return call[0](*call[1:])
 
+    def _kick(self, user: str, final: bool = False) -> threading.Event:
+        """Have the user's due windows compiled in the background (``final``: the tail too, as
+        flush does); returns the event set when the user's compiling is idle again. An Add with
+        no Add after it for ``idle_tail`` seconds has the tail compiled, so a Search seldom
+        finds anything left to compile."""
+        with self._guard:
+            state = self._bg.setdefault(
+                user,
+                {
+                    "running": False,
+                    "again": False,
+                    "final": False,
+                    "idle": threading.Event(),
+                    "timer": None,
+                },
+            )
+            if state["timer"] is not None and not final:
+                state["timer"].cancel()
+                state["timer"] = None
+            state["final"] = state["final"] or final
+            if state["running"]:
+                state["again"] = True
+                return state["idle"]
+            state["running"] = True
+            state["idle"].clear()
+        self._bg_pool.submit(self._drain, user)
+        return state["idle"]
+
+    def _drain(self, user: str) -> None:
+        runtime, state = self.runtime, self._bg[user]
+        while True:
+            with self._guard:
+                final, state["final"], state["again"] = state["final"], False, False
+            try:
+                with self._user_lock({"user_id": user}):
+                    while (job := self.call(runtime._window_job, user, final=final)) is not None:
+                        with self._compile_slots:
+                            compiled = runtime.compile_job(job)
+                        self._finish(job, compiled)
+            except Exception as exc:  # noqa: BLE001 - raw stays searchable; the next kick retries
+                runtime.window_failures += 1
+                log.warning("background compile of %s stopped: %s", user, str(exc)[:300])
+            with self._guard:
+                if state["again"] or state["final"]:
+                    continue
+                state["running"] = False
+                state["idle"].set()
+                if not final:  # no Add for a while: compile the tail too
+                    timer = threading.Timer(
+                        float(self._background.get("idle_tail", 30)), self._kick, (user, True)
+                    )
+                    timer.daemon = True
+                    state["timer"] = timer
+                    timer.start()
+                return
+
     def search(self, payload: object, mode: str | None) -> dict:
         runtime = self.runtime
         if (
@@ -108,19 +185,27 @@ class RuntimeHost:
             and isinstance(payload, dict)
             and isinstance(payload.get("user_id"), str)
         ):
-            self.flush(payload["user_id"])  # nothing to do once the user's history is compiled
+            if self._background:  # compile what is left, but answer within search_wait
+                idle = self._kick(payload["user_id"], final=True)
+                idle.wait(float(self._background.get("search_wait", 15)))
+            else:
+                self.flush(payload["user_id"])  # nothing to do once the history is compiled
         found = self.call(runtime.search, payload, mode=mode)
         if runtime.decision is not None and (mode or runtime.config.search_mode) == "path_a":
             # the decision model's calls off the owner thread; the hits read on it
             question, hits, lang = self.call(runtime.decision_hits, payload)
             note = runtime.decision.note(question, hits, lang)
             if note:
-                top_k = payload.get("top_k", 100)
+                from mr_mem_aml.runtime import _within
+
                 first = found["data"][0]["score"] if found["data"] else 0.0
-                found["data"] = [
-                    {"id": "decision-note", "content": note, "score": float(first) + 1.0},
-                    *found["data"],
-                ][:top_k]
+                found["data"] = _within(  # within top_k, the furthest stretch summary out first
+                    [
+                        {"id": "decision-note", "content": note, "score": float(first) + 1.0},
+                        *found["data"],
+                    ],
+                    payload.get("top_k", 100),
+                )
         return found
 
     def flush(self, user_id: str | None = None) -> dict:
@@ -153,9 +238,24 @@ class RuntimeHost:
             "compile_concurrency": config.compile_concurrency,
             "thread_failures": runtime.thread_failures,
             "decision": runtime.decision.health() if runtime.decision else {"configured": False},
+            "background_compile": (
+                {
+                    "users_compiling": sum(s["running"] for s in list(self._bg.values())),
+                    "window_failures": runtime.window_failures,
+                }
+                if self._background
+                else {"configured": False}
+            ),
         }
 
     def close(self) -> None:
+        if self._bg_pool is not None:
+            with self._guard:
+                for state in self._bg.values():
+                    if state["timer"] is not None:
+                        state["timer"].cancel()
+            # a window cut short recompiles from its journal at the next start
+            self._bg_pool.shutdown(wait=False, cancel_futures=True)
         try:
             self.call(self.runtime.close)
         finally:

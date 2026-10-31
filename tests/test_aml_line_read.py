@@ -593,3 +593,73 @@ def test_past_top_k_the_furthest_stretch_summaries_go_not_the_raw_hits():
     assert len(kept) == 99 and all(f"raw:r{n}" in ids for n in range(30))
     assert "thread:t0" in ids and "thread:t59" not in ids
     assert _within(items[:50], 99) == items[:50]
+
+
+def test_raw_units_get_their_vector_when_a_failed_add_is_retried():
+    import numpy as np
+
+    from mr_mem_aml.raw_arm import RawArm, RawUnit
+
+    class Flaky:
+        fail = True
+
+        def embed_many(self, texts):
+            if self.fail:
+                raise RuntimeError("embedding service down")
+            return [[1.0, 0.0]] * len(texts)
+
+    arm, at = RawArm(Flaky()), __import__("datetime").datetime(2026, 1, 1)
+    units = [RawUnit("u1", "a", "hello there", "r1", at), RawUnit("u2", "a", "bye now", "r2", at)]
+    try:
+        arm.add(units)
+    except RuntimeError:
+        pass
+    arm.embedding.fail = False
+    arm.add(units)  # the retried Add
+    index = arm._users["a"]
+    assert index.ids == ["u1", "u2"] and np.asarray(index.vectors).shape == (2, 2)
+
+
+def test_embeddings_are_batched_in_order_and_cached(tmp_path):
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from mr_mem_aml.embedding import OpenAICompatibleEmbedding
+
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            texts = body["input"] if isinstance(body["input"], list) else [body["input"]]
+            seen.append(len(texts))
+            rows = [{"index": i, "embedding": [float(len(t)), 1.0]} for i, t in enumerate(texts)]
+            data = json.dumps({"data": list(reversed(rows))}).encode()  # out of order on purpose
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        emb = OpenAICompatibleEmbedding(
+            base_url=f"http://127.0.0.1:{server.server_port}",
+            model="m",
+            dimension=2,
+            cache_path=tmp_path / "c.sqlite",
+            batch=10,
+            workers=3,
+        )
+        texts = [("x" * n) for n in range(1, 26)]
+        assert [v[0] for v in emb.embed_many(texts)] == [float(n) for n in range(1, 26)]
+        assert sorted(seen) == [5, 10, 10]  # 25 texts in three requests
+        emb.embed_many(texts)
+        assert len(seen) == 3  # all from the cache
+    finally:
+        server.shutdown()

@@ -145,6 +145,8 @@ def build_embedding(spec: dict | None):
             send_dimensions=spec.get("send_dimensions", False),
             headers=spec.get("headers"),
             cache_path=spec.get("cache_path"),
+            batch=spec.get("batch", 10),
+            workers=spec.get("workers", 4),
         )
     if kind == "ark":
         from mr_mem_aml.embedding import ArkEmbedding
@@ -438,6 +440,8 @@ class MemoryRuntime:
     def _embed_texts(self, texts: list[str]) -> list[tuple[float, ...]]:
         """Any thread: vectors of texts (the store is not touched)."""
         assert self.embedding is not None
+        if hasattr(self.embedding, "embed_many"):
+            return [tuple(v) for v in self.embedding.embed_many(list(texts))]
         return [tuple(self.embedding.embed(t)) for t in texts]
 
     def tree_for(self, scope: Scope):
@@ -1622,8 +1626,9 @@ class MemoryRuntime:
                             for i in self._line_read(scope, user_id.strip(), text[:4096])
                             if i["content"].strip()
                         ],
-                        # a slot kept for the decision note RuntimeHost.search may put in front
-                        top_k - (1 if self.decision is not None else 0),
+                        # a decision note is fitted in by RuntimeHost.search only when there is
+                        # one (a slot kept always left top_k=1 with nothing)
+                        top_k,
                     )
                 ]
             }

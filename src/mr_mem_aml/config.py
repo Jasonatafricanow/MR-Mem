@@ -86,6 +86,11 @@ class RuntimeConfig:
     # their SBs -> the Line around them, plus raw snippets; None keeps the PathAReader read.
     # Keys of line_read.LineReadPolicy (sbs, up, down, raw_k, sb_k, rrf_k, tz_minutes, raw_full)
     line_read: dict[str, int] | None = None
+    # windows compiled in the background, not inside Add: {"search_wait": seconds a Search waits
+    # for the user's compiling to go idle before it answers with what is there (15), "idle_tail":
+    # seconds without an Add before the tail window is compiled too (30)}. For a gateway that
+    # cuts requests short (InstaBox: about 20 seconds); None: Add compiles, Search flushes first
+    background_compile: dict[str, float] | None = None
     # Search, path_a with line_read: a decision model judges the question over its raw hits and may
     # put one note in front (decision.py: the person's own contradicting statements, or a detail
     # the person never stated). {"base_url" | "base_url_env", "api_key_env", "model", "timeout",
@@ -127,6 +132,15 @@ class RuntimeConfig:
             or not (self.decision.get("base_url") or self.decision.get("base_url_env"))
         ):
             raise ValueError("decision needs line_read and a base_url or base_url_env")
+        if self.background_compile is not None:
+            b = self.background_compile
+            if self.compile_window is None:
+                raise ValueError("background_compile needs compile_window")
+            if not all(
+                isinstance(b.get(k, 1), int | float) and b.get(k, 1) >= 0
+                for k in ("search_wait", "idle_tail")
+            ):
+                raise ValueError("background_compile search_wait and idle_tail must be >= 0")
         if self.compile_window is not None:
             w = self.compile_window
             if self.path_a_engine != "tree":

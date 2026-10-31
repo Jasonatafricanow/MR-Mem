@@ -330,3 +330,53 @@ def test_search_first_compiles_what_is_left_of_that_users_history(tmp_path):
         assert backend.windows == [["a1", "a2"]]
     finally:
         host.call(host.runtime.close)
+
+
+class SlowBackend(TreeBackend):
+    def __init__(self, seconds: float):
+        super().__init__()
+        self.seconds = seconds
+
+    def complete(self, prompt: str) -> str:
+        import time
+
+        time.sleep(self.seconds)
+        return super().complete(prompt)
+
+
+def test_background_compile_add_returns_at_once_and_search_waits_at_most_search_wait(tmp_path):
+    import time
+
+    from mr_mem_aml.server import RuntimeHost
+
+    backend = SlowBackend(1.0)
+    config = RuntimeConfig(
+        data_dir=tmp_path / "data",
+        compiler={"type": "command", "argv": ["x"]},
+        path_a_engine="tree",
+        compile_window={"soft": 3, "hard": 5},
+        compile_before_search=True,
+        background_compile={"search_wait": 0.2, "idle_tail": 60},
+    )
+    host = RuntimeHost(
+        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+    )
+    texts = ["a1", "a2", "a3", "a4", "a5", "a6"]
+    messages = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": t} for i, t in enumerate(texts)
+    ]
+    try:
+        start = time.monotonic()
+        got = host.add(
+            {"request_id": "r1", "user_id": "a", "session_id": "s", "messages": messages}
+        )
+        assert got["request_id"] == "r1" and time.monotonic() - start < 0.8  # not waiting on it
+        start = time.monotonic()
+        host.search({"query": "a1?", "user_id": "a", "top_k": 5}, None)  # searchable meanwhile
+        assert time.monotonic() - start < 0.8
+        deadline = time.monotonic() + 10
+        while sum(map(len, backend.windows)) < len(texts) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert sum(map(len, backend.windows)) == len(texts)  # every window, tail included
+    finally:
+        host.close()

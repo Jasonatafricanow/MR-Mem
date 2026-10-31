@@ -27,6 +27,10 @@
   "skip_rejected_compiles": true,
   "keep_raw_on_compile_failure": true,
   "compile_before_search": true,
+  "background_compile": {
+    "search_wait": 15,
+    "idle_tail": 30
+  },
   "path_a_engine": "tree",
   "placement": "moves",
   "step1": "topic",

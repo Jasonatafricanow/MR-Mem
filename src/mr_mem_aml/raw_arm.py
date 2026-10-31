@@ -72,8 +72,15 @@ def units_for(request_id: str, messages) -> list[RawUnit]:
             if piece in seen:
                 continue
             seen.add(piece)
-            out.append(RawUnit(f"raw:{request_id}:{len(out)}", message.user_id, piece,
-                               message.record_id, message.occurred_at))
+            out.append(
+                RawUnit(
+                    f"raw:{request_id}:{len(out)}",
+                    message.user_id,
+                    piece,
+                    message.record_id,
+                    message.occurred_at,
+                )
+            )
     return out
 
 
@@ -87,8 +94,9 @@ class _UserIndex:
 
 
 class RawArm:
-    def __init__(self, embedding=None, *, rrf_k: int = 60, pool: int = 200,
-                 k1: float = 1.5, b: float = 0.75) -> None:
+    def __init__(
+        self, embedding=None, *, rrf_k: int = 60, pool: int = 200, k1: float = 1.5, b: float = 0.75
+    ) -> None:
         self.embedding = embedding
         self.pool = pool
         self.k1, self.b = k1, b
@@ -103,11 +111,30 @@ class RawArm:
     # -- write ------------------------------------------------------------
 
     def add(self, units: list[RawUnit]) -> None:
-        fresh = []
+        """Index units not indexed yet. The vectors are fetched first and the unit is registered
+        (BM25 and vector together) only then: a unit registered before a failed embedding call
+        was skipped by the retried Add and never got its vector in this process."""
         with self._lock:
-            for unit in units:
+            fresh = [
+                u
+                for u in dict((u.unit_id, u) for u in units).values()
+                if u.unit_id not in self._users[u.user_id].units
+            ]
+        if not fresh:
+            return
+        matrix = None
+        if self.embedding is not None:
+            texts = [u.text[:DENSE_MAX_CHARS] for u in fresh]
+            if hasattr(self.embedding, "embed_many"):
+                matrix = np.asarray(self.embedding.embed_many(texts), dtype=np.float32)
+            else:
+                matrix = np.asarray([self.embedding.embed(t) for t in texts], dtype=np.float32)
+            matrix /= np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
+        with self._lock:
+            rows: dict[str, list] = defaultdict(list)
+            for n, unit in enumerate(fresh):
                 index = self._users[unit.user_id]
-                if unit.unit_id in index.units:
+                if unit.unit_id in index.units:  # indexed meanwhile by another call
                     continue
                 freqs = Counter(lexical_tokens(unit.text))
                 index.units[unit.unit_id] = unit
@@ -117,21 +144,15 @@ class RawArm:
                     index.lengths[unit.unit_id] = length
                     for term, tf in freqs.items():
                         index.postings[term][unit.unit_id] = tf
-                fresh.append(unit)
-        if self.embedding is None or not fresh:
-            return
-        texts = [u.text[:DENSE_MAX_CHARS] for u in fresh]
-        if hasattr(self.embedding, "embed_many"):
-            matrix = np.asarray(self.embedding.embed_many(texts), dtype=np.float32)
-        else:
-            matrix = np.asarray([self.embedding.embed(t) for t in texts], dtype=np.float32)
-        matrix /= np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
-        with self._lock:
-            for unit, row in zip(fresh, matrix, strict=True):
-                index = self._users[unit.user_id]
-                index.ids.append(unit.unit_id)
-                index.vectors = (row[None, :] if index.vectors is None
-                                 else np.vstack([index.vectors, row]))
+                if matrix is not None:
+                    index.ids.append(unit.unit_id)
+                    rows[unit.user_id].append(matrix[n])
+            for user_id, got in rows.items():  # one copy per call, not one per row
+                index = self._users[user_id]
+                block = np.vstack(got)
+                index.vectors = (
+                    block if index.vectors is None else np.vstack([index.vectors, block])
+                )
 
     # -- read -------------------------------------------------------------
 
@@ -196,7 +217,8 @@ class _Arm:
         user_id = query.scope.user_id or ""
         hits = self._search(user_id, query.text, max(query.limit, self._owner.pool))
         return tuple(
-            RetrievedMemoryCandidate(memory_id=uid, provider="raw", provider_ref=f"raw:{uid}",
-                                     score=score)
+            RetrievedMemoryCandidate(
+                memory_id=uid, provider="raw", provider_ref=f"raw:{uid}", score=score
+            )
             for uid, score in hits
         )
