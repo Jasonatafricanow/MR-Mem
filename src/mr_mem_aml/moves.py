@@ -1722,19 +1722,19 @@ def parse_summaries(data: dict, n_threads: int) -> dict[int, str]:
 # these SBs settle (the terminator is the memory side's own: never shown to the answer model).
 STRETCH = {
     "zh": (
-        "下面是一段对话按顺序编出的 SB（s1、s2……），每个带着它所在消息的时间范围。把它们按顺序"
-        "划成段，给已经收口的段写摘要。\n"
+        "下面是一段对话按顺序编出的 SB，每个带着它所在消息的时间范围：开头的 o1、o2……是上次还没"
+        "收口的那一段，后面的 s1、s2……是这次新编的。把它们按顺序划成段，给已经收口的段写摘要。\n"
         "\n"
         "## 段是什么\n"
         "1. 段是连续的几个 SB：话题在一条路上往前走，一件事引出下一件（聊早饭 → 饮食习惯 → 偏"
         "好 → 想吃蛋挞）。话题转到另一条路上（聊的领域变了，或做的事变了：从排进度到写代码），"
         "或者开了新的会话、隔了很久，段就到此为止，下一段开始。\n"
         "2. 段按顺序覆盖所有 SB，不跳过、不重叠。\n"
-        "3. OPEN 里是之前还没收口的段。第一段接着它说下去，就写 joins_open: true，它的 SB 归进那"
-        "一段。\n"
+        "3. o1、o2……已经是同一段的开头，不拆开，第一段从 o1 开始；照第 1 条看这一段到哪里为止，"
+        "话题接着往下走就延伸到后面的 s。没有 o 时，第一段从 s1 开始。\n"
         "4. closed：话题已经离开这一段（后面接着别的段，或会话结束了），填 true。最后一段话题还没"
         "走完的填 false，等它收口时再写摘要。\n"
-        "5. summary 只给 closed 的段写（接着 OPEN 的段，摘要要连 OPEN 里的 SB 一起写），一到三句"
+        "5. summary 只给 closed 的段写（含 o 的段，摘要连 o 一起写），一到三句"
         "话，按顺序写：前因（因为什么聊起来的；对话是突然开始的就写无）、谁、何时（这一段消息的"
         "时间范围）、做了什么、后果（结果怎样，话题因此转到了哪里）。这是比 SB 高一层的结构性总"
         "结，讲这一段怎么变过来的：不写具体内容和单纯的数据（吃了什么、起点、目标、参数、测量值、"
@@ -1746,13 +1746,10 @@ STRETCH = {
         '取消了），写 {{"s5": ["N2"]}}。只有人的报告算，助手这么说不算。\n'
         "\n"
         "只输出 JSON：\n"
-        '{{"stretches":[{{"sbs":"s1-s4","joins_open":false,"from":null,"closed":true,'
+        '{{"stretches":[{{"sbs":"s1-s4","from":null,"closed":true,'
         '"summary":"前因……，谁……，何时……，做了……，后果……"}},'
-        '{{"sbs":"s5-s7","joins_open":false,"from":"T2","closed":false,"summary":""}}],'
+        '{{"sbs":"s5-s7","from":"T2","closed":false,"summary":""}}],'
         '"settles":{{"s6":["N1"]}}}}\n'
-        "\n"
-        "OPEN（之前没收口的段）：\n"
-        "{open}\n"
         "\n"
         "EARLIER（以前的段）：\n"
         "{earlier}\n"
@@ -1764,9 +1761,10 @@ STRETCH = {
         "{sbs}"
     ),
     "en": (
-        "Below are the SBs compiled from a conversation, in order (s1, s2 ...), each with the "
-        "time range of its messages. Cut them, in order, into stretches, and summarize the "
-        "closed ones.\n"
+        "Below are the SBs compiled from a conversation, in order, each with the time range of "
+        "its messages: the first ones, o1, o2 ..., are the stretch left open last time; s1, "
+        "s2 ... are the new ones. Cut them, in order, into stretches, and summarize the closed "
+        "ones.\n"
         "\n"
         "## What a stretch is\n"
         "1. A stretch is a run of consecutive SBs where the talk goes on along one course, one "
@@ -1775,12 +1773,13 @@ STRETCH = {
         "done: from planning to writing code), or a new session starts, or after a long pause, "
         "the stretch ends and the next one begins.\n"
         "2. Stretches cover every SB, in order, with no gap and no overlap.\n"
-        "3. OPEN holds the stretch left open before. When the first stretch carries it on, "
-        "write joins_open: true; its SBs go into that stretch.\n"
+        "3. o1, o2 ... are already the start of one stretch, not split: the first stretch begins "
+        "at o1; by rule 1, see where that stretch ends: when the talk goes on along its course "
+        "it runs on into the s's. With no o's, the first stretch begins at s1.\n"
         "4. closed: true when the talk has left the stretch (another stretch follows, or the "
         "session ended); false for a last stretch whose course is not run yet: it is summarized "
         "when it closes.\n"
-        "5. summary, only for a closed stretch (one that joins OPEN covers OPEN's SBs too): one "
+        "5. summary, only for a closed stretch (one with o's covers the o's too): one "
         "to three sentences, in this order: cause (what started it; none when the talk just "
         "began), who, when (the time range of its messages), what they did, consequence (what "
         "came of it, and where the talk went because of it). A structural summary one level "
@@ -1796,13 +1795,10 @@ STRETCH = {
         "the assistant saying so.\n"
         "\n"
         "Output only JSON:\n"
-        '{{"stretches":[{{"sbs":"s1-s4","joins_open":false,"from":null,"closed":true,'
+        '{{"stretches":[{{"sbs":"s1-s4","from":null,"closed":true,'
         '"summary":"Cause ..., who ..., when ..., what ..., consequence ..."}},'
-        '{{"sbs":"s5-s7","joins_open":false,"from":"T2","closed":false,"summary":""}}],'
+        '{{"sbs":"s5-s7","from":"T2","closed":false,"summary":""}}],'
         '"settles":{{"s6":["N1"]}}}}\n'
-        "\n"
-        "OPEN (the stretch left open before):\n"
-        "{open}\n"
         "\n"
         "EARLIER (earlier stretches):\n"
         "{earlier}\n"
@@ -1816,116 +1812,93 @@ STRETCH = {
 }
 
 
-# A stretch left open by one window and not carried on by the next: the talk turned, so it has
-# closed and is summarized once, by the same rule as any closed stretch (STRETCH rule 5, word for
-# word). A call of its own, so the stretch call itself is never changed: an extra field there
-# changed how every stretch was cut and summarized (2026-10-31).
-STRETCH_CLOSE = {
-    "zh": (
-        "下面是对话里已经收口的一段，按顺序列出它的 SB，每个带着它所在消息的时间范围。给这一段写"
-        "摘要。\n"
-        "\n"
-        "summary：一到三句话，按顺序写：前因（因为什么聊起来的；对话是突然开始的就写无）、谁、何时"
-        "（这一段消息的时间范围）、做了什么、后果（结果怎样，话题因此转到了哪里）。这是比 SB 高一层"
-        "的结构性总结，讲这一段怎么变过来的：不写具体内容和单纯的数据（吃了什么、起点、目标、参数、"
-        "测量值、版本、步骤、代码、清单）。只有一种数值要写：它就是结果本身（分数提升了 30%、覆盖率"
-        "提到 78%），写最后的结果，不写起点和目标。时间照 SB 里的写法，不往下推算。\n"
-        "\n"
-        '只输出 JSON：{{"summary":"……"}}\n'
-        "\n"
-        "SBS：\n"
-        "{sbs}"
-    ),
-    "en": (
-        "Below is a stretch of a conversation that has closed: its SBs in order, each with the "
-        "time range of its messages. Summarize it.\n"
-        "\n"
-        "summary: one to three sentences, in this order: cause (what started it; none when the "
-        "talk just began), who, when (the time range of its messages), what they did, "
-        "consequence (what came of it, and where the talk went because of it). A structural "
-        "summary one level above the SBs, of how this stretch changed things: no contents and no "
-        "mere data (what was eaten, starting points, targets, parameters, measurements, versions, "
-        "steps, code, lists). One kind of figure is written: one that is the result itself (the "
-        "score rose 30%, coverage reached 78%), the final result, not the start or the target. "
-        "Times as the SBs give them, not worked out further.\n"
-        "\n"
-        'Output only JSON: {{"summary":"..."}}\n'
-        "\n"
-        "SBS:\n"
-        "{sbs}"
-    ),
-}
-
-
-def close_prompt(lang: str, sbs: list[dict]) -> str:
-    """sbs: {"text", "time"} of the closed stretch, in order."""
-    return STRETCH_CLOSE[lang].format(
-        sbs="\n".join(
-            f"s{n + 1} [{s['time']}] {s['text']}" if s.get("time") else f"s{n + 1} {s['text']}"
-            for n, s in enumerate(sbs)
-        )
-    )
-
-
-def parse_close(data: object) -> str:
-    if not isinstance(data, dict) or not str(data.get("summary") or "").strip():
-        raise ValueError("a closed stretch needs its summary")
-    return str(data["summary"]).strip()[:2000]
-
-
 def stretch_prompt(
-    lang: str, sbs: list[dict], open_sbs: list[str], earlier: list[str], progress: list[str]
+    lang: str, sbs: list[dict], open_sbs: list[dict], earlier: list[str], progress: list[str]
 ) -> str:
-    """sbs: {"text", "time"}; open_sbs: the open stretch's SB texts; earlier: summaries of
-    earlier stretches (T1 ...); progress: steps still in progress (N1 ...)."""
+    """sbs: {"text", "time"} of the window (s1 ...); open_sbs: the same of the stretch left open
+    before (o1 ..., cut with the window's SBs as one sequence); earlier: summaries of earlier
+    stretches (T1 ...); progress: steps still in progress (N1 ...)."""
+
+    def lines(prefix: str, items: list[dict]) -> list[str]:
+        return [
+            f"{prefix}{n + 1} [{s['time']}] {s['text']}"
+            if s.get("time")
+            else f"{prefix}{n + 1} {s['text']}"
+            for n, s in enumerate(items)
+        ]
+
     return STRETCH[lang].format(
-        open="\n".join(f"- {t}" for t in open_sbs) or "-",
         earlier="\n".join(f"T{n + 1}: {t}" for n, t in enumerate(earlier)) or "-",
         progress="\n".join(f"N{n + 1}: {t}" for n, t in enumerate(progress)) or "-",
-        sbs="\n".join(
-            f"s{n + 1} [{s['time']}] {s['text']}" if s.get("time") else f"s{n + 1} {s['text']}"
-            for n, s in enumerate(sbs)
-        ),
+        sbs="\n".join([*lines("o", open_sbs), *lines("s", sbs)]),
     )
 
 
-_SRANGE = re.compile(r"s(\d+)(?:\s*[-–~～至]\s*s?(\d+))?")
+_SRANGE = re.compile(r"([os])(\d+)(?:\s*[-–~～至]\s*([os])?(\d+))?")
 
 
-def parse_stretches(data: object, n_sbs: int, n_earlier: int, n_progress: int) -> dict:
+def parse_stretches(
+    data: object, n_sbs: int, n_earlier: int, n_progress: int, n_open: int = 0
+) -> dict:
     """{"stretches": [{"sbs": [i ...], "joins_open", "from": k | None, "closed", "summary"}],
-    "settles": {i: [k ...]}} (0-based). Stretches must cover s1..sn in order, no gap, no
-    overlap; a closed one needs a summary."""
+    "open_summary": str, "settles": {i: [k ...]}} (0-based over the window's SBs). The open
+    stretch's o1..ok and the window's s1..sn are cut as one sequence: covered in order, no gap,
+    no overlap, the o's together in the first stretch. The first stretch running on into the s's
+    carries the open stretch on (joins_open); ending at ok, the open stretch has closed there,
+    and its summary is "open_summary" (2026-10-31: with the open stretch outside the sequence and
+    only "carry it on or not" asked, one left behind was never summarized). A closed stretch
+    needs a summary."""
     if not isinstance(data, dict) or not isinstance(data.get("stretches"), list):
         raise ValueError("'stretches' must be a list")
-    out, nxt = [], 0
+
+    def at(prefix: str, n: str) -> int:
+        k = int(n) - 1
+        if prefix == "o":
+            if not 0 <= k < n_open:
+                raise ValueError(f"o{n} is not one of o1-o{n_open}")
+            return k
+        return n_open + k
+
+    def name(i: int) -> str:
+        return f"o{i + 1}" if i < n_open else f"s{i - n_open + 1}"
+
+    total, out, nxt, open_summary = n_open + n_sbs, [], 0, ""
     for x in data["stretches"]:
         if not isinstance(x, dict):
             raise ValueError("a stretch must be an object")
         m = _SRANGE.fullmatch(str(x.get("sbs", "")).strip())
         if not m:
             raise ValueError(f"stretch sbs not a range: {x.get('sbs')!r}")
-        a, b = int(m.group(1)) - 1, int(m.group(2) or m.group(1)) - 1
-        if a != nxt or b < a or b >= n_sbs:
-            raise ValueError(f"stretches must cover s1-s{n_sbs} in order; got s{a + 1}-s{b + 1}")
+        a = at(m.group(1), m.group(2))
+        b = at(m.group(3) or m.group(1), m.group(4) or m.group(2))
+        if a != nxt or b < a or b >= total:
+            raise ValueError(
+                f"stretches must cover {name(0)}-{name(total - 1)} in order;"
+                f" got {name(a)}-{name(b)}"
+            )
+        if a == 0 and n_open and b < n_open - 1:
+            raise ValueError(f"o1-o{n_open} are one stretch, not to be split")
         nxt = b + 1
         frm = str(x.get("from") or "").strip()
         k = int(frm[1:]) - 1 if frm[:1] == "T" and frm[1:].isdigit() else None
-        closed = bool(x.get("closed"))
+        closed = bool(x.get("closed")) or b < n_open  # followed by the s's: it has closed
         summary = str(x.get("summary") or "").strip()[:2000]
         if closed and not summary:
-            raise ValueError(f"closed stretch s{a + 1}-s{b + 1} has no summary")
+            raise ValueError(f"closed stretch {name(a)}-{name(b)} has no summary")
+        if b < n_open:  # the open stretch alone: it closed before the window's SBs
+            open_summary = summary
+            continue
         out.append(
             {
-                "sbs": list(range(a, b + 1)),
-                "joins_open": bool(x.get("joins_open")) and not out,
+                "sbs": [i - n_open for i in range(max(a, n_open), b + 1)],
+                "joins_open": bool(n_open) and a == 0,
                 "from": k if k is not None and 0 <= k < n_earlier else None,
                 "closed": closed,
                 "summary": summary if closed else "",
             }
         )
-    if nxt != n_sbs:
-        raise ValueError(f"stretches cover s1-s{nxt}, not s1-s{n_sbs}")
+    if nxt != total:
+        raise ValueError(f"stretches cover {name(0)}-{name(nxt - 1)}, not to {name(total - 1)}")
     settles: dict[int, list[int]] = {}
     for key, refs in (data.get("settles") or {}).items():
         k = str(key).strip()
@@ -1937,7 +1910,7 @@ def parse_stretches(data: object, n_sbs: int, n_earlier: int, n_progress: int) -
             ]
             if got:
                 settles[int(k[1:]) - 1] = got
-    return {"stretches": out, "settles": settles}
+    return {"stretches": out, "open_summary": open_summary, "settles": settles}
 
 
 STATE = {

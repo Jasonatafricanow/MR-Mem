@@ -1066,11 +1066,6 @@ class SemanticCompiler:
         )
         return move_mode.parse_summaries(data, len(threads))
 
-    def close_stretch(self, lang: str, sbs: list[dict]) -> str:
-        """The summary of a stretch the talk turned away from (moves.STRETCH_CLOSE)."""
-        data = self._ask_json(move_mode.close_prompt(lang, sbs), move_mode.parse_close)
-        return move_mode.parse_close(data)
-
     def stretches(
         self,
         lang: str,
@@ -1082,10 +1077,12 @@ class SemanticCompiler:
         """The stretch layer: a window's SBs cut into stretches, the closed ones summarized, and
         the steps in progress they settle (moves.parse_stretches). Touches no store."""
         if not sbs:
-            return {"stretches": [], "settles": {}}
+            return {"stretches": [], "open_summary": "", "settles": {}}
 
         def check(d):
-            return move_mode.parse_stretches(d, len(sbs), len(earlier), len(progress))
+            return move_mode.parse_stretches(
+                d, len(sbs), len(earlier), len(progress), n_open=len(open_sbs)
+            )
 
         data = self._ask_json(
             move_mode.stretch_prompt(lang, sbs, open_sbs, earlier, progress), check

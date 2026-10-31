@@ -1,6 +1,6 @@
-("""Work scene, two-step compile (mr_mem_aml/moves.py): step 1 writes the SBs ("what happened ->
+"""Work scene, two-step compile (mr_mem_aml/moves.py): step 1 writes the SBs ("what happened ->
 what the person did"), step 2 places them among candidates; the prompt follows the person's
-language.""")
+language."""
 
 import json
 import re
@@ -241,7 +241,7 @@ def test_a_journaled_window_replays_both_steps_without_a_model_call(tmp_path):
             sqlite3.connect(tmp_path / "a" / "data" / "aml_source.sqlite")
             .execute(
                 "SELECT window_id,user_id,first_seq,last_seq,compiled FROM windows ORDER BY firs"
-                 "t_seq"
+                "t_seq"
             )
             .fetchall()
         )
@@ -356,11 +356,10 @@ def test_chat_step2_shows_earlier_steps_under_the_persons_matter():
     p2 = mv.step2_prompt("en", [{"text": "sprint 1 is done", "time": "t3"}], cands, [[1]], "chat")
     assert "s1 [t3] sprint 1 is done\n   matters: N1\n" in p2
     assert (
-        ("N1 (the person) [t0] wants a sprint plan\n"
-         "   N2 (the assistant) [t1] gives a two-week plan\n"
-         "N3")
-        in p2
-    )
+        "N1 (the person) [t0] wants a sprint plan\n"
+        "   N2 (the assistant) [t1] gives a two-week plan\n"
+        "N3"
+    ) in p2
 
 
 def test_chat_step1_carries_standing_instructions_into_the_journal():
@@ -499,8 +498,10 @@ def test_each_sb_keeps_the_fragment_of_the_words_it_comes_from():
 def test_the_persons_words_no_sb_covers_are_found():
     from mr_mem_aml import moves as mv
 
-    said = ("Thanks. I never used Docker before this. Also please show how to deploy it with Guni"
-            "corn on Render tomorrow.")
+    said = (
+        "Thanks. I never used Docker before this. Also please show how to deploy it with Guni"
+        "corn on Render tomorrow."
+    )
     sbs = [{"pointers": {"own": {0: [[8, 40]]}}}]  # only "I never used Docker before this."
     left = mv.uncovered(sbs, ["user"], [said])
     assert left == [
@@ -516,8 +517,8 @@ def test_code_the_person_pastes_goes_with_the_sb_that_brings_it_in():
     )
     raw = (
         "JSON:\n"
-         "[{\"turns\":\"M1\",\"from\":\"My login fails\",\"to\":\"my code:\",\"text\":\"The perso"
-         "n reports login fails\","
+        '[{"turns":"M1","from":"My login fails","to":"my code:","text":"The perso'
+        'n reports login fails",'
         '"when":"before","status":"confirmed","standing":false},'
         '{"turns":"M1","from":"Also, should","to":"bcrypt?","text":"The person asks about bcrypt",'
         '"when":"before","status":"confirmed","standing":false}]'
@@ -576,8 +577,10 @@ def test_what_the_assistant_says_is_not_confirmed_by_saying_it():
 def test_words_that_come_more_than_once_give_the_shortest_span():
     from mr_mem_aml import moves as mv
 
-    said = ("please show an example of A, and please show an example of B, and please show an exa"
-            "mple of C")
+    said = (
+        "please show an example of A, and please show an example of B, and please show an exa"
+        "mple of C"
+    )
     s, e = mv.anchor(said, "please show an example", "of B")
     assert said[s:e] == "please show an example of B"
 
@@ -585,8 +588,10 @@ def test_words_that_come_more_than_once_give_the_shortest_span():
 def test_a_need_keeps_its_own_words_and_its_things_keep_theirs():
     from mr_mem_aml import moves as mv
 
-    said = ("Help me add sessions with Flask-Login, and use Marshmallow to validate, and use Flas"
-            "k-Cors for CORS")
+    said = (
+        "Help me add sessions with Flask-Login, and use Marshmallow to validate, and use Flas"
+        "k-Cors for CORS"
+    )
     raw = (
         "JSON:\n"
         '[{"turns":"M1","from":"Help me add sessions","to":"for CORS","text":"W'
@@ -607,12 +612,14 @@ def test_a_need_keeps_its_own_words_and_its_things_keep_theirs():
 
 
 def test_words_copied_from_code_with_bare_quotes_still_read():
-    raw = ("[{\n"
-           " \"turns\": \"M2\",\n"
-           " \"from\": \"def admin():\",\n"
-           " \"to\": \"Unauthorized\"}), 403\",\n"
-           " \"text\": \"gives code\"\n"
-           "}]")
+    raw = (
+        "[{\n"
+        ' "turns": "M2",\n'
+        ' "from": "def admin():",\n'
+        ' "to": "Unauthorized"}), 403",\n'
+        ' "text": "gives code"\n'
+        "}]"
+    )
     assert mv.extract_json_array(raw)[0]["to"] == 'Unauthorized"}), 403'
 
 
@@ -707,8 +714,13 @@ def test_threads_are_their_own_call_and_say_what_a_new_one_came_from():
 
 
 def _sb(turns):
-    return {"turns": turns, "text": "The person ...", "when": "before", "status": "confirmed",
-            "standing": False}
+    return {
+        "turns": turns,
+        "text": "The person ...",
+        "when": "before",
+        "status": "confirmed",
+        "standing": False,
+    }
 
 
 def test_chat_check_rejects_one_item_and_done():
@@ -735,15 +747,30 @@ def test_between_people_needs_two_named_speakers():
     assert not mv.between_people(chat + [{"role": "assistant", "text": "Sure."}])
 
 
-def test_a_closed_stretch_needs_its_summary():
-    from mr_mem_aml.moves import close_prompt, parse_close
+def test_the_open_stretch_is_cut_with_the_window():
+    from mr_mem_aml.moves import parse_stretches, stretch_prompt
 
-    assert "s1 [2024-03-15] The person asks" in close_prompt(
-        "en", [{"text": "The person asks", "time": "2024-03-15"}]
+    prompt = stretch_prompt(
+        "en", [{"text": "new", "time": ""}], [{"text": "old", "time": ""}], [], []
     )
-    assert parse_close({"summary": " Cause none, ... "}) == "Cause none, ..."
-    try:
-        parse_close({"summary": ""})
-        raise AssertionError("an empty summary must be asked again")
-    except ValueError:
-        pass
+    assert "o1 old\ns1 new" in prompt
+    carried = parse_stretches({"stretches": [{"sbs": "o1-s1", "closed": False}]}, 1, 0, 0, n_open=1)
+    assert carried["stretches"][0]["joins_open"] and carried["stretches"][0]["sbs"] == [0]
+    assert carried["open_summary"] == ""
+    turned = {
+        "stretches": [
+            {"sbs": "o1", "closed": True, "summary": "Cause none, ..."},
+            {"sbs": "s1", "closed": False},
+        ]
+    }
+    got = parse_stretches(turned, 1, 0, 0, n_open=1)
+    assert got["open_summary"] == "Cause none, ..." and not got["stretches"][0]["joins_open"]
+    for bad in (
+        {"stretches": [{"sbs": "o1", "closed": True}, {"sbs": "s1"}]},  # no summary
+        {"stretches": [{"sbs": "s1"}]},
+    ):  # the o's left out
+        try:
+            parse_stretches(bad, 1, 0, 0, n_open=1)
+            raise AssertionError(f"must be asked again: {bad}")
+        except ValueError:
+            pass
