@@ -1901,6 +1901,15 @@ class MemoryRuntime:
             )
             if self.core.canonical.get(b) is not None
         ]
+        hit_blocks = [
+            max(blocks, key=relevance)
+            for r in (records if policy.hit_anchors else ())
+            if (
+                blocks := [
+                    b for b in self._blocks_by_record.get(r, ()) if self.core.canonical.get(b)
+                ]
+            )
+        ]
         return line_read.compose(
             text,
             ranked,
@@ -1927,6 +1936,7 @@ class MemoryRuntime:
             ],
             threads=lambda: self.source.threads(user_id),
             thread_hits=thread_hits,
+            hit_blocks=hit_blocks,
         )
 
 

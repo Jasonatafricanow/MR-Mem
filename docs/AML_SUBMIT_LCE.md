@@ -24,7 +24,8 @@ mr-mem-aml serve --config examples/runtime.aml-lce.json
 | `keep_raw_on_compile_failure` | true | 编译失败也让 Add 返回 200，原文照样可检索（退回 P1） |
 | `compile_before_search` | true | 平台不会调 flush；Search 前先把这个用户还没收口的尾巴窗口编完（Search 最多 30 分钟） |
 | `compile_window` | 软 4 万 / 硬 8 万字符，自然断点收口 | 窗口收口的那次 Add 会等编译完成再返回（1–3 分钟） |
-| `line_read` | relay（原文命中 → SB → 沿承接取局部 + 精确原文片段），助手部分 `told`，`raw_fill: 100`，`fill_skip: shown`（默认） | LCE 与 P1 共用证据：线和片段在前，后面按 P1 检索顺序补满到 top_k=100，只跳过已经显示出来的原文（SB 只显示摘要，它的来源原文照补）。mini 集同一份向量对比见技术报告。段承接（`carry: threads`）保留为开关、默认关 |
+| 编译流程 | `step1: topic`，`layer2: stretches`：每窗 2 次调用（SB 一次、段一次） | 定义见 docs/LCE_FROZEN.md：SB 是在聊的那件事，段摘要按 前因-谁-何时-做了什么-后果 写一次 |
+| `line_read` | relay（原文命中 → SB → Line 上的局部，只带检索命中的原文），助手部分 `told`，全部段摘要（`thread_k: 60`、`thread_sbs: 0`），`marks: false`，`raw_fill: 0` | 用户 10-31 定：不补位，证据已够（原文 → SB → Line、段摘要 → SB → 原文两条路）；晨昏线标记只在记忆侧用，不给答题模型看。holdout 60 题两遍 50.3，P1 47.2；每题约 8.5 万字符 |
 
 ## 验证（holdout beam_100k 60 题，DeepSeek 答题，每组两遍）
 
@@ -33,7 +34,9 @@ mr-mem-aml serve --config examples/runtime.aml-lce.json
 | P1（三算法融合检索，原文） | 47.2 | 4.8 万 |
 | LCE + 融合（v11 编译） | 56.3 | 4.8 万 |
 | LCE 用段承接 + 融合（v13 编译） | 54.2 | 5.0 万 |
-| **最终配置（v14 编译 + relay 读出）** | **58.0**（56.9 / 59.1） | 2.0 万 |
+| v14 编译 + relay 读出（10-30，豆包向量） | 58.0（56.9 / 59.1） | 2.0 万 |
+
+10-31 换成 qwen3.7 flash 向量（带缓存）和 ds1017 编译后重测，同一份缓存向量：P1 47.2；v14 + 补位 50.2；**最终配置（topic + 段，全部段摘要，不补位）50.3**（51.4 / 49.2），编译 237 秒、68 次调用。
 
 pm2_32k（33 题）：和 P1 打平（56.1 / 57.6）。
 

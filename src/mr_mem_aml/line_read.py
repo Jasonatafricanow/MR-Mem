@@ -85,6 +85,10 @@ class LineReadPolicy:
     marks: bool = True
     # the raw an SB shown brings: "all" its words; "hits" only those the raw search hit
     raw_of_sb: str = "all"
+    # every raw hit brings its SB (of a message's SBs the one the question is about) as an anchor,
+    # past ``sbs``: without a fill a hit whose SB ranks below ``sbs`` was lost (2026-10-31, BEAM:
+    # 128 of the person's 1800 top-30 hits, 12 in the top 10)
+    hit_anchors: bool = False
     raw_full: int = (
         0  # > 0: after the Lines, this many raw hits whole in raw-search order (no snippets,
     )
@@ -383,6 +387,7 @@ def compose(
     everything: Callable[[], Sequence[str]] = lambda: (),
     threads: Callable[[], dict[str, dict]] = dict,
     thread_hits: Sequence[str] = (),
+    hit_blocks: Sequence[str] = (),
 ) -> list[dict]:
     """Evidence items: the person's standing instructions and preferences first, whatever the
     question (they apply to what is asked, not to what it is about), then Line pieces ("line"),
@@ -402,14 +407,21 @@ def compose(
         return _when(m.time, policy.tz_minutes, m.place, m.session, lang)
 
     top = list(ranked[: policy.sbs])
+    if policy.hit_anchors:  # ``hit_blocks``: the SB of each raw hit, in raw-search order
+        top = list(dict.fromkeys([*top, *hit_blocks]))
     items, seen = [], set()
+
+    def unmarked(text: str) -> str:  # the terminator is the memory side's own (docs/LCE_FROZEN.md)
+        first = text.split("\n")[0]
+        return text if policy.marks else STAMP.sub("", first).rstrip() + text[len(first) :]
+
     if standing:
         chain = sorted(standing, key=lambda b: (*_order(step(b)), b))
         text = (
             STANDING[lang]
             + "\n"
             + "\n".join(
-                f"[{at_b(b)}] {step(b).text}".replace("[ ", "[", 1).replace("[] ", "", 1)
+                f"[{at_b(b)}] {unmarked(step(b).text)}".replace("[ ", "[", 1).replace("[] ", "", 1)
                 for b in chain
             )
         )
@@ -428,9 +440,8 @@ def compose(
         b: str, whole: bool = True
     ) -> str:  # a step between two hits gives its first line only
         text = step(b).text if whole else step(b).text.split("\n")[0]
-        if not policy.marks:  # the terminator is the memory side's own (docs/LCE_FROZEN.md)
-            text = STAMP.sub("", text.split("\n")[0]).rstrip() + text[len(text.split("\n")[0]) :]
-            return f"[{at_b(b)}] {text}".replace("[ ", "[", 1).replace("[] ", "", 1)
+        if not policy.marks:
+            return f"[{at_b(b)}] {unmarked(text)}".replace("[ ", "[", 1).replace("[] ", "", 1)
         stamp = STAMP.search(text.split("\n")[0])
         if stamp:  # it carries its own status as said; the Line adds only what came later
             later = (
