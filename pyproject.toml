@@ -12,6 +12,7 @@ authors = [{name = "Jasonatafricanow"}]
 dependencies = []
 
 [project.optional-dependencies]
+aml = ["numpy>=1.26,<3", "qdrant-client==1.19.0"]
 vector = [
     "qdrant-client==1.19.0",
     "fastembed==0.8.0",

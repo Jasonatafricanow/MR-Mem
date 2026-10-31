@@ -237,6 +237,8 @@ class _Server(ThreadingHTTPServer):
 
 def build_server(config: RuntimeConfig, host: RuntimeHost) -> _Server:
     token = os.environ.get(config.auth_token_env) if config.auth_token_env else None
+    if config.auth_token_env and not (token and token.strip()):
+        raise ValueError("configured authentication environment variable is missing or empty")
     return _Server((config.host, config.port), make_handler(host, token))
 
 

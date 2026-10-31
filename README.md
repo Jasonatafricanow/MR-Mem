@@ -1,5 +1,43 @@
 # MR-Mem
 
+[中文说明](README.zh-CN.md)
+
+## Start here
+
+Python 3.12+ and Git are required. From the repository root:
+
+```bash
+python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+# PowerShell: .\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[aml,lce]"
+python scripts/smoke_offline.py
+```
+
+Installation downloads dependencies. The smoke test uses synthetic messages, temporary
+storage and loopback HTTP only: **no model calls or model charges**. It checks Add, Search
+and user isolation, not semantic quality. Core-only users can install with `pip install -e .`.
+
+To connect real providers, copy `examples/runtime.aml-lce.json` to `runtime.json`, edit the
+endpoints/models for your account and set the named environment variables. `.env.example`
+lists names only; `.env` files are not loaded automatically. Set `MRMEM_AML_TOKEN` to your
+own service access token, then run `mr-mem-aml serve --config runtime.json`. Clients use
+`Authorization: Bearer <service-token>`. Default binding is loopback.
+
+Provider-backed Add/Search and `check` may incur charges. `check --check-decision` also
+probes the optional decision provider. `/health` itself is passive. Decision failures and
+the default 15-second total deadline leave the ordinary retrieval response available.
+Remove `decision` from the configuration to disable that provider.
+
+See [deployment](docs/AML_SUBMIT_LCE.md), [HTTP/configuration](docs/AML.md),
+[frozen definitions](docs/LCE_FROZEN.md), and [privacy](SECURITY.md).
+Reported benchmark scores are development measurements, not independent validation.
+
+For development: `pip install -e ".[dev,aml,lce]"`, then `ruff check src tests`,
+`python -m pytest tests`, and `python scripts/smoke_offline.py`.
+
+## Architecture
+
 Standalone sidecar semantic-memory runtime extracted from Mind Runtime.
 
 MR-Mem does **not** replace an Agent's native session/history database. When the
@@ -122,7 +160,7 @@ from pathlib import Path
 
 from mr_mem import MemoryCore
 
-with MemoryCore(Path("memory.sqlite"), read_only=True) as memory:
+with MemoryCore(Path("memory.sqlite")) as memory:
     rows = memory.load_all()
 ```
 

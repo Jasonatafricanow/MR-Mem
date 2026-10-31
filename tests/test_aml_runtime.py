@@ -747,3 +747,15 @@ def test_a_thread_begun_off_another_threads_step_keeps_where_and_why(tmp_path):
     }
     assert "origin" not in store.threads("u")["t:m1"]
     store.close()
+
+
+def test_configured_auth_cannot_silently_become_public(tmp_path, monkeypatch):
+    from mr_mem_aml.server import build_server
+    config = RuntimeConfig(data_dir=tmp_path, compiler={"type": "command", "argv": ["x"]},
+                           auth_token_env="MRMEM_TEST_MISSING_TOKEN")
+    monkeypatch.delenv("MRMEM_TEST_MISSING_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="authentication"):
+        build_server(config, None)
+    monkeypatch.setenv("MRMEM_TEST_MISSING_TOKEN", " ")
+    with pytest.raises(ValueError, match="authentication"):
+        build_server(config, None)

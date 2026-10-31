@@ -5,11 +5,11 @@
 ## 起服务
 
 ```bash
-pip install -e .[lce]
+pip install -e ".[aml,lce]"
 export QWEN_PLAN_API_KEY=...    # 阿里百炼 Token Plan（deepseek-v4.1-flash-1017 编译）
 export DASHSCOPE_API_KEY=...    # 阿里百炼（qwen3.7-text-embedding-flash 向量）
 export MRMEM_AML_TOKEN=...      # Add/Search 的鉴权 token（Bearer / Token / X-Api-Key 都认）
-mr-mem-aml check --config examples/runtime.aml-lce.json   # 先自检编译模型和向量
+mr-mem-aml check --config examples/runtime.aml-lce.json   # 会调用编译和向量服务，可能计费
 mr-mem-aml serve --config examples/runtime.aml-lce.json
 ```
 
@@ -51,3 +51,18 @@ pm2_32k（33 题）：和 P1 打平（56.1 / 57.6）。
 - 人在消息里贴整段文档、群聊导出时，第一步可能逐行切、撞 1.6 万输出上限，重试 3 次后该窗只留原文（退回 P1）；费 token，不影响可检索。
 - 正式题库的编译总时长和费用取决于题库总量和并行度。ds1017 实测：单路约每分钟 2–3 万历史字符，长历史每个历史字符约 1.2 个输入 token（beam_1m 422 万字符：3 小时、519 万输入 + 87 万输出 token）。
 - 答题模型由平台锁定（官方脚本默认 Qwen3-14B），本地用的是 DeepSeek；弱答题模型下的效果待测。
+
+
+## 发布版本的运行保护
+
+- 不补位时，没有可用 SB 的原文命中仍直接返回，不会因编译失败变成空结果。
+- 决策旁路不再截短消息后断言缺失；缺失判断只检查完整的命中消息，总计超过
+  15000 字符则不加说明。矛盾候选只用完整且不超过 6000 字符的消息，引用与判断
+  使用同一份文本，并带来源 ID 和已有消息时间；肯定和否定说法仍须比较时间与范围。
+- `decision.total_timeout` 默认 15 秒，包含排队、调用与退避的等待；到期返回基础读出。
+  已发出的底层请求可能稍后才结束，但不会再发起过期重试。
+- `/health.decision` 给出配置状态、请求/说明/失败/超时计数及最近结果；不主动调用模型。
+  `check --check-decision` 显式开启额外服务探测，可能计费。
+- `auth_token_env` 已配置而环境变量缺失或为空时，启动失败，不会悄悄变成匿名服务。
+- 免费检查入口为 `python scripts/smoke_offline.py`。上述保护只经过本地模拟与回归测试，
+  尚未重新付费测分；本文历史分数不能直接当作修改后成绩。

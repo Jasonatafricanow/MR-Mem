@@ -8,3 +8,34 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Local credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+runtime.json
+runtime.private*.json
+*.local.json
+
+# Conversation stores, embeddings, evaluations and diagnostic output
+data/
+cache/
+logs/
+results/
+datasets/
+private/
+.scratch/
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+*.log
+*.bak
+*.dump
+*.zip
+*.tar.gz
+.coverage
+htmlcov/

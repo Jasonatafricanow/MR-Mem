@@ -62,7 +62,7 @@ GET  /health
 ## 4. 配置与启动
 
 ```bash
-python -m pip install -e ".[lce,vector]"      # vector 仅在启用向量召回时需要
+python -m pip install -e ".[aml,lce,vector]"      # vector 仅在启用向量召回时需要
 mr-mem-aml check --config runtime.json        # 预检：LCE、编译器、embedding
 mr-mem-aml serve --config runtime.json
 ```
