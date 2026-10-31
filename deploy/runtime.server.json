@@ -52,7 +52,8 @@
     "thread_sbs": 0,
     "marks": false,
     "raw_of_sb": "hits",
-    "hit_anchors": true
+    "hit_anchors": true,
+    "thread_span": true
   },
   "decision": {
     "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",

@@ -35,7 +35,7 @@
   "line_read": {"raw_k": 30, "sb_k": 30, "sbs": 16, "code_diff": true, "projection": "relay",
                 "reach": 3, "extend": 32, "assistant": "told", "raw_fill": 0,
                 "thread_k": 60, "thread_sbs": 0, "marks": false, "raw_of_sb": "hits",
-                "hit_anchors": true},
+                "hit_anchors": true, "thread_span": true},
   "decision": {"base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
                "api_key_env": "QWEN_PLAN_API_KEY", "model": "decision-model-preview"},
   "read_policy": {"lce_limit": 5, "thread_limit": 3, "support_limit": 4, "source_limit": 0,

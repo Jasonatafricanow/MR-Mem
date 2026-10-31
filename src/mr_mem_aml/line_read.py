@@ -121,6 +121,11 @@ class LineReadPolicy:
     # ``drill_sbs`` SBs nearest the question, and the words those SBs point to
     drill: int = 0
     drill_sbs: int = 4
+    # each stretch summary given with where it sits, its first and last step (session, position,
+    # message time): a stretch carries the time range of its messages, so that the course can be
+    # put on the time line (docs/LCE_FROZEN.md 4); without it an old value in one summary and the
+    # new one in another could not be told apart
+    thread_span: bool = False
     outline: bool = (
         False  # also the whole history's outline: each thread (a stretch of a Line) by its
     )
@@ -516,6 +521,15 @@ def compose(
             if n < policy.drill:  # the stretch found by its summary leads down to its SBs' words
                 drilled.extend(near_)
             seen |= set(near_)
+            span = ""
+            if policy.thread_span:  # where the stretch sits: its first and its last step
+                here = sorted(
+                    (b for b in known[t]["members"] if step(b).text),
+                    key=lambda b: (*_order(step(b)), b),
+                )
+                if here:
+                    a, z = at_b(here[0]), at_b(here[-1])
+                    span = f"[{a}{' - ' + z if z != a else ''}] "
             items.append(
                 {
                     "id": f"thread:{t}",
@@ -524,6 +538,7 @@ def compose(
                     "occurred_at": step(near_[0]).time if near_ else None,
                     "content": THREAD[lang]
                     + "\n"
+                    + span
                     + known[t]["summary"]
                     + ("\n" + show(near_) if near_ else ""),
                 }
