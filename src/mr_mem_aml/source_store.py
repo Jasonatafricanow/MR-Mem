@@ -360,6 +360,16 @@ class AmlSourceStore:
             ).fetchone()
         return None if row is None else (row[0], row[1], row[2], json.loads(row[3]))
 
+    def pending_size(self, user_id: str) -> tuple[int, int]:
+        """(characters, messages) of a user's messages no compile window has taken yet."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(content)),0), COUNT(*) FROM messages WHERE user_id=? "
+                "AND seq > (SELECT COALESCE(MAX(last_seq),0) FROM windows WHERE user_id=?)",
+                (user_id, user_id),
+            ).fetchone()
+        return int(row[0]), int(row[1])
+
     def pending(self, user_id: str) -> tuple[tuple[int, RawMessage], ...]:
         """(seq, message) of a user's messages no compile window has taken yet."""
         with self._lock:

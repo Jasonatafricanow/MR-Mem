@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -52,6 +53,7 @@ class RuntimeHost:
         # stored and searchable; a user's due windows compile here, one user at a time per user
         self._background = getattr(self.runtime.config, "background_compile", None)
         self._bg: dict[str, dict] = {}
+        self._closing = False
         self._bg_pool = (
             ThreadPoolExecutor(max(2, 2 * concurrency), thread_name_prefix="mr-mem-compile")
             if self._background
@@ -80,6 +82,7 @@ class RuntimeHost:
             request = job if isinstance(job, dict) else job.request
             if isinstance(payload, dict) and isinstance(payload.get("user_id"), str):
                 self._kick(payload["user_id"])
+                self._backpressure(payload["user_id"])
             if isinstance(job, dict):
                 return job
             from mr_mem_aml.runtime import _echo
@@ -126,6 +129,30 @@ class RuntimeHost:
         with self._compile_slots:
             return call[0](*call[1:])
 
+    def _backpressure(self, user: str) -> None:
+        """background_compile.max_backlog: while more than this many characters of the user's
+        history wait for a compile window, the Add (already stored) waits up to add_wait seconds
+        and then answers 503; AML retries it (Add: up to 32 attempts), the retry replays as done.
+        Ingestion so keeps the pace of compiling, as when Add compiled itself: otherwise a long
+        history was all written in minutes, and its Searches came while most of it was still
+        uncompiled (a window takes ~20 s; a 1M-token history has ~60)."""
+        limit = (self._background or {}).get("max_backlog")
+        if not limit:
+            return
+        # in messages as well: short messages close windows at max_messages long before the
+        # characters reach the limit
+        cap = 2 * int((self.runtime.config.compile_window or {}).get("max_messages") or 10**9)
+        deadline = time.monotonic() + float(self._background.get("add_wait", 12))
+
+        def over() -> bool:
+            chars, count = self.call(self.runtime.source.pending_size, user)
+            return chars > limit or count > cap
+
+        while over():
+            if time.monotonic() >= deadline:
+                raise RetryableError("compiling this user's earlier history; retry the Add")
+            time.sleep(0.5)
+
     def _warm(self, payload: object) -> None:
         """The query's vector, fetched on this request thread into the embedding cache before
         the Search runs on the owner thread (which then reads it locally): one embedding call
@@ -154,6 +181,10 @@ class RuntimeHost:
         no Add after it for ``idle_tail`` seconds has the tail compiled, so a Search seldom
         finds anything left to compile."""
         with self._guard:
+            if self._closing:  # nothing new is scheduled once the host is closing
+                done = threading.Event()
+                done.set()
+                return done
             state = self._bg.setdefault(
                 user,
                 {
@@ -195,7 +226,7 @@ class RuntimeHost:
                     continue
                 state["running"] = False
                 state["idle"].set()
-                if not final:  # no Add for a while: compile the tail too
+                if not final and not self._closing:  # no Add for a while: compile the tail
                     timer = threading.Timer(
                         float(self._background.get("idle_tail", 30)), self._kick, (user, True)
                     )
@@ -284,6 +315,7 @@ class RuntimeHost:
     def close(self) -> None:
         if self._bg_pool is not None:
             with self._guard:
+                self._closing = True
                 for state in self._bg.values():
                     if state["timer"] is not None:
                         state["timer"].cancel()
@@ -338,13 +370,40 @@ def make_handler(host: RuntimeHost, token: str | None):
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return self._send(400, {"error": "invalid JSON"})
             route = self.path.rstrip("/")
+            started = time.monotonic()
+            user = payload.get("user_id") if isinstance(payload, dict) else None
+
+            def done(body: dict) -> None:  # one line per request: who, how long, what came back
+                kinds = ""
+                if route == "/search":
+                    count: dict[str, int] = {}
+                    for item in body.get("data", []):
+                        i = str(item.get("id", ""))
+                        k = (
+                            "thread"
+                            if i.startswith("thread:")
+                            else "raw"
+                            if i.startswith("raw:")
+                            else i
+                            if i in ("standing", "decision-note")
+                            else "line"
+                        )
+                        count[k] = count.get(k, 0) + 1
+                    kinds = " " + " ".join(f"{k}={v}" for k, v in sorted(count.items()))
+                log.info(
+                    "%s user=%s status=200 ms=%d%s",
+                    route,
+                    user,
+                    (time.monotonic() - started) * 1000,
+                    kinds,
+                )
+                self._send(200, body)
+
             try:
                 if route == "/add":
-                    return self._send(200, host.add(payload))
+                    return done(host.add(payload))
                 if route == "/search":
-                    return self._send(
-                        200, host.search(payload, self.headers.get("X-MRMem-Search-Mode"))
-                    )
+                    return done(host.search(payload, self.headers.get("X-MRMem-Search-Mode")))
                 if route == "/admin/flush":
                     return self._send(200, host.flush())
                 return self._send(404, {"error": "not found"})
@@ -354,8 +413,14 @@ def make_handler(host: RuntimeHost, token: str | None):
             except InvalidRequest as exc:
                 return self._send(400, {"error": str(exc)})
             except RetryableError as exc:
-                log.warning("retryable failure on %s: %s", route, exc)
-                return self._send(503, {"error": str(exc)}, {"Retry-After": "30"})
+                log.warning(
+                    "%s user=%s status=503 ms=%d: %s",
+                    route,
+                    user,
+                    (time.monotonic() - started) * 1000,
+                    exc,
+                )
+                return self._send(503, {"error": str(exc)}, {"Retry-After": "10"})
             except Exception as exc:  # noqa: BLE001 - HTTP boundary
                 log.exception("unhandled failure on %s", route)
                 return self._send(500, {"error": f"{type(exc).__name__}: {exc}"})

@@ -443,3 +443,46 @@ def test_a_history_past_max_chars_per_user_keeps_raw_only(tmp_path):
         assert rt.source.users_with_pending() == ()  # capped windows are done, not left pending
     finally:
         rt.close()
+
+
+def test_backpressure_holds_an_add_while_the_users_backlog_is_compiling(tmp_path):
+    import time
+
+    from mr_mem_aml.runtime import RetryableError
+    from mr_mem_aml.server import RuntimeHost
+
+    backend = SlowBackend(1.0)
+    config = RuntimeConfig(
+        data_dir=tmp_path / "data",
+        compiler={"type": "command", "argv": ["x"]},
+        path_a_engine="tree",
+        compile_window={"soft": 3, "hard": 5},
+        compile_before_search=True,
+        background_compile={
+            "search_wait": 0.2,
+            "idle_tail": 0.1,
+            "max_backlog": 4,
+            "add_wait": 0.3,
+        },
+    )
+    host = RuntimeHost(
+        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+    )
+    messages = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"a{i}"} for i in range(6)
+    ]
+    payload = {"request_id": "r1", "user_id": "a", "session_id": "s", "messages": messages}
+    try:
+        with pytest.raises(RetryableError):  # stored, but the backlog is still compiling
+            host.add(payload)
+        deadline = time.monotonic() + 10
+        while True:  # AML retries the same Add; it answers once the backlog is down
+            try:
+                got = host.add(payload)
+                break
+            except RetryableError:
+                assert time.monotonic() < deadline
+                time.sleep(0.2)
+        assert got["request_id"] == "r1"
+    finally:
+        host.close()
