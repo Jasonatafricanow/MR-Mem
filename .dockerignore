@@ -1,0 +1,17 @@
+# Allowlist: credentials, Git history, local data and logs never enter build context.
+**
+!Dockerfile
+!pyproject.toml
+!README.md
+!requirements-server.txt
+!src/
+!src/**
+!deploy/
+!deploy/constraints.txt
+!deploy/runtime.server.json
+!scripts/
+!scripts/smoke_offline.py
+!scripts/container_entrypoint.py
+**/__pycache__/
+**/*.pyc
+**/*.egg-info/

@@ -192,3 +192,5 @@ Memory). It is host-neutral: the host keeps raw text (ADR-0001) and supplies the
 semantic compiler and retrieval stack. See [docs/PATH_A.md](docs/PATH_A.md).
 The AML evaluation adapter (`mr_mem_aml`, this branch only) is described in
 [docs/AML.md](docs/AML.md).
+
+For a server deployment, use [Docker Compose deployment](docs/DEPLOYMENT.md).

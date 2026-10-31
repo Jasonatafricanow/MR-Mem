@@ -21,3 +21,12 @@ jobs:
       - run: pytest -rs tests/test_lce_path_a.py tests/test_path_a_read.py tests/test_path_a_ingest.py tests/test_aml_runtime.py
       - run: pytest
       - run: python scripts/smoke_offline.py
+
+  docker-offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build deployable image
+        run: docker build -t mr-mem:test .
+      - name: Verify AML HTTP contract without providers
+        run: docker run --rm --entrypoint python mr-mem:test scripts/smoke_offline.py

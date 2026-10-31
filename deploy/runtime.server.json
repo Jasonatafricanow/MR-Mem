@@ -1,0 +1,75 @@
+{
+  "data_dir": "/var/lib/mrmem",
+  "compiler": {
+    "type": "openai",
+    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "model": "deepseek-v4.1-flash-1017",
+    "api_key_env": "QWEN_PLAN_API_KEY",
+    "max_tokens": 16000,
+    "extra_body": {
+      "enable_thinking": false
+    },
+    "timeout": 300
+  },
+  "embedding": {
+    "type": "openai",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3.7-text-embedding-flash",
+    "dimension": 1024,
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "send_dimensions": true,
+    "cache_path": "/var/lib/mrmem/embed_cache.sqlite"
+  },
+  "search_mode": "path_a",
+  "lce_enabled": true,
+  "raw_base": true,
+  "append_options": true,
+  "skip_rejected_compiles": true,
+  "keep_raw_on_compile_failure": true,
+  "compile_before_search": true,
+  "path_a_engine": "tree",
+  "placement": "moves",
+  "step1": "topic",
+  "layer2": "stretches",
+  "scene": "chat",
+  "compile_window": {
+    "soft": 40000,
+    "hard": 80000,
+    "measure": "chars"
+  },
+  "compile_concurrency": 8,
+  "line_read": {
+    "raw_k": 30,
+    "sb_k": 30,
+    "sbs": 16,
+    "code_diff": true,
+    "projection": "relay",
+    "reach": 3,
+    "extend": 32,
+    "assistant": "told",
+    "raw_fill": 0,
+    "thread_k": 60,
+    "thread_sbs": 0,
+    "marks": false,
+    "raw_of_sb": "hits",
+    "hit_anchors": true
+  },
+  "decision": {
+    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "api_key_env": "QWEN_PLAN_API_KEY",
+    "model": "decision-model-preview",
+    "total_timeout": 15
+  },
+  "read_policy": {
+    "lce_limit": 5,
+    "thread_limit": 3,
+    "support_limit": 4,
+    "source_limit": 0,
+    "include_source_text": false,
+    "support_rank_window": 10,
+    "min_cosine": 0.6
+  },
+  "auth_token_env": "MRMEM_AML_TOKEN",
+  "host": "0.0.0.0",
+  "port": 8765
+}

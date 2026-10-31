@@ -60,3 +60,5 @@ python scripts/smoke_offline.py
 - [隐私与发布规则](SECURITY.md)
 
 仓库不包含会话数据库、评测原始数据、供应商密钥或模型缓存。外部服务配置和本地评测成绩不能保证其他账号或数据集上的效果。
+
+服务器拉取部署见 [Docker Compose 部署说明](docs/DEPLOYMENT.md)。
