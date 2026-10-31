@@ -93,9 +93,9 @@ _SLOTS = threading.Semaphore(16)  # System One takes about 20 calls a second per
 
 
 class DecisionBypass:
-    """``config``: {"base_url" or "base_url_env": the Bailian workspace's OpenAI-compatible base
-    (System One is served there only, not on the public dashscope base), "api_key_env", "model",
-    "timeout", "workers", "hits"}; the endpoint is that base + "/systemone"."""
+    """``config``: {"base_url" or "base_url_env": an OpenAI-compatible base that serves System One
+    (the Token Plan base, or a Bailian workspace's; not the public dashscope base), "api_key_env",
+    "model", "timeout", "workers", "hits"}; the endpoint is that base + "/systemone"."""
 
     def __init__(self, config: dict) -> None:
         base = config.get("base_url") or os.environ.get(config.get("base_url_env", ""), "")

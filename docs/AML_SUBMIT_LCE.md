@@ -9,7 +9,6 @@ pip install -e .[lce]
 export QWEN_PLAN_API_KEY=...    # 阿里百炼 Token Plan（deepseek-v4.1-flash-1017 编译）
 export DASHSCOPE_API_KEY=...    # 阿里百炼（qwen3.7-text-embedding-flash 向量）
 export MRMEM_AML_TOKEN=...      # Add/Search 的鉴权 token（Bearer / Token / X-Api-Key 都认）
-export DECISION_BASE_URL=...    # 百炼工作空间的 OpenAI 兼容地址（https://ws-…maas.aliyuncs.com/compatible-mode/v1）；决策模型只在工作空间地址上有
 mr-mem-aml check --config examples/runtime.aml-lce.json   # 先自检编译模型和向量
 mr-mem-aml serve --config examples/runtime.aml-lce.json
 ```
@@ -25,7 +24,7 @@ mr-mem-aml serve --config examples/runtime.aml-lce.json
 | `keep_raw_on_compile_failure` | true | 编译失败也让 Add 返回 200，原文照样可检索（退回 P1） |
 | `compile_before_search` | true | 平台不会调 flush；Search 前先把这个用户还没收口的尾巴窗口编完（Search 最多 30 分钟） |
 | `compile_window` | 软 4 万 / 硬 8 万字符，自然断点收口 | 窗口收口的那次 Add 会等编译完成再返回（1–3 分钟） |
-| `decision` | 百炼 `decision-model-preview`（System One），Search 时旁路判断，读出最前面加一条说明 | 用户 10-31 定。两条规则（mr_mem_aml/decision.py）：问"我有没有做过 X"，而人自己的命中消息里既说做过、又说从没做过 → 引用两句原话；问人自己的某个具体信息，而人从没说过（只在助手的建议里，或根本没有）→ 说明这一点。只判断不改证据，不写进编译产物；调用失败就不加。holdout 60 题两遍：52.6 → 58.5（矛盾 8 → 50，拒答 50 → 67）。每次 Search 1 次分流调用，是否题再加至多 30 次、具体信息题再加 1 次；全进程限 16 路并发（工作空间约 20 次/秒）。不设 `DECISION_BASE_URL` 时服务起不来，要关掉就删掉这一项 |
+| `decision` | `decision-model-preview`（System One），走 Token Plan（`QWEN_PLAN_API_KEY`，和编译同一个 key），Search 时旁路判断，读出最前面加一条说明 | 用户 10-31 定。两条规则（mr_mem_aml/decision.py）：问"我有没有做过 X"，而人自己的命中消息里既说做过、又说从没做过 → 引用两句原话；问人自己的某个具体信息，而人从没说过（只在助手的建议里，或根本没有）→ 说明这一点。只判断不改证据，不写进编译产物；调用失败就不加。holdout 60 题两遍：52.6 → 58.5（矛盾 8 → 50，拒答 50 → 67）。每次 Search 1 次分流调用，是否题再加至多 30 次、具体信息题再加 1 次；全进程限 16 路并发。要关掉就删掉这一项 |
 | 编译流程 | `step1: topic`，`layer2: stretches`：每窗 2 次调用（SB 一次、段一次） | 定义见 docs/LCE_FROZEN.md：SB 是在聊的那件事，段摘要按 前因-谁-何时-做了什么-后果 写一次 |
 | `line_read` | relay（原文命中 → SB → Line 上的局部，只带检索命中的原文），助手部分 `told`，全部段摘要（`thread_k: 60`、`thread_sbs: 0`），`marks: false`，`raw_fill: 0` | 用户 10-31 定：不补位，证据已够（原文 → SB → Line、段摘要 → SB → 原文两条路）；晨昏线标记只在记忆侧用，不给答题模型看。holdout 60 题两遍 50.3，P1 47.2；每题约 8.5 万字符 |
 
