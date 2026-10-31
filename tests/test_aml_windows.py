@@ -519,3 +519,52 @@ def test_a_window_with_no_sb_skips_the_stretch_step(tmp_path):
         assert rt.compile_capped > 0 and rt.source.users_with_pending() == ()
     finally:
         rt.close()
+
+
+def test_add_fetches_its_vectors_off_the_owner_thread(tmp_path):
+    # on the owner thread one Add's embedding call held every other user's Add and Search
+    # behind it (Smoke: Adds up to 27 seconds, past the gateway's 20)
+    import threading
+
+    from mr_mem_aml.server import RuntimeHost
+
+    class Recording:
+        def __init__(self):
+            self.cache, self.threads = {}, []
+
+        def embed(self, text):
+            return self.embed_many([text])[0]
+
+        def embed_many(self, texts):
+            for text in texts:
+                if text not in self.cache:
+                    self.threads.append(threading.current_thread().name)
+                    self.cache[text] = (1.0, float(len(text)))
+            return [self.cache[t] for t in texts]
+
+    emb = Recording()
+    config = RuntimeConfig(
+        data_dir=tmp_path / "data",
+        compiler={"type": "command", "argv": ["x"]},
+        path_a_engine="tree",
+        raw_base=True,
+        compile_window={"soft": 3, "hard": 5},
+        compile_before_search=True,
+        background_compile={"search_wait": 0.2, "idle_tail": 0.1},
+    )
+
+    def build():
+        rt = MemoryRuntime(config, compiler=SemanticCompiler(TreeBackend(), schema="tree"))
+        rt.embedding = rt.raw.embedding = emb  # the raw arm's vectors, no dense index
+        return rt
+
+    host = RuntimeHost(build)
+    messages = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"line {i}"} for i in range(4)
+    ]
+    try:
+        host.add({"request_id": "r1", "user_id": "a", "session_id": "s", "messages": messages})
+        assert emb.threads and not any(t.startswith("mr-mem-owner") for t in emb.threads)
+        assert len(host.runtime.raw._users["a"].ids) == 4  # indexed with the fetched vectors
+    finally:
+        host.close()

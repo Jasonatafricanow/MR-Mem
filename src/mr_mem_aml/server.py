@@ -75,6 +75,8 @@ class RuntimeHost:
 
     def add(self, payload: object) -> dict:
         runtime = self.runtime
+        arrived = time.monotonic()
+        self._warm_add(payload)
         if self._background and runtime.config.compile_window is not None:
             # stored and searchable before this returns (AML's Add contract); the compile of the
             # windows now due goes on in the background (a 20-second gateway cut synchronous Adds)
@@ -82,7 +84,7 @@ class RuntimeHost:
             request = job if isinstance(job, dict) else job.request
             if isinstance(payload, dict) and isinstance(payload.get("user_id"), str):
                 self._kick(payload["user_id"])
-                self._backpressure(payload["user_id"])
+                self._backpressure(payload["user_id"], arrived)
             if isinstance(job, dict):
                 return job
             from mr_mem_aml.runtime import _echo
@@ -129,10 +131,11 @@ class RuntimeHost:
         with self._compile_slots:
             return call[0](*call[1:])
 
-    def _backpressure(self, user: str) -> None:
+    def _backpressure(self, user: str, arrived: float) -> None:
         """background_compile.max_backlog: while more than this many characters of the user's
-        history wait for a compile window, the Add (already stored) waits up to add_wait seconds
-        and then answers 503; AML retries it (Add: up to 32 attempts), the retry replays as done.
+        history wait for a compile window, the Add (already stored) waits until add_wait seconds
+        after it arrived and then answers 503 (counted from the arrival: counted from the store,
+        an Add whose store took 10 seconds ran past the gateway's 20); AML retries it (Add: up to 32 attempts), the retry replays as done.
         Ingestion so keeps the pace of compiling, as when Add compiled itself: otherwise a long
         history was all written in minutes, and its Searches came while most of it was still
         uncompiled (a window takes ~20 s; a 1M-token history has ~60)."""
@@ -142,7 +145,7 @@ class RuntimeHost:
         # in messages as well: short messages close windows at max_messages long before the
         # characters reach the limit
         cap = 2 * int((self.runtime.config.compile_window or {}).get("max_messages") or 10**9)
-        deadline = time.monotonic() + float(self._background.get("add_wait", 12))
+        deadline = arrived + float(self._background.get("add_wait", 12))
 
         def over() -> bool:
             chars, count = self.call(self.runtime.source.pending_size, user)
@@ -152,6 +155,25 @@ class RuntimeHost:
             if time.monotonic() >= deadline:
                 raise RetryableError("compiling this user's earlier history; retry the Add")
             time.sleep(0.5)
+
+    def _warm_add(self, payload: object) -> None:
+        """The vectors of an Add's raw units, fetched on this request thread into the embedding
+        cache before the store runs on the owner thread: there the embedding call held every
+        other user's Add and Search behind it (Smoke: Adds up to 27 seconds, cut by the gateway)."""
+        embedding = self.runtime.embedding
+        if self.runtime.raw is None or embedding is None or not hasattr(embedding, "embed_many"):
+            return
+        from mr_mem_aml.raw_arm import unit_texts
+        from mr_mem_aml.runtime import validate_add
+
+        try:
+            texts = unit_texts(validate_add(payload)["messages"])
+        except InvalidRequest:
+            return  # the store answers it
+        try:
+            embedding.embed_many(texts)
+        except Exception as exc:  # noqa: BLE001 - the store embeds it itself
+            log.warning("add vectors not prefetched: %s", type(exc).__name__)
 
     def _warm(self, payload: object) -> None:
         """The query's vector, fetched on this request thread into the embedding cache before

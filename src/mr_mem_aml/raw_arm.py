@@ -62,26 +62,37 @@ class RawUnit:
     occurred_at: datetime
 
 
+def _pieces(pairs):
+    """(index of the message, unit text) per unit, from (role, content) in request order."""
+    seen: set[str] = set()
+    for n, (role, content) in enumerate(pairs):
+        label = "User" if role == "user" else "Assistant"
+        for piece in split_content(f"{label}: {content}"):
+            if piece not in seen:
+                seen.add(piece)
+                yield n, piece
+
+
 def units_for(request_id: str, messages) -> list[RawUnit]:
     """P1 unit construction for one Add request (messages in request order)."""
     out: list[RawUnit] = []
-    seen: set[str] = set()
-    for message in messages:
-        label = "User" if message.role == "user" else "Assistant"
-        for piece in split_content(f"{label}: {message.content}"):
-            if piece in seen:
-                continue
-            seen.add(piece)
-            out.append(
-                RawUnit(
-                    f"raw:{request_id}:{len(out)}",
-                    message.user_id,
-                    piece,
-                    message.record_id,
-                    message.occurred_at,
-                )
+    for n, piece in _pieces((m.role, m.content) for m in messages):
+        message = messages[n]
+        out.append(
+            RawUnit(
+                f"raw:{request_id}:{len(out)}",
+                message.user_id,
+                piece,
+                message.record_id,
+                message.occurred_at,
             )
+        )
     return out
+
+
+def unit_texts(messages: list[dict]) -> list[str]:
+    """The texts ``add`` embeds for the units of an Add's validated messages."""
+    return [p[:DENSE_MAX_CHARS] for _, p in _pieces((m["role"], m["content"]) for m in messages)]
 
 
 class _UserIndex:
