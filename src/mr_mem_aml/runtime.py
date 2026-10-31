@@ -1673,7 +1673,8 @@ class MemoryRuntime:
             u.record_id for u, _ in self.raw.search(user_id, question[:4096], self.decision.hits)
         )
         hits = [
-            Message(m.role, m.content)
+            Message(m.role, m.content, r,
+                    m.occurred_at.isoformat() if self.source.time_given(r) else None)
             for r in records
             if (m := self.source.message_by_record(r)) is not None
         ]

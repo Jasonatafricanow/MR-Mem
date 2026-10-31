@@ -57,10 +57,13 @@ WHERE = {
 CONTRA = {
     "en": (
         "[Note from the memory search: on what the question asks, the person's own messages"
-        " disagree]\n- One message of the person's says it did happen: {a}\n- Another says it"
+        " include positive and negative statements; compare their times and scope before"
+        " treating them as a contradiction]\n"
+        "- One message of the person's says it did happen: {a}\n- Another says it"
         " never did: {d}"
     ),
-    "zh": "【记忆检索的说明：关于问题所问的事，人自己的说法不一致】\n- 一条消息说做过：{a}\n"
+    "zh": "【记忆检索的说明：检索到肯定和否定说法；请先比较时间与适用范围，不能直接认定矛盾】\n"
+    "- 一条消息说做过：{a}\n"
     "- 另一条说从没做过：{d}",
 }
 ABSENT = {
@@ -87,6 +90,8 @@ WHY = {
 class Message:
     role: str  # "user" | "assistant"
     content: str
+    record_id: str = ""
+    occurred_at: str | None = None
 
 
 _SLOTS = threading.Semaphore(16)  # System One takes about 20 calls a second per workspace
@@ -156,18 +161,22 @@ class DecisionBypass:
 
     @staticmethod
     def _shown(m: Message) -> str:
-        return f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}"
+        label = "User" if m.role == "user" else "Assistant"
+        source = f" [source={m.record_id}]" if m.record_id else ""
+        when = f" [message_time={m.occurred_at}]" if m.occurred_at else ""
+        return f"{label}{source}{when}: {m.content}"
 
     def _contradiction(self, question: str, hits: list[Message], lang: str) -> str | None:
         # the person's messages only: the model sometimes takes the assistant's words for theirs
-        mine = [m for m in hits if m.role == "user"]
+        # Never judge a prefix as if it were the complete source message.
+        mine = [m for m in hits if m.role == "user" and len(self._shown(m)) <= 6000]
         if len(mine) < 2:
             return None
         with ThreadPoolExecutor(self.workers) as pool:
             scores = list(
                 pool.map(
                     lambda m: self._ask(
-                        {"question": question, "message": self._shown(m)[:6000]}, SAID
+                        {"question": question, "message": self._shown(m)}, SAID
                     ),
                     mine,
                 )
@@ -178,12 +187,16 @@ class DecisionBypass:
             return None
 
         def quote(i: int) -> str:
-            return json.dumps(self._shown(mine[i])[:3000], ensure_ascii=False)
+            return json.dumps(self._shown(mine[i]), ensure_ascii=False)
 
         return CONTRA[lang].format(a=quote(a), d=quote(d))
 
     def _absence(self, question: str, hits: list[Message], lang: str) -> str | None:
-        messages = "\n\n".join(self._shown(m)[:500] for m in hits)[:15000]
+        messages = "\n\n".join(self._shown(m) for m in hits)
+        # An absence claim requires all retrieved messages, not arbitrary prefixes.
+        # This cap bounds cost without increasing the number of model calls.
+        if len(messages) > 15000:
+            return None
         where = self._ask(
             {"question": question, "messages": messages},
             {
@@ -194,4 +207,10 @@ class DecisionBypass:
                 }
             },
         )["src"]["choice"]
-        return None if where not in WHY[lang] else ABSENT[lang].format(why=WHY[lang][where])
+        if where not in WHY[lang]:
+            return None
+        refs = ", ".join(m.record_id or f"hit:{i + 1}" for i, m in enumerate(hits))
+        scope = (f"\nChecked complete retrieved messages: {refs}; "
+                 "this is not a search of all history."
+                 if lang == "en" else f"\n检查范围：检索命中的完整消息 {refs}；不代表全量历史。")
+        return ABSENT[lang].format(why=WHY[lang][where]) + scope

@@ -53,3 +53,28 @@ def test_absence_note_when_only_the_assistant_gave_it():
     assert "assistant's suggestions" in bypass(where).note(
         "Which ESLint rules did I enforce?", HITS
     )
+
+
+def test_absence_checks_the_tail_and_skips_over_budget_messages():
+    seen = []
+    def answer(state, questions):
+        if "kind" in questions:
+            return {"kind": {"choice": "specific"}}
+        seen.append(state["messages"])
+        assert "I used ESLint" in state["messages"]
+        return {"src": {"choice": "person"}}
+    d = bypass(answer)
+    assert d.note("Which rules?", [Message("user", "x" * 700 + " I used ESLint")]) is None
+    assert len(seen) == 1
+    assert d.note("Which rules?", [Message("user", "x" * 16000)]) is None
+    assert len(seen) == 1  # no incomplete-message absence judgment
+
+
+def test_contradiction_quotes_exact_checked_text_with_source_and_time():
+    hits = [Message("user", "x" * 3500 + " set up my API key", "r1", "2026-01-01"),
+            Message("user", "I've never obtained an API key", "r2", "2025-01-01")]
+    note = bypass(said).note("Have I obtained an API key?", hits)
+    assert "set up my API key" in note and "source=r1" in note
+    assert "2026-01-01" in note and "compare their times" in note
+    assert bypass(said).note("Have I obtained an API key?", [
+        Message("user", "x" * 6500 + " set up"), hits[1]]) is None
