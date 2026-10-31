@@ -26,7 +26,7 @@ mr-mem-aml serve --config examples/runtime.aml-lce.json
 | `compile_window` | 软 4 万 / 硬 8 万字符，自然断点收口 | 窗口收口的那次 Add 会等编译完成再返回（1–3 分钟） |
 | `decision` | `decision-model-preview`（System One），走 Token Plan（`QWEN_PLAN_API_KEY`，和编译同一个 key），Search 时旁路判断，读出最前面加一条说明 | 用户 10-31 定。两条规则（mr_mem_aml/decision.py）：问"我有没有做过 X"，而人自己的命中消息里既说做过、又说从没做过 → 引用两句原话；问人自己的某个具体信息，而人从没说过（只在助手的建议里，或根本没有）→ 说明这一点。只判断不改证据，不写进编译产物；调用失败就不加。holdout 60 题两遍：52.6 → 58.5（矛盾 8 → 50，拒答 50 → 67）。每次 Search 1 次分流调用，是否题再加至多 30 次、具体信息题再加 1 次；全进程限 16 路并发。要关掉就删掉这一项 |
 | 编译流程 | `step1: topic`，`layer2: stretches`：每窗 2 次调用（SB 一次、段一次） | 定义见 docs/LCE_FROZEN.md：SB 是在聊的那件事，段摘要按 前因-谁-何时-做了什么-后果 写一次 |
-| `line_read` | relay（原文命中 → SB → Line 上的局部，只带检索命中的原文），助手部分 `told`，全部段摘要（`thread_k: 60`、`thread_sbs: 0`），`marks: false`，`raw_fill: 0` | 用户 10-31 定：不补位，证据已够（原文 → SB → Line、段摘要 → SB → 原文两条路）；晨昏线标记只在记忆侧用，不给答题模型看。holdout 60 题两遍 50.3，P1 47.2；每题约 8.5 万字符 |
+| `line_read` | relay（原文命中 → SB → Line 上的局部，只带检索命中的原文），助手部分 `told`，全部段摘要（`thread_k: 60`、`thread_sbs: 0`），`marks: false`，`raw_fill: 0`，`hit_anchors: true` | 用户 10-31 定：不补位，证据已够（原文 → SB → Line、段摘要 → SB → 原文两条路）；晨昏线标记只在记忆侧用，不给答题模型看；每条原文命中都带出它的 SB，不受 `sbs` 上限截断（原来 1800 条前 30 命中里丢 208 条）。holdout 60 题两遍：P1 47.2，不补位 50.3，修正时间 + 决策旁路 58.5，再加 `hit_anchors` 60.1（时间推理两遍 33 → 50）；每题约 8.5 万字符 |
 
 ## 验证（holdout beam_100k 60 题，DeepSeek 答题，每组两遍）
 
