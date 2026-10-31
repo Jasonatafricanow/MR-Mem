@@ -1616,8 +1616,15 @@ class MemoryRuntime:
                             else {}
                         ),
                     }
-                    for item in self._line_read(scope, user_id.strip(), text[:4096])[:top_k]
-                    if item["content"].strip()
+                    for item in _within(
+                        [
+                            i
+                            for i in self._line_read(scope, user_id.strip(), text[:4096])
+                            if i["content"].strip()
+                        ],
+                        # a slot kept for the decision note RuntimeHost.search may put in front
+                        top_k - (1 if self.decision is not None else 0),
+                    )
                 ]
             }
         raw_search = None
@@ -1981,6 +1988,18 @@ class MemoryRuntime:
             thread_hits=thread_hits,
             hit_blocks=hit_blocks,
         )
+
+
+def _within(items: list[dict], limit: int) -> list[dict]:
+    """At most ``limit`` items (AML: more than top_k fails the contract). The stretch summaries
+    go first, the furthest from the question first (they come in order of nearness); cutting the
+    tail instead dropped raw hits, the evidence itself (a long history has 60 summaries: with the
+    Line pieces and 30 raw hits, past 100)."""
+    items = list(items)
+    while len(items) > limit:
+        far = [n for n, i in enumerate(items) if str(i["id"]).startswith("thread:")]
+        items.pop(far[-1] if far else len(items) - 1)
+    return items
 
 
 def _past_feedback(roles: list[str]) -> bool:

@@ -308,13 +308,11 @@ def test_code_seen_before_is_given_as_its_changes():
     )
     assert items[-2]["content"].endswith(v1)
     assert items[-1]["content"].endswith(
-        
-            "```python\n"
-            "# changes from S1 #1 (- removed, + added)\n"
-            "-run(port=5000)\n"
-            "+run(port=8000)\n"
-            "```"
-        
+        "```python\n"
+        "# changes from S1 #1 (- removed, + added)\n"
+        "-run(port=5000)\n"
+        "+run(port=8000)\n"
+        "```"
     )
 
 
@@ -529,28 +527,69 @@ def test_p1s_whole_list_backs_the_lines_up_not_only_the_anchor_hits():
     steps = {"plan": lr.Step("The person plans the trip", None, True, (1, 1))}
     names = ["m1", "m2", "m3", "m4"]
     msgs = {r: lr.RawMessage(f"text of {r}", "user", None, (1, n)) for n, r in enumerate(names, 1)}
-    items = lr.compose("q", ["plan"], ["m1"], fill_records=names, step=steps.__getitem__,
-                       sources=lambda b: ["m1"], parents=lambda b: [], children=lambda b: [],
-                       message=msgs.get, lang="en",
-                       policy=lr.LineReadPolicy(sbs=1, projection="hits", raw_fill=100))
+    items = lr.compose(
+        "q",
+        ["plan"],
+        ["m1"],
+        fill_records=names,
+        step=steps.__getitem__,
+        sources=lambda b: ["m1"],
+        parents=lambda b: [],
+        children=lambda b: [],
+        message=msgs.get,
+        lang="en",
+        policy=lr.LineReadPolicy(sbs=1, projection="hits", raw_fill=100),
+    )
     filled = [i["id"] for i in items if i["kind"] == "source" and i["id"] != "raw:m1"]
     assert filled == ["raw:m2", "raw:m3", "raw:m4"]  # beyond the one anchor hit, in P1's order
 
 
 def test_uncompiled_raw_hit_survives_without_fill():
-    msgs = {r: lr.RawMessage(r, "user", None, (1, n))
-            for n, r in enumerate(["compiled", "uncompiled"], 1)}
+    msgs = {
+        r: lr.RawMessage(r, "user", None, (1, n))
+        for n, r in enumerate(["compiled", "uncompiled"], 1)
+    }
     items = lr.compose(
-        "q", ["sb"], list(msgs), uncompiled_records=["uncompiled"],
+        "q",
+        ["sb"],
+        list(msgs),
+        uncompiled_records=["uncompiled"],
         step=lambda b: lr.Step("A compiled topic", None, True, (1, 1)),
-        sources=lambda b: ["compiled"], parents=lambda b: [], children=lambda b: [],
-        message=msgs.get, lang="en", policy=lr.LineReadPolicy(projection="hits", raw_fill=0),
+        sources=lambda b: ["compiled"],
+        parents=lambda b: [],
+        children=lambda b: [],
+        message=msgs.get,
+        lang="en",
+        policy=lr.LineReadPolicy(projection="hits", raw_fill=0),
     )
-    assert [i["id"] for i in items if i["kind"] == "source"] == [
-        "raw:compiled", "raw:uncompiled"]
+    assert [i["id"] for i in items if i["kind"] == "source"] == ["raw:compiled", "raw:uncompiled"]
     empty = lr.compose(
-        "q", [], ["uncompiled"], uncompiled_records=["uncompiled"],
-        step=lambda b: None, sources=lambda b: [], parents=lambda b: [], children=lambda b: [],
-        message=msgs.get, lang="en", policy=lr.LineReadPolicy(raw_fill=0),
+        "q",
+        [],
+        ["uncompiled"],
+        uncompiled_records=["uncompiled"],
+        step=lambda b: None,
+        sources=lambda b: [],
+        parents=lambda b: [],
+        children=lambda b: [],
+        message=msgs.get,
+        lang="en",
+        policy=lr.LineReadPolicy(raw_fill=0),
     )
     assert [i["id"] for i in empty] == ["raw:uncompiled"]
+
+
+def test_past_top_k_the_furthest_stretch_summaries_go_not_the_raw_hits():
+    from mr_mem_aml.runtime import _within
+
+    items = [
+        {"id": "standing"},
+        *({"id": f"thread:t{n}"} for n in range(60)),
+        *({"id": f"line:{n}"} for n in range(20)),
+        *({"id": f"raw:r{n}"} for n in range(30)),
+    ]
+    kept = _within(items, 99)
+    ids = [i["id"] for i in kept]
+    assert len(kept) == 99 and all(f"raw:r{n}" in ids for n in range(30))
+    assert "thread:t0" in ids and "thread:t59" not in ids
+    assert _within(items[:50], 99) == items[:50]
