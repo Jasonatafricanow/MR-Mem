@@ -944,6 +944,12 @@ class MemoryRuntime:
         at = max(m.occurred_at for m in job.messages[:kept])
         if self.config.placement == "moves":
             placement = compiled.get("placement")
+            if placement is None and not committed:
+                # no SB (capped, or a compile that kept raw only): nothing to place. Going on,
+                # the stretch step averaged no vectors once a user had 8 closed stretches and
+                # failed the window every time it was retried
+                placement = {}
+                self.source.add_to_window(wid, "placement", placement)
             if placement is None:  # step 2; a journaled one is applied without a model call
                 try:
                     place = self._stretch if self.config.layer2 == "stretches" else self._place

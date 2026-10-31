@@ -486,3 +486,36 @@ def test_backpressure_holds_an_add_while_the_users_backlog_is_compiling(tmp_path
         assert got["request_id"] == "r1"
     finally:
         host.close()
+
+
+def test_a_window_with_no_sb_skips_the_stretch_step(tmp_path):
+    # capped windows (and compiles that kept raw only) have no SB; the stretch step must not
+    # run on them (with 8+ closed stretches it averaged no vectors and failed every retry)
+    config = RuntimeConfig(
+        data_dir=tmp_path / "data",
+        compiler={"type": "command", "argv": ["x"]},
+        path_a_engine="tree",
+        placement="moves",
+        step1="topic",
+        layer2="stretches",
+        scene="chat",
+        compile_window={"soft": 4, "hard": 6, "max_chars_per_user": 1},
+    )
+
+    class NoSBs:  # step 1 finds nothing to compile: an empty list, which it accepts
+        def complete(self, prompt: str) -> str:
+            return "[]"
+
+    rt = MemoryRuntime(config, compiler=SemanticCompiler(NoSBs(), schema="moves", step1="topic"))
+
+    def no_stretch(*args, **kwargs):
+        raise AssertionError("the stretch step ran on a window with no SB")
+
+    rt._stretch = no_stretch
+    try:
+        add(rt, "r1", *[f"m{i}" for i in range(6)])
+        add(rt, "r2", *[f"n{i}" for i in range(6)])
+        rt.flush()
+        assert rt.compile_capped > 0 and rt.source.users_with_pending() == ()
+    finally:
+        rt.close()
