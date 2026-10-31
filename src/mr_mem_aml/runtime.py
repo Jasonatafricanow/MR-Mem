@@ -144,6 +144,7 @@ def build_embedding(spec: dict | None):
             api_key_env=spec.get("api_key_env"),
             send_dimensions=spec.get("send_dimensions", False),
             headers=spec.get("headers"),
+            cache_path=spec.get("cache_path"),
         )
     if kind == "ark":
         from mr_mem_aml.embedding import ArkEmbedding
@@ -429,6 +430,11 @@ class MemoryRuntime:
                 self._vectors.clear()
             self._vectors[text] = vector
         return vector
+
+    def _embed_texts(self, texts: list[str]) -> list[tuple[float, ...]]:
+        """Any thread: vectors of texts (the store is not touched)."""
+        assert self.embedding is not None
+        return [tuple(self.embedding.embed(t)) for t in texts]
 
     def tree_for(self, scope: Scope):
         """LCE Thread + Path A trees of one Scope (path_a_engine="tree")."""
@@ -817,9 +823,32 @@ class MemoryRuntime:
         self.source.set_error(job.request["request_id"], error)
 
     def finish_add(self, job: AddJob, compiled: str) -> dict:
-        """Owner thread: journal, admit, project, derive Path A."""
+        """Owner thread: journal, admit, project, derive Path A; the model calls of placement made
+        here, in turn. RuntimeHost drives finish_steps instead, with those calls off the owner
+        thread."""
+        steps = self.finish_steps(job, compiled)
+        sent, thrown = None, None
+        while True:
+            try:
+                call = steps.throw(thrown) if thrown is not None else steps.send(sent)
+            except StopIteration as done:
+                return done.value
+            try:
+                sent = (
+                    [c[0](*c[1:]) for c in call] if isinstance(call, list) else call[0](*call[1:])
+                )
+                thrown = None
+            except Exception as exc:  # noqa: BLE001 - handed back to the step that asked
+                sent, thrown = None, exc
+
+    def finish_steps(self, job: AddJob, compiled: str):
+        """finish_add as a generator: yields each model call of placement as (fn, *args), or a
+        list of such calls that need nothing of each other (their results come back as a list),
+        and gets the result back, so only the store work needs the owner thread (2026-10-31:
+        step 2, threads and summaries ran on it, one user at a time, whatever
+        compile_concurrency said)."""
         if job.window is not None:
-            return self._finish_window(job, compiled)
+            return (yield from self._finish_window(job, compiled))
         request = job.request
         rid, scope = request["request_id"], user_scope(request["user_id"])
         if self.source.compiled(rid) is None:
@@ -866,7 +895,8 @@ class MemoryRuntime:
             placement = compiled.get("placement")
             if placement is None:  # step 2; a journaled one is applied without a model call
                 try:
-                    placement = self._place(user_id, scope, compiled, committed, at)
+                    place = self._stretch if self.config.layer2 == "stretches" else self._place
+                    placement = yield from place(user_id, scope, compiled, committed, at)
                 except CompileFailed as exc:
                     if not self.config.keep_raw_on_compile_failure:
                         raise
@@ -991,8 +1021,130 @@ class MemoryRuntime:
             todo += tree.lines.parents_at(node, far)
         return j
 
+    def _span_of(self, memory, user_id: str) -> str:
+        """The time range of an SB's messages (message time, from the raw's own stamps; with no
+        time given, the session's date), "" when there is none."""
+        refs = memory.provenance.source_refs
+        given = sorted(r.occurred_at for r in refs if self.source.time_given(r.record_id))
+        if given:
+            a, b = given[0].strftime("%Y-%m-%d %H:%M"), given[-1].strftime("%Y-%m-%d %H:%M")
+            return a if a == b else f"{a} - {b}"
+        session_at = self.source.session_times(user_id)
+        got = [session_at[r.record_id] for r in refs if r.record_id in session_at]
+        return f"session began {min(got).strftime('%Y-%m-%d')}" if got else ""
+
+    def _stretch(self, user_id: str, scope, compiled: dict, committed, at: datetime):
+        """layer2 "stretches" (docs/LCE_FROZEN.md): one call cuts the window's SBs into
+        stretches, summarizes the closed ones once, says which earlier stretch one takes up
+        again and which steps in progress the person's reports settle. A generator, as _place.
+        The SBs of a stretch go on one after another on the Line; a stretch carrying on the
+        open one, or taking up an earlier one, goes on from its last step."""
+        from mr_mem_aml.line_read import STAMP
+
+        lang = (compiled.get("assembly") or {}).get("language") or self.language_of(user_id)
+        tree = self.tree_for(scope)
+        far = datetime(9999, 1, 1, tzinfo=UTC)
+        mine = {m.memory_id for m in committed}
+        node_of: dict[str, str] = {}
+        for _, node_id, state in tree.nodes(far):
+            if state.state_id not in mine:
+                node_of.setdefault(state.state_id, node_id)
+
+        def text(memory) -> str:
+            return STAMP.sub("", memory.content.split("\n")[0]).strip()
+
+        known = self.source.threads(user_id)
+        live = {t: x for t, x in known.items() if any(m in node_of for m in x["members"])}
+        open_ = [t for t, x in live.items() if not x["summary"]]
+        open_t = max(open_, key=lambda t: live[t]["last_seq"]) if open_ else None
+        open_sbs = [
+            text(m)
+            for b in (live[open_t]["members"] if open_t else [])
+            if (m := self.core.canonical.get(b)) is not None
+        ]
+        closed = [t for t, x in live.items() if x["summary"]]
+        earlier = sorted(closed, key=lambda t: -live[t]["last_seq"])[:8]
+        if self.embedding is not None and len(closed) > len(earlier):
+            import numpy as np
+
+            texts = [text(m) for m in committed]
+            missing = [x for x in [*texts, *(live[t]["summary"] for t in closed)]]
+            missing = [x for x in dict.fromkeys(missing) if x not in self._vectors]
+            if missing:
+                got = yield (self._embed_texts, missing)
+                self._vectors.update(zip(missing, got, strict=True))
+            q = np.mean([np.array(self._vectors[x]) for x in texts], axis=0)
+            vecs = np.array([self._vectors[live[t]["summary"]] for t in closed])
+            near = vecs @ q / (np.linalg.norm(vecs, axis=1) * np.linalg.norm(q) + 1e-9)
+            earlier = list(dict.fromkeys(earlier[:3] + [closed[i] for i in np.argsort(-near)]))[:8]
+        dated = {b: m for b in node_of if (m := self.core.canonical.get(b)) is not None}
+        progress = [
+            b
+            for b in sorted(dated, key=lambda b: (dated[b].occurred_at, b))
+            if tree.side(node_of[b], at) == "in progress"
+        ][-10:]
+        sbs = [{"text": text(m), "time": self._span_of(m, user_id)} for m in committed]
+        try:
+            got = yield (
+                self.compiler.stretches,
+                lang,
+                sbs,
+                open_sbs,
+                [live[t]["summary"] for t in earlier],
+                [text(m) for b in progress if (m := self.core.canonical.get(b)) is not None],
+            )
+        except CompileError as exc:
+            raise CompileFailed(f"stretches: {exc}") from exc
+
+        refs: dict[str, str] = {}
+
+        def ref(block: str) -> str:  # an earlier step, numbered for the tree as step 2's N<k>
+            key = f"N{len(refs) + 1}"
+            refs[key] = node_of[block]
+            return key
+
+        threads: list[str | None] = [None] * len(committed)
+        after: list[list[str]] = [[] for _ in committed]
+        summaries: dict[str, str] = {}
+        origins: dict[str, dict] = {}
+        for s in got["stretches"]:
+            first = s["sbs"][0]
+            if s["joins_open"] and open_t:
+                t = open_t
+                last = [b for b in live[open_t]["members"] if b in node_of][-1:]
+                after[first] = [ref(last[0])] if last else []
+            else:
+                t = f"t:{committed[first].memory_id}"
+                if s["from"] is not None:
+                    frm = earlier[s["from"]]
+                    last = [b for b in live[frm]["members"] if b in node_of][-1:]
+                    if last:
+                        after[first] = [ref(last[0])]
+                        origins[t] = {"thread": frm, "step": last[0], "why": ""}
+            for a, b in zip(s["sbs"], s["sbs"][1:], strict=False):
+                after[b] = [f"b{a + 1}"]
+            for i in s["sbs"]:
+                threads[i] = t
+            summaries[t] = s["summary"]  # "" while the stretch is still open
+        settles = [
+            [ref(progress[k]) for k in got["settles"].get(i, [])] for i in range(len(committed))
+        ]
+        return {
+            "threads": threads,
+            "summaries": summaries,
+            "origins": origins,
+            "language": lang,
+            "refs": refs,
+            "after": after,
+            "why": [[""] * len(a) for a in after],
+            "settles": settles,
+            "candidates": [[] for _ in committed],
+            "raw": {},
+        }
+
     def _place(self, user_id: str, scope, compiled: dict, committed, at: datetime) -> dict:
-        """Placement "moves", step 2 (owner thread: reads the store, then one model call).
+        """Placement "moves", step 2 (a generator: reads the store on the owner thread and yields
+        its model calls - step 2, threads, summaries - as (fn, *args)).
         Candidates of each SB: the top k earlier SBs by each of four searches - its text
         against SB texts and against the person's words, its move against moves, the
         person's words in it against the person's words - plus the latest earlier SBs and
@@ -1090,6 +1242,20 @@ class MemoryRuntime:
         if self.embedding is not None and hist:
             import numpy as np
 
+            # the texts not embedded yet, embedded off the owner thread (three per new SB)
+            missing = list(
+                dict.fromkeys(
+                    x[f]
+                    for x in (*hist, *sbs)
+                    for f in ("text", "move", "words")
+                    if x[f] not in self._vectors
+                )
+            )
+            if missing:
+                got = yield (self._embed_texts, missing)
+                if len(self._vectors) + len(missing) > 50_000:
+                    self._vectors.clear()
+                self._vectors.update(zip(missing, got, strict=True))
             vec = {
                 f: np.array([self._embed_cached(h[f]) for h in hist])
                 for f in ("text", "move", "words")
@@ -1152,20 +1318,22 @@ class MemoryRuntime:
             )
         )[:30]
         tids = [t for t in tids if known[t]["summary"]]
+        step2 = (
+            self.compiler.place,
+            lang,
+            [
+                {"text": s["text"], "time": s["time"], "settles_only": s["settles_only"]}
+                for s in sbs
+            ],
+            cands,
+            lists,
+        )
         try:
-            placed = self.compiler.place(
-                lang,
-                [
-                    {"text": s["text"], "time": s["time"], "settles_only": s["settles_only"]}
-                    for s in sbs
-                ],
-                cands,
-                lists,
-            )
             if (
                 chat
             ):  # its own call (inside step 2 it made the links worse), shown the same concrete
-                # earlier steps step 2 was, each marked with its thread
+                # earlier steps step 2 was, each marked with its thread; it needs nothing of step
+                # 2's answer, so both are asked at once
                 for j in shown:
                     if (
                         (t := thread_of.get(hist[j]["memory"].memory_id))
@@ -1182,8 +1350,10 @@ class MemoryRuntime:
                     }
                     for j in shown
                 ]
-                placed.update(
-                    self.compiler.assign_threads(
+                placed, threaded = yield [
+                    step2,
+                    (
+                        self.compiler.assign_threads,
                         lang,
                         [
                             {"text": s["text"], "time": s["time"], "cands": lists[n]}
@@ -1191,8 +1361,11 @@ class MemoryRuntime:
                         ],
                         [{"summary": known[t]["summary"]} for t in tids],
                         steps,
-                    )
-                )
+                    ),
+                ]
+                placed.update(threaded)
+            else:
+                placed = yield step2
         except CompileError as exc:
             raise CompileFailed(f"placement: {exc}") from exc
 
@@ -1238,7 +1411,8 @@ class MemoryRuntime:
         touched = list(dict.fromkeys(x for x in threads if x is not None))
         # each touched thread's summary: its own call, from its summary so far and its SBs here
         try:
-            got = self.compiler.summarize(
+            got = yield (
+                self.compiler.summarize,
                 lang,
                 [
                     {

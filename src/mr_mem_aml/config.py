@@ -78,6 +78,10 @@ class RuntimeConfig:
     # placement "moves", step 1: "moves" = one SB per point of the person; "slim4" = one SB
     # per stretch with one result, as the bbz_diag slim4 prompt (trial, 2026-10-26, Chinese only)
     step1: str = "moves"
+    # placement "moves", after step 1: "steps" = step 2's links, then the threads call and the
+    # summaries call; "stretches" = one call cutting the SBs into stretches and summarizing the
+    # closed ones (docs/LCE_FROZEN.md, 2026-10-31)
+    layer2: str = "steps"
     # search in path_a mode reads by the upward index (line_read.py, design 5.3, 5.5): raw hits ->
     # their SBs -> the Line around them, plus raw snippets; None keeps the PathAReader read.
     # Keys of line_read.LineReadPolicy (sbs, up, down, raw_k, sb_k, rrf_k, tz_minutes, raw_full)
@@ -89,15 +93,18 @@ class RuntimeConfig:
         if self.placement not in ("lines", "points", "entries", "moves"):
             raise ValueError("placement must be 'lines', 'points', 'entries' or 'moves'")
         if self.placement == "moves" and (
-            (self.scene != "work" and self.step1 != "slim4") or self.compile_window is None
+            (self.scene != "work" and self.step1 not in ("slim4", "topic"))
+            or self.compile_window is None
         ):
             raise ValueError(
                 "placement 'moves' compiles in windows, in the work scene unless step1 is 'slim4'"
             )
         if self.scene not in ("chat", "work"):
             raise ValueError("scene must be 'chat' or 'work'")
-        if self.step1 not in ("moves", "slim4"):
-            raise ValueError("step1 must be 'moves' or 'slim4'")
+        if self.step1 not in ("moves", "slim4", "topic"):
+            raise ValueError("step1 must be 'moves', 'slim4' or 'topic'")
+        if self.layer2 not in ("steps", "stretches"):
+            raise ValueError("layer2 must be 'steps' or 'stretches'")
         if self.line_read is not None:
             from mr_mem_aml.line_read import LineReadPolicy
 

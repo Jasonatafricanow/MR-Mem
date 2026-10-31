@@ -701,3 +701,35 @@ def test_threads_are_their_own_call_and_say_what_a_new_one_came_from():
         "thread": {0: ("s", 0), 1: ("s", 0)},
         "from": {0: (("T", 0), "limits led to it")},
     }
+
+
+# --- chat step 1: broken answers, pasted material, people (2026-10-31, mini AML run) ------------
+
+
+def _sb(turns):
+    return {"turns": turns, "text": "The person ...", "when": "before", "status": "confirmed",
+            "standing": False}
+
+
+def test_chat_check_rejects_one_item_and_done():
+    with pytest.raises(ValueError):
+        mv.check_step1_chat([_sb("M1")], ["user", "assistant"] * 5, done=10)
+
+
+def test_chat_check_takes_pasted_material_answered_and_stops():
+    # a rulebook pasted over M1-M6, the question M7, the answer M8: no SB for the rulebook
+    roles = ["user"] * 7 + ["assistant"]
+    mv.check_step1_chat([_sb("M7"), {**_sb("M8"), "text": "The assistant ..."}], roles, done=8)
+    # the answer stopped after M1 (it held enough SBs): only M1 counts
+    mv.check_step1_chat([_sb("M1")], ["user"] * 9, done=1)
+    # nothing to compile (a machine log): no retry
+    mv.check_step1_chat([], ["user"] * 9, done=9)
+
+
+def test_between_people_needs_two_named_speakers():
+    chat = [{"role": "user", "text": f"{n}: hi there"} for n in ("Nate", "Joanna") * 3]
+    log = [{"role": "user", "text": '[ { "second": 0, "event": "unit_made" } ]'}] * 6
+    notes = [{"role": "user", "text": "MARCH 3, 2026 1. Flyers won't look"}] * 6
+    assert mv.between_people(chat)
+    assert not mv.between_people(log) and not mv.between_people(notes)
+    assert not mv.between_people(chat + [{"role": "assistant", "text": "Sure."}])

@@ -662,13 +662,13 @@ class SemanticCompiler:
         scene: str = "chat",
         step1: str = "moves",
     ) -> None:
-        if step1 not in ("moves", "slim4"):
-            raise ValueError("step1 must be 'moves' or 'slim4'")
+        if step1 not in ("moves", "slim4", "topic"):
+            raise ValueError("step1 must be 'moves', 'slim4' or 'topic'")
         if assistant_policy not in ASSISTANT_RULES:
             raise ValueError("assistant_policy must be 'attributed' or 'context_only'")
         if schema not in ("flat", "tree", "points", "entries", "moves"):
             raise ValueError("schema must be 'flat', 'tree', 'points', 'entries' or 'moves'")
-        if schema == "moves" and scene != "work" and step1 != "slim4":
+        if schema == "moves" and scene != "work" and step1 not in ("slim4", "topic"):
             raise ValueError(
                 "schema 'moves' is the work scene's (centred on the person) unless step1 is 'slim4'"
             )
@@ -687,7 +687,7 @@ class SemanticCompiler:
             "points": POINTS_PROMPT_VERSION,
             "entries": ENTRIES_PROMPT_VERSION,
             "moves": MOVES_PROMPT_VERSION,
-        }.get(schema, PROMPT_VERSION) + ("-slim4" if step1 == "slim4" else "")
+        }.get(schema, PROMPT_VERSION) + ({"slim4": "-slim4", "topic": "-topic"}.get(step1, ""))
 
     def prompt(
         self,
@@ -946,10 +946,15 @@ class SemanticCompiler:
         sessions = [new[i].session_id for i in use]
         paras = [len(move_mode.paragraphs(m["text"])) for m in material]
         texts = [m["text"] for m in material]
-        if self.step1 == "slim4" and self.scene == "chat":
-            prompt = move_mode.step1_prompt_slim4(lang, material, ctx, self.scene)
-            check = lambda d: move_mode.check_step1_chat(d, used_roles, paras, texts)  # noqa: E731
+        if self.step1 in ("slim4", "topic") and self.scene == "chat":
+            prompt = move_mode.step1_prompt_slim4(
+                lang, material, ctx, self.scene, "topic" if self.step1 == "topic" else "meaning"
+            )
             answer: list[str] = []
+
+            def check(d):
+                stop = move_mode.stop_at(answer[0], len(material)) if window and answer else None
+                move_mode.check_step1_chat(d, used_roles, paras, texts, stop)
 
             def extract(raw: str):
                 answer[:] = [raw]
@@ -1060,6 +1065,27 @@ class SemanticCompiler:
             lambda d: move_mode.parse_summaries(d, len(threads)),
         )
         return move_mode.parse_summaries(data, len(threads))
+
+    def stretches(
+        self,
+        lang: str,
+        sbs: list[dict],
+        open_sbs: list[str],
+        earlier: list[str],
+        progress: list[str],
+    ) -> dict:
+        """The stretch layer: a window's SBs cut into stretches, the closed ones summarized, and
+        the steps in progress they settle (moves.parse_stretches). Touches no store."""
+        if not sbs:
+            return {"stretches": [], "settles": {}}
+
+        def check(d):
+            return move_mode.parse_stretches(d, len(sbs), len(earlier), len(progress))
+
+        data = self._ask_json(
+            move_mode.stretch_prompt(lang, sbs, open_sbs, earlier, progress), check
+        )
+        return check(data)
 
     def place(
         self,

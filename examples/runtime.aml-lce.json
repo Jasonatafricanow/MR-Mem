@@ -2,19 +2,21 @@
   "data_dir": "data",
   "compiler": {
     "type": "openai",
-    "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
-    "model": "doubao-seed-2-1-pro",
-    "api_key_env": "ARK_API_KEY",
+    "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "model": "deepseek-v4.1-flash-1017",
+    "api_key_env": "QWEN_PLAN_API_KEY",
     "max_tokens": 16000,
-    "extra_body": {"thinking": {"type": "disabled"}},
+    "extra_body": {"enable_thinking": false},
     "timeout": 300
   },
   "embedding": {
-    "type": "ark",
-    "model": "doubao-embedding-vision",
-    "dimension": 2048,
-    "cache_path": "cache/ark_embed.sqlite",
-    "requests_per_second": 3
+    "type": "openai",
+    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "model": "qwen3.7-text-embedding-flash",
+    "dimension": 1024,
+    "api_key_env": "DASHSCOPE_API_KEY",
+    "send_dimensions": true,
+    "cache_path": "data/embed_cache.sqlite"
   },
   "search_mode": "path_a",
   "lce_enabled": true,

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 
 ARROW = {"zh": " → 人：", "en": " -> Person: "}
 NO_MOVE = {"zh": "（无回应）", "en": "(no response)"}
@@ -736,6 +737,273 @@ STEP1_CHAT = {
 }
 
 
+# The chat scene between people (no assistant in the window, as in LoCoMo): what one tells the
+# other and the back-and-forth about it is one thing, and both sides are people, named. The JSON is
+# the chat step 1's, so parse_step1_chat reads it (2026-10-31: with STEP1_CHAT every short turn,
+# greetings too, became an SB of "the person", names lost).
+STEP1_PEOPLE = {
+    "zh": (
+        "你是 SemanticBlock（SB）编译器。把下面几个人之间的聊天编译成 SB，并写出它们之间谁在谁的"
+        "基础上推进。\n"
+        "\n"
+        "SB 是一件事：一个人讲出来的一件事（一段经历、一个消息、一个打算、一个看法或口味），连同"
+        "围绕它的来回：对方的追问、他的补充和细节、对方的回应。这一段来回合起来是一个完整意思，"
+        "离开原文也不会被误读，对应原文里连续的几条消息。\n"
+        "\n"
+        "## 怎么切\n"
+        "1. 按话题切，不按消息切：一件事常常要几条、十几条消息才讲完，就是一个 SB。话题换了（换"
+        "了一件事，或换成另一个人讲他自己的事），才是新的 SB。同一段经历里分量不同的几面（做了"
+        "什么、为什么、结果怎样、他怎么想）可以各成 SB，但不要一句一个。\n"
+        "2. 对方只是回应（夸奖、恭喜、附和、表示感兴趣、追问）不单独成 SB，算在这件事里；对方借"
+        "着这个话题讲了他自己的事或看法，那是他的 SB。\n"
+        "3. 寒暄、道别、没有内容的客套不成 SB。\n"
+        "\n"
+        "## 怎么写\n"
+        "4. text：一两句话写这件事，用名字写明是谁、对谁说的（原文没有名字就写说话者 A／B），按"
+        "说话者的本意；相对时间（上周、昨天、去年）按消息时间换成具体日期或月份；保留别人可能问"
+        "到的值（人名、地名、物名、数字、日期）。\n"
+        "5. 原文说了的写清，没说的不补；不写后来才发生的事。\n"
+        "\n"
+        "## 推进\n"
+        "6. 接着本窗口里某件事说下去的 SB（同一件事后来的进展、对它的回应引出的新事）写进那个 SB "
+        "的 next；不接着本窗口任何 SB 的放在最外层。\n"
+        "\n"
+        "## 状态\n"
+        '7. when：从说这件事的那一刻看，它在时间轴上的位置。"before"：那时已经发生或成立。'
+        '"after"：在那之后（打算、安排）；原文给了日期就写上。\n'
+        '8. status：before 时发生了或成立填 "confirmed"，没发生填 "negated"；after 时定下要做'
+        '的填 "likely"，取消或不做的填 "negated"，只是想想的填 "unknown"；没有证据填 "unknown"。\n'
+        "9. standing：一个人说自己长期如此的偏好或规矩（我从不……、我一直……、我对……过敏）填 true；"
+        "建议、打算、经历都填 false。\n"
+        "\n"
+        "## turns\n"
+        '10. turns 写这件事所在的消息范围（"M3-M9"，只有一条就写 "M3"）；from 照原文抄下第一条'
+        "里这件事开头的几个词，to 抄下最后一条里它结尾的几个词。\n"
+        "\n"
+        "## 在哪里停\n"
+        "一次回答最多大约 {cap} 个 SB。按顺序编；下一件事会让你超出这个数时，就停在它前面；后面"
+        "的消息在下一次回答里编。\n"
+        "\n"
+        "## 输出\n"
+        "先写 ANALYSIS：按顺序一行一件事，写它的消息范围和是谁讲的什么（不要逐条复述消息）。然后"
+        "另起一行写 JSON:，后面只跟合法 JSON 数组，字符串里不要用英文双引号（引用用「」）：\n"
+        '[{{"turns":"M3-M9","from":"...","to":"...","text":"甲告诉乙……","when":"before",'
+        '"status":"confirmed","standing":false,"next":[\n'
+        '   {{"turns":"M40-M44","from":"...","to":"...","text":"甲后来……","when":"before",'
+        '"status":"confirmed","standing":false}}]}}]\n'
+        "JSON 之后另起一行写 STOP: M<k>，k 是你编到的最后一条消息。\n"
+        "\n"
+        "CONTEXT（之前的消息，只供理解，不编译）：\n"
+        "{context}\n"
+        "\n"
+        "NEW：\n"
+        "{new}"
+    ),
+    "en": (
+        "You are a SemanticBlock (SB) compiler. Compile the chat between people below into SBs a"
+        "nd write which builds on which.\n"
+        "\n"
+        "An SB is one thing: a thing one person tells (an experience, a piece of news, a plan, a"
+        "n opinion or a taste) together with the back-and-forth about it: the other's questions,"
+        " the teller's further details, the other's response. That stretch together is one comp"
+        "lete meaning, which cannot be misread without the raw text, and sits in a run of consec"
+        "utive messages.\n"
+        "\n"
+        "## Cutting\n"
+        "1. Cut by topic, not by message: a thing often takes several or a dozen messages to tel"
+        "l, and it is one SB. A new SB starts when the topic changes (another thing, or the othe"
+        "r person telling their own thing). Facets of one experience that weigh differently (wha"
+        "t was done, why, how it came out, what they think of it) may be SBs of their own, but n"
+        "ot one per sentence.\n"
+        "2. The other's mere response (praise, congratulations, agreement, interest, a follow-up"
+        " question) is no SB of its own; it belongs to the thing. When the other uses the topic "
+        "to tell their own thing or view, that is their SB.\n"
+        "3. Greetings, goodbyes and empty pleasantries are not SBs.\n"
+        "\n"
+        "## Writing an SB\n"
+        "4. text: the thing in one or two sentences, naming who told whom (speaker A / B when th"
+        "e words give no names), as the speaker meant it; relative times (last week, yesterday, "
+        "last year) made concrete from the message time; keep the values someone may ask for (n"
+        "ames of people, places and things, numbers, dates).\n"
+        "5. Write what the raw text says, add nothing it does not; do not write what happened la"
+        "ter.\n"
+        "\n"
+        "## Building on\n"
+        "6. An SB that carries on a thing of this window (later news of the same thing, a new th"
+        "ing its response brings up) goes in that SB's next; one that carries on no SB of this "
+        "window stays at the top level.\n"
+        "\n"
+        "## status\n"
+        '7. when: where the thing sits on the timeline, seen from when it was told. "before": i'
+        't had happened or held by then. "after": it comes later (a plan, an arrangement); add '
+        "its date when the raw text gives one.\n"
+        '8. status: when before, "confirmed" if it happened or holds, "negated" if it did not; '
+        'when after, "likely" if it is settled, "negated" if called off, "unknown" if only th'
+        'ought of; "unknown" with no evidence either way.\n'
+        "9. standing: true for a lasting preference or rule a person states about themselves (I nev"
+        "er ..., I always ..., I am allergic to ...); advice, plans and stories are false.\n"
+        "\n"
+        "## turns\n"
+        '10. turns: the run of messages the thing is in ("M3-M9", or "M3" for one message); fr'
+        "om copies, exactly as written, the first few words of the thing in its first message, "
+        "to the last few words in its last message.\n"
+        "\n"
+        "## Where to stop\n"
+        "One answer holds about {cap} SBs at most. Compile in order; when the next thing would t"
+        "ake you past that, stop before it; the messages after it are compiled in the next answ"
+        "er.\n"
+        "\n"
+        "## Output\n"
+        "First write ANALYSIS: in order, one line per thing, its run of messages and who told wh"
+        "at (do not restate the messages one by one). Then write a line JSON: followed by only "
+        "a valid JSON array, no double quotes inside strings:\n"
+        '[{{"turns":"M3-M9","from":"...","to":"...","text":"Nate tells Joanna ...","when":"bef'
+        'ore","status":"confirmed","standing":false,"next":[\n'
+        '   {{"turns":"M40-M44","from":"...","to":"...","text":"Nate later ...","when":"before"'
+        ',"status":"confirmed","standing":false}}]}}]\n'
+        "After the JSON write a line STOP: M<k>, the last message you compiled.\n"
+        "\n"
+        "CONTEXT (earlier messages, for understanding only, not compiled):\n"
+        "{context}\n"
+        "\n"
+        "NEW:\n"
+        "{new}"
+    ),
+}
+
+# The chat scene's step 1 by the thing talked about (user 2026-10-31): an SB is the thing being
+# talked about, over as many messages as the talk stays on it ("I had breakfast - what did you
+# have - a sandwich - he prefers noodles" is one SB); what exactly was said stays in the raw text,
+# which the raw search finds, so the SB holds what the raw search cannot give: what is being
+# talked about and what came of it. The Line's stretches carry how one thing led to the next.
+# Who talks and what each message is (own words, pasted material, others' talk) the model reads
+# from the words. The JSON is the chat step 1's, read by parse_step1_chat.
+STEP1_TOPIC = {
+    "zh": (
+        "你是 SemanticBlock（SB）编译器。把下面这段对话编译成 SB。"
+        "\n"
+        "\n"
+        "先看清这段对话：是谁在说（人和助手，还是几个人之间；原文里有名字就用名字），每条消息是"
+        "什么——某人自己的话，贴进来的材料（文档、规则、代码、日志、数据、别人的聊天记录），还是"
+        "没有内容的寒暄。\n"
+        "\n"
+        "## SB 是什么\n"
+        "1. SB 是正在聊的一件事：某人提起一件事，以及围绕它的来回——追问、回答、补充、反应——只"
+        "要话题还在这件事上，几条还是上百条消息都是这一个 SB。话题转到另一件事，才开始新的 SB；"
+        "一条消息中途转了话题，新 SB 就从那里开始。\n"
+        "2. SB 写的是理解，用句子主干写：主语（谁）+ 谓语（做了什么：询问、讲述、解释、建议、决"
+        "定、给出……）+ 宾语（哪件事，写出具体名称，让问到这件事的问题能找到它）。具体内容不写："
+        "吃了什么、谁喜欢什么、数字、步骤、代码、原文里写着的日期，都留在原文里，靠索引取。\n"
+        "3. 人给出的、从此以后都要遵守的指令或长期偏好（以后都……、每次……、我更喜欢……），单独"
+        "成一个 SB，standing 填 true。\n"
+        "4. 贴进来的材料不是谁的话：在它被贴来所为的那件事的 SB 里提一句贴了什么，不为它的内容立 "
+        "SB。没有内容的寒暄不成 SB。\n"
+        "\n"
+        "## 怎么写\n"
+        '5. text：一到两句话，按第 2 条的主干写。主语：人和助手的对话写"人""助手"，不用人设或'
+        "系统提示里的名字；几个人之间写他们的名字（没有名字写说话者 A／B）。原文说了的写清，没说"
+        "的不补，不写后来才发生的事。\n"
+        "6. 时间只解析一层：消息带着它说出口的时间（消息时间）。这件事本身发生的时间如果是相对说"
+        '法（三年之前、上周、明天），以消息时间为基准写出它约在何时，如"约 2023 年（三年之前）我'
+        '说过十年前去过冰岛"；这件事内容里再套着的时间（十年前）原样留着，不往下推算。\n'
+        "7. when 和 status 说这件事到这个 SB 结束时的状态：已经发生或成立填 before、confirmed；"
+        "没发生 before、negated；安排好了的 after、likely（有日期写上，如 after 2024-03-31）；只"
+        "是提议或推荐、没被接受的 after、unknown；取消或不做的 after、negated。助手说了不等于那件"
+        "事发生了。\n"
+        '8. turns 写这件事所在的消息范围（"M3-M20"，只有一条写 "M3"）。只有这件事从某条消息中'
+        "途开始或在中途结束时，才写 from（照原文抄下它开头的几个词）或 to（结尾的几个词），"
+        "否则不写。\n"
+        "\n"
+        "## 在哪里停\n"
+        "一次回答最多大约 {cap} 个 SB。按顺序编；下一件事会让你超出这个数时，就停在它前面；后面"
+        "的消息在下一次回答里编。\n"
+        "\n"
+        "## 输出\n"
+        "先写 ANALYSIS：一行说是谁在说、有哪几类消息；然后按顺序一行一件事，写成「M3-M9：在聊什"
+        "么」（不加方括号，不要逐条复述消息）。然后另起一行写 JSON:，后面只跟合法 JSON 数组，"
+        "字符串里不要用"
+        "英文双引号（引用用「」）：\n"
+        '[{{"turns":"M1-M9","text":"人询问……，助手给出……","when":"before",'
+        '"status":"confirmed","standing":false}},\n'
+        ' {{"turns":"M10-M14","text":"……","when":"after","status":"likely",'
+        '"standing":false}}]\n'
+        "JSON 之后另起一行写 STOP: M<k>，k 是你编到的最后一条消息。\n"
+        "\n"
+        "CONTEXT（之前的消息，只供理解，不编译）：\n"
+        "{context}\n"
+        "\n"
+        "NEW：\n"
+        "{new}"
+    ),
+    "en": (
+        "You are a SemanticBlock (SB) compiler. Compile the conversation below into SBs."
+        "\n"
+        "\n"
+        "First see what the conversation is: who is talking (a person and an assistant, or seve"
+        "ral people; use their names when the words give them), and what each message is: some"
+        "one's own words, material pasted in (a document, rules, code, a log, data, a transcrip"
+        "t of other people's talk), or small talk with nothing in it.\n"
+        "\n"
+        "## What an SB is\n"
+        "1. An SB is one thing being talked about: someone brings up a matter, and the back-and"
+        "-forth on it (questions, answers, further details, reactions), for as long as the talk"
+        " stays on it, over a few messages or a hundred, is this one SB. A new SB starts only w"
+        "hen the talk moves on to another thing; a message that turns to another thing midway s"
+        "tarts the new SB there.\n"
+        "2. An SB holds understanding, written as the core of a sentence: subject (who) + verb "
+        "(what they did: asks, tells, explains, suggests, decides, gives ...) + object (which m"
+        "atter, named concretely so that a question about it finds it). The contents are left "
+        "out: what was eaten, who likes what, numbers, steps, code, dates written in the words "
+        "stay in the raw text, which the index reaches.\n"
+        "3. An instruction or lasting preference the person gives that is meant to hold from n"
+        'ow on ("always ...", "whenever ..., do ...", "I prefer ...") is an SB of its own, '
+        "standing true.\n"
+        "4. Pasted material is nobody's words: the SB of the thing it was pasted for mentions w"
+        "hat was pasted; its contents get no SBs. Small talk with nothing in it is no SB.\n"
+        "\n"
+        "## Writing an SB\n"
+        "5. text: one or two sentences with the core of rule 2. Subject: in a chat with an ass"
+        'istant write "The person" and "the assistant", never a name from a persona or a syste'
+        "m prompt; between people use their names (speaker A / B when the words give none). Wr"
+        "ite what the raw text says, add nothing it does not, nothing that happened later.\n"
+        "6. Time, one level only: each message carries when it was said (its message time). Wh"
+        "en the time of the thing itself is said relatively (three years ago, last week, tomor"
+        'row), write about when it was from the message time, as "about 2023 (three years ag'
+        'o) I said I had been to Iceland ten years before"; a time inside the thing (ten year'
+        "s before) stays as said, not worked out further.\n"
+        "7. when and status: where the thing stands when this SB ends: it happened or holds, be"
+        "fore and confirmed; it did not, before and negated; it is arranged, after and likely ("
+        'add its date, "after 2024-03-31"); only proposed or recommended and not taken up, af'
+        "ter and unknown; called off, after and negated. The assistant saying it does not make "
+        "it happen.\n"
+        '8. turns: the run of messages the thing is in ("M3-M20", or "M3" for one). Only when '
+        "it starts or ends midway through a message, from copies exactly the first few words of "
+        "it, to the last few; otherwise leave them out.\n"
+        "\n"
+        "## Where to stop\n"
+        "One answer holds about {cap} SBs at most. Compile in order; when the next thing would "
+        "take you past that, stop before it; the messages after it are compiled in the next an"
+        "swer.\n"
+        "\n"
+        "## Output\n"
+        "First write ANALYSIS: one line on who is talking and what kinds of messages there are;"
+        ' then in order one line per thing, as "M3-M9: what it is about" (no brackets; do not '
+        "restate the messages one by one). Then write a line JSON: followed by only a valid JSON "
+        "array, no double quotes inside strings:\n"
+        '[{{"turns":"M1-M9","text":"The person asks ..., the assistant gives ...",'
+        '"when":"before","status":"confirmed","standing":false}},\n'
+        ' {{"turns":"M10-M14","text":"...","when":"after","status":"likely",'
+        '"standing":false}}]\n'
+        "After the JSON write a line STOP: M<k>, the last message you compiled.\n"
+        "\n"
+        "CONTEXT (earlier messages, for understanding only, not compiled):\n"
+        "{context}\n"
+        "\n"
+        "NEW:\n"
+        "{new}"
+    ),
+}
+
 # The chat scene's step 1: about how many SBs one answer holds. Past its usual length the model
 # compresses (a 92-sentence message taken by one SB, dropped words) instead of stopping, so it is
 # told to stop where its SBs close; the rest opens the next window. A property of the compiler
@@ -761,16 +1029,40 @@ def compiled_before(sbs: list[dict], done: int) -> list[dict]:
     ]
 
 
-def step1_prompt_slim4(lang: str, new: list[dict], context: list[dict], scene: str = "work") -> str:
+# a speaker's name opening a message: one to three capitalised words, or a few CJK characters
+_SPEAKER = re.compile(r"^\s*([A-Z][\w'.-]*(?: [A-Z][\w'.-]*){0,2}|[一-鿿]{1,6})[:：]\s")
+
+
+def between_people(messages: list[dict]) -> bool:
+    """A chat between people: no assistant, and the words of most messages open with the name of
+    one of at least two speakers who each speak more than once ("Nate: ..."). One person's pasted
+    notes, or a machine log whose lines open with a key, are not."""
+    if not messages or any(m.get("role") == "assistant" for m in messages):
+        return False
+    names = Counter(n.group(1) for m in messages if (n := _SPEAKER.match(m.get("text") or "")))
+    speakers = [name for name, k in names.items() if k >= 2]
+    return len(speakers) >= 2 and sum(names[s] for s in speakers) * 2 >= len(messages)
+
+
+def step1_prompt_slim4(
+    lang: str, new: list[dict], context: list[dict], scene: str = "work", grain: str = "meaning"
+) -> str:
     """As step1_prompt: NEW messages are M1, M2 ... in order. The chat scene has its own
-    template (STEP1_CHAT)."""
+    templates (STEP1_CHAT; STEP1_PEOPLE for a chat between people; STEP1_TOPIC, by the thing
+    talked about, with ``grain="topic"``)."""
     order = list(dict.fromkeys(m.get("session") for m in [*context, *new]))
     tag = (
         (lambda m: f" {SESSION[lang]}{chr(65 + order.index(m.get('session')) % 26)}")
         if len(order) > 1
         else (lambda m: "")
     )
-    template = STEP1_CHAT[lang] if scene == "chat" else STEP1_SLIM4[lang]
+    template = (
+        STEP1_TOPIC[lang]
+        if scene == "chat" and grain == "topic"
+        else (STEP1_PEOPLE if between_people([*context, *new]) else STEP1_CHAT)[lang]
+        if scene == "chat"
+        else STEP1_SLIM4[lang]
+    )
     return template.format(
         cap=ANSWER_SBS,
         context="\n".join(_line(lang, "", m, 600, tag(m)).replace("[ ", "[", 1) for m in context)
@@ -867,8 +1159,12 @@ STATUS = ("confirmed", "likely", "negated", "unknown")
 
 
 def extract_after_json(text: str) -> list:
-    """The array after the last "JSON:" line (the ANALYSIS before it may hold brackets)."""
-    return extract_json_array(text[text.rfind("JSON:") :] if "JSON:" in text else text)
+    """The array after the last "JSON:" line, else after the last ```json fence (the ANALYSIS
+    before it may hold brackets)."""
+    for mark in ("JSON:", "```json"):
+        if mark in text:
+            return extract_json_array(text[text.rfind(mark) :])
+    return extract_json_array(text)
 
 
 def _stamp(x: dict) -> str:
@@ -1042,13 +1338,28 @@ def uncovered(
 
 
 def check_step1_chat(
-    data: object, roles: list[str], paras: list[int] | None = None, texts: list[str] | None = None
+    data: object,
+    roles: list[str],
+    paras: list[int] | None = None,
+    texts: list[str] | None = None,
+    done: int | None = None,
 ) -> None:
-    """Most of the person's messages left outside every SB is a broken answer: ask again."""
+    """A broken answer (seen: one item and done) leaves most of the person's messages without an SB
+    and never reaches the last message before its stop: ask again. Only the messages before the
+    answer's stop (``done``) count: the rest open the next window. Material the person pasted (a
+    rulebook or a thread, around their question) may have no SB while the question and the answer
+    have one; an empty answer means nothing here to compile (a machine log): the raw text stays,
+    nothing is asked again (2026-10-31, CL-Bench)."""
+    if data == []:
+        return
     sbs = parse_step1_chat(data, roles, paras, texts)
-    people = [i for i, r in enumerate(roles) if r == "user"]
+    people = [i for i, r in enumerate(roles[:done]) if r == "user"]
     covered = {i for b in sbs for i in b["sources"]}
-    if len(people) >= 2 and sum(i in covered for i in people) * 2 < len(people):
+    if (
+        len(people) >= 2
+        and sum(i in covered for i in people) * 2 < len(people)
+        and len(roles[:done]) - 1 not in covered
+    ):
         raise ValueError(
             f"SBs cover {sum(i in covered for i in people)} of the person's {len(people)} messages"
         )
@@ -1401,6 +1712,175 @@ def parse_summaries(data: dict, n_threads: int) -> dict[int, str]:
         ):
             out[int(t[1:]) - 1] = str(x["summary"]).strip()[:4000]
     return out
+
+
+# --- the stretch layer (docs/LCE_FROZEN.md, 2026-10-31) ---------------------------------------
+# After a window's SBs, one call: the SBs in order cut into stretches (a stretch is the part of a
+# Line that has grown and settled: the semantic summary of a stretch of Path A), each closed one
+# summarized once - cause, who, when, what, consequence - which helps retrieval and the local
+# projection; where the talk took up an earlier stretch again; and which steps still in progress
+# these SBs settle (the terminator is the memory side's own: never shown to the answer model).
+STRETCH = {
+    "zh": (
+        "下面是一段对话按顺序编出的 SB（s1、s2……），每个带着它所在消息的时间范围。把它们按顺序"
+        "划成段，给已经收口的段写摘要。\n"
+        "\n"
+        "## 段是什么\n"
+        "1. 段是连续的几个 SB：话题在一条路上往前走，一件事引出下一件（聊早饭 → 饮食习惯 → 偏"
+        "好 → 想吃蛋挞）。话题转到另一条路上（聊的领域变了，或做的事变了：从排进度到写代码），"
+        "或者开了新的会话、隔了很久，段就到此为止，下一段开始。\n"
+        "2. 段按顺序覆盖所有 SB，不跳过、不重叠。\n"
+        "3. OPEN 里是之前还没收口的段。第一段接着它说下去，就写 joins_open: true，它的 SB 归进那"
+        "一段。\n"
+        "4. closed：话题已经离开这一段（后面接着别的段，或会话结束了），填 true。最后一段话题还没"
+        "走完的填 false，等它收口时再写摘要。\n"
+        "5. summary 只给 closed 的段写（接着 OPEN 的段，摘要要连 OPEN 里的 SB 一起写），一到三句"
+        "话，按顺序写：前因（因为什么聊起来的；对话是突然开始的就写无）、谁、何时（这一段消息的"
+        "时间范围）、做了什么、后果（结果怎样，话题因此转到了哪里）。这是比 SB 高一层的结构性总"
+        "结，讲这一段怎么变过来的：不写具体内容和单纯的数据（吃了什么、起点、目标、参数、测量值、"
+        "版本、步骤、代码、清单）。只有一种数值要写：它就是结果本身（分数提升了 30%、覆盖率提到 "
+        "78%），写最后的结果，不写起点和目标。时间照 SB 里的写法，不往下推算。\n"
+        "6. from：某一段重新聊起 EARLIER 里以前某一段的事，写出那一段的编号（T2），前因里写明接"
+        "着它。\n"
+        "7. settles：本次某个 SB 是人报告 IN PROGRESS 里某件还在进行的事有了结果（做完了、定了、"
+        '取消了），写 {{"s5": ["N2"]}}。只有人的报告算，助手这么说不算。\n'
+        "\n"
+        "只输出 JSON：\n"
+        '{{"stretches":[{{"sbs":"s1-s4","joins_open":false,"from":null,"closed":true,'
+        '"summary":"前因……，谁……，何时……，做了……，后果……"}},'
+        '{{"sbs":"s5-s7","joins_open":false,"from":"T2","closed":false,"summary":""}}],'
+        '"settles":{{"s6":["N1"]}}}}\n'
+        "\n"
+        "OPEN（之前没收口的段）：\n"
+        "{open}\n"
+        "\n"
+        "EARLIER（以前的段）：\n"
+        "{earlier}\n"
+        "\n"
+        "IN PROGRESS（还在进行的事）：\n"
+        "{progress}\n"
+        "\n"
+        "SBS：\n"
+        "{sbs}"
+    ),
+    "en": (
+        "Below are the SBs compiled from a conversation, in order (s1, s2 ...), each with the "
+        "time range of its messages. Cut them, in order, into stretches, and summarize the "
+        "closed ones.\n"
+        "\n"
+        "## What a stretch is\n"
+        "1. A stretch is a run of consecutive SBs where the talk goes on along one course, one "
+        "thing leading to the next (breakfast -> eating habits -> preferences -> wanting egg "
+        "tarts). Where the talk turns to another course (another field, or another thing being "
+        "done: from planning to writing code), or a new session starts, or after a long pause, "
+        "the stretch ends and the next one begins.\n"
+        "2. Stretches cover every SB, in order, with no gap and no overlap.\n"
+        "3. OPEN holds the stretch left open before. When the first stretch carries it on, "
+        "write joins_open: true; its SBs go into that stretch.\n"
+        "4. closed: true when the talk has left the stretch (another stretch follows, or the "
+        "session ended); false for a last stretch whose course is not run yet: it is summarized "
+        "when it closes.\n"
+        "5. summary, only for a closed stretch (one that joins OPEN covers OPEN's SBs too): one "
+        "to three sentences, in this order: cause (what started it; none when the talk just "
+        "began), who, when (the time range of its messages), what they did, consequence (what "
+        "came of it, and where the talk went because of it). A structural summary one level "
+        "above the SBs, of how this stretch changed things: no contents and no mere data (what "
+        "was eaten, starting points, targets, parameters, measurements, versions, steps, code, "
+        "lists). One kind of figure is written: one that is the result itself (the score rose "
+        "30%, coverage reached 78%), the final result, not the start or the target. Times as "
+        "the SBs give them, not worked out further.\n"
+        "6. from: when a stretch takes up again what an earlier stretch in EARLIER was about, "
+        "name it (T2); its cause says it carries that on.\n"
+        "7. settles: an SB here in which the person reports how something IN PROGRESS came out "
+        '(done, decided, called off): {{"s5": ["N2"]}}. Only the person\'s report counts, not '
+        "the assistant saying so.\n"
+        "\n"
+        "Output only JSON:\n"
+        '{{"stretches":[{{"sbs":"s1-s4","joins_open":false,"from":null,"closed":true,'
+        '"summary":"Cause ..., who ..., when ..., what ..., consequence ..."}},'
+        '{{"sbs":"s5-s7","joins_open":false,"from":"T2","closed":false,"summary":""}}],'
+        '"settles":{{"s6":["N1"]}}}}\n'
+        "\n"
+        "OPEN (the stretch left open before):\n"
+        "{open}\n"
+        "\n"
+        "EARLIER (earlier stretches):\n"
+        "{earlier}\n"
+        "\n"
+        "IN PROGRESS (things still going on):\n"
+        "{progress}\n"
+        "\n"
+        "SBS:\n"
+        "{sbs}"
+    ),
+}
+
+
+def stretch_prompt(
+    lang: str, sbs: list[dict], open_sbs: list[str], earlier: list[str], progress: list[str]
+) -> str:
+    """sbs: {"text", "time"}; open_sbs: the open stretch's SB texts; earlier: summaries of
+    earlier stretches (T1 ...); progress: steps still in progress (N1 ...)."""
+    return STRETCH[lang].format(
+        open="\n".join(f"- {t}" for t in open_sbs) or "-",
+        earlier="\n".join(f"T{n + 1}: {t}" for n, t in enumerate(earlier)) or "-",
+        progress="\n".join(f"N{n + 1}: {t}" for n, t in enumerate(progress)) or "-",
+        sbs="\n".join(
+            f"s{n + 1} [{s['time']}] {s['text']}" if s.get("time") else f"s{n + 1} {s['text']}"
+            for n, s in enumerate(sbs)
+        ),
+    )
+
+
+_SRANGE = re.compile(r"s(\d+)(?:\s*[-–~～至]\s*s?(\d+))?")
+
+
+def parse_stretches(data: object, n_sbs: int, n_earlier: int, n_progress: int) -> dict:
+    """{"stretches": [{"sbs": [i ...], "joins_open", "from": k | None, "closed", "summary"}],
+    "settles": {i: [k ...]}} (0-based). Stretches must cover s1..sn in order, no gap, no
+    overlap; a closed one needs a summary."""
+    if not isinstance(data, dict) or not isinstance(data.get("stretches"), list):
+        raise ValueError("'stretches' must be a list")
+    out, nxt = [], 0
+    for x in data["stretches"]:
+        if not isinstance(x, dict):
+            raise ValueError("a stretch must be an object")
+        m = _SRANGE.fullmatch(str(x.get("sbs", "")).strip())
+        if not m:
+            raise ValueError(f"stretch sbs not a range: {x.get('sbs')!r}")
+        a, b = int(m.group(1)) - 1, int(m.group(2) or m.group(1)) - 1
+        if a != nxt or b < a or b >= n_sbs:
+            raise ValueError(f"stretches must cover s1-s{n_sbs} in order; got s{a + 1}-s{b + 1}")
+        nxt = b + 1
+        frm = str(x.get("from") or "").strip()
+        k = int(frm[1:]) - 1 if frm[:1] == "T" and frm[1:].isdigit() else None
+        closed = bool(x.get("closed"))
+        summary = str(x.get("summary") or "").strip()[:2000]
+        if closed and not summary:
+            raise ValueError(f"closed stretch s{a + 1}-s{b + 1} has no summary")
+        out.append(
+            {
+                "sbs": list(range(a, b + 1)),
+                "joins_open": bool(x.get("joins_open")) and not out,
+                "from": k if k is not None and 0 <= k < n_earlier else None,
+                "closed": closed,
+                "summary": summary if closed else "",
+            }
+        )
+    if nxt != n_sbs:
+        raise ValueError(f"stretches cover s1-s{nxt}, not s1-s{n_sbs}")
+    settles: dict[int, list[int]] = {}
+    for key, refs in (data.get("settles") or {}).items():
+        k = str(key).strip()
+        if k[:1] == "s" and k[1:].isdigit() and 0 < int(k[1:]) <= n_sbs:
+            got = [
+                int(r[1:]) - 1
+                for r in (refs if isinstance(refs, list) else [refs])
+                if str(r)[:1] == "N" and str(r)[1:].isdigit() and 0 < int(str(r)[1:]) <= n_progress
+            ]
+            if got:
+                settles[int(k[1:]) - 1] = got
+    return {"stretches": out, "settles": settles}
 
 
 STATE = {

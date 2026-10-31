@@ -6,24 +6,25 @@
 
 ```bash
 pip install -e .[lce]
-export ARK_API_KEY=...          # 方舟（豆包编译、豆包向量）
+export QWEN_PLAN_API_KEY=...    # 阿里百炼 Token Plan（deepseek-v4.1-flash-1017 编译）
+export DASHSCOPE_API_KEY=...    # 阿里百炼（qwen3.7-text-embedding-flash 向量）
 export MRMEM_AML_TOKEN=...      # Add/Search 的鉴权 token（Bearer / Token / X-Api-Key 都认）
 mr-mem-aml check --config examples/runtime.aml-lce.json   # 先自检编译模型和向量
 mr-mem-aml serve --config examples/runtime.aml-lce.json
 ```
 
-`examples/runtime.aml-lce.json` 里要按远端改的：`data_dir`、`embedding.cache_path`、`host`（公网要 `0.0.0.0`）、`port`、`compile_concurrency`。
+`examples/runtime.aml-lce.json` 里要按远端改的：`data_dir`、`embedding.cache_path`（放在持久盘上）、`host`（公网要 `0.0.0.0`）、`port`、`compile_concurrency`。
 
 ## 配置里定下来的东西
 
 | 项 | 值 | 为什么 |
 |---|---|---|
-| 编译模型 | 方舟 `doubao-seed-2-1-pro`，关闭深度思考 | 所有验证都在它上面做的；换模型要重新验证 |
-| 向量 | 方舟 `doubao-embedding-vision`（2048 维） | 同上；P1 融合检索和 LCE 共用 |
+| 编译模型 | 阿里百炼 Token Plan `deepseek-v4.1-flash-1017`，`enable_thinking: false`（`QWEN_PLAN_API_KEY`） | 用户 10-31 定。同一段 200 条消息对比 qwen3.8-flash：第一步 JSON 读不出 1/13 对 9/21，编译 20 分钟对 37 分钟，20 题两遍 60.8 对 55.3（豆包 v14 53.9，P1 47.6）。方舟豆包额度已用完 |
+| 向量 | 阿里百炼 `qwen3.7-text-embedding-flash`（1024 维，`DASHSCOPE_API_KEY`），`cache_path` 本地缓存 | 用户 10-31 定：四种向量的 P1 召回差距不大（1–2 题以内），它便宜得多；P1 融合检索和 LCE 共用。接口同一文本两次返回的向量不完全一样（余弦约 0.998），缓存让重启重建索引时不重付费、检索不抖动 |
 | `keep_raw_on_compile_failure` | true | 编译失败也让 Add 返回 200，原文照样可检索（退回 P1） |
 | `compile_before_search` | true | 平台不会调 flush；Search 前先把这个用户还没收口的尾巴窗口编完（Search 最多 30 分钟） |
 | `compile_window` | 软 4 万 / 硬 8 万字符，自然断点收口 | 窗口收口的那次 Add 会等编译完成再返回（1–3 分钟） |
-| `line_read` | relay（原文命中 → SB → 沿承接取局部 + 精确原文片段），助手部分 `told`，`raw_fill: 100` | LCE 与 P1 共用证据：线和片段在前，后面按 P1 检索顺序补满到 top_k=100（不重复已被 SB 引用的原文），保证不低于 P1；这一项尚未实测。段承接（`carry: threads`）保留为开关、默认关 |
+| `line_read` | relay（原文命中 → SB → 沿承接取局部 + 精确原文片段），助手部分 `told`，`raw_fill: 100`，`fill_skip: shown`（默认） | LCE 与 P1 共用证据：线和片段在前，后面按 P1 检索顺序补满到 top_k=100，只跳过已经显示出来的原文（SB 只显示摘要，它的来源原文照补）。mini 集同一份向量对比见技术报告。段承接（`carry: threads`）保留为开关、默认关 |
 
 ## 验证（holdout beam_100k 60 题，DeepSeek 答题，每组两遍）
 
@@ -42,6 +43,7 @@ pm2_32k（33 题）：和 P1 打平（56.1 / 57.6）。
 
 ## 已知限制
 
-- 人与人聊天（LoCoMo）的编译场景没做，按"人和助手"编；编得不好时融合会补原文，接近 P1。
-- 正式题库的编译总时长和费用取决于题库总量和并行度，按本地实测大约每路每分钟 5 万字符。
+- 人与人聊天（LoCoMo）：没有助手、且消息开头能认出至少两个说话人名字时，第一步用人与人模板（一段话题来回一个 SB，用名字写谁对谁说）。平台若把一方当 assistant 发来，仍按人和助手编。
+- 人在消息里贴整段文档、群聊导出时，第一步可能逐行切、撞 1.6 万输出上限，重试 3 次后该窗只留原文（退回 P1）；费 token，不影响可检索。
+- 正式题库的编译总时长和费用取决于题库总量和并行度。ds1017 实测：单路约每分钟 2–3 万历史字符，长历史每个历史字符约 1.2 个输入 token（beam_1m 422 万字符：3 小时、519 万输入 + 87 万输出 token）。
 - 答题模型由平台锁定（官方脚本默认 Qwen3-14B），本地用的是 DeepSeek；弱答题模型下的效果待测。

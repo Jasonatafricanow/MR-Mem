@@ -75,6 +75,16 @@ class LineReadPolicy:
         0  # P1 where the Lines do not reach: after them and the raw they point to, this many
     )
     # raw hits (search order, whole) that no SB given here comes from
+    # which raw the fill takes as already given: "shown", only the words shown; "single", those
+    # and the source of an SB over one message; "sources", every source of an SB shown. Compared
+    # on the same cached vectors (2026-10-31, BEAM 100k/500k, PM2 32k, LoCoMo): "shown" best on
+    # three, above "sources" on all four
+    fill_skip: str = "shown"
+    # the terminator's marks on the steps shown (as said, "later settled", happened / in progress);
+    # False: none, the answer model gets only the two time axes (docs/LCE_FROZEN.md, 2026-10-31)
+    marks: bool = True
+    # the raw an SB shown brings: "all" its words; "hits" only those the raw search hit
+    raw_of_sb: str = "all"
     raw_full: int = (
         0  # > 0: after the Lines, this many raw hits whole in raw-search order (no snippets,
     )
@@ -418,6 +428,9 @@ def compose(
         b: str, whole: bool = True
     ) -> str:  # a step between two hits gives its first line only
         text = step(b).text if whole else step(b).text.split("\n")[0]
+        if not policy.marks:  # the terminator is the memory side's own (docs/LCE_FROZEN.md)
+            text = STAMP.sub("", text.split("\n")[0]).rstrip() + text[len(text.split("\n")[0]) :]
+            return f"[{at_b(b)}] {text}".replace("[ ", "[", 1).replace("[] ", "", 1)
         stamp = STAMP.search(text.split("\n")[0])
         if stamp:  # it carries its own status as said; the Line adds only what came later
             later = (
@@ -636,6 +649,9 @@ def compose(
         have = chars.get(record, [])
         chars[record] = None if p is None or have is None else have + [tuple(x) for x in p]
 
+    # "hits": of an SB's words only the messages the raw search hit (an SB over a whole talk would
+    # pour all its messages out and crowd the hits out of the budget; 2026-10-31, LoCoMo)
+    hit = set(raw_records) if policy.raw_of_sb == "hits" else None
     for block in top:
         if policy.assistant == "told" and not said(
             block
@@ -643,13 +659,16 @@ def compose(
             continue
         if (ptr := pointers(block)) is None:
             for record in sources(block):
-                merge(record, span(block, record))
+                if hit is None or record in hit:
+                    merge(record, span(block, record))
             continue
         own = {
             r: p for r, p in ptr["own"].items() if not any(r in d for d in ptr["parts"])
         }  # a part points into it
         for d in [own, *ptr["parts"]]:
             for record, p in d.items():
+                if hit is not None and record not in hit:
+                    continue
                 if ptr.get("chars"):
                     merge_chars(record, p)
                 else:
@@ -703,7 +722,16 @@ def compose(
             }
         )
     if policy.raw_fill:  # fusion: the raw search fills in what the compiled Lines do not cover
-        covered = {*keep, *chars, *(r for b in {*top, *seen} for r in sources(b))}
+        # an SB shows a summary, not the words it comes from: under "sources" an assistant's long
+        # answer told in one line, or a LoCoMo nickname in a talk, never reached the answer
+        stand_in = {
+            r
+            for b in {*top, *seen}
+            if policy.fill_skip == "sources"
+            or (policy.fill_skip == "single" and len(sources(b)) == 1)
+            for r in sources(b)
+        }
+        covered = {*keep, *chars, *stand_in}
         pool = (
             raw_records if fill_records is None else fill_records
         )  # P1's own list, as deep as it goes

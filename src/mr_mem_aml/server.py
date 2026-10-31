@@ -69,7 +69,36 @@ class RuntimeHost:
             except CompileFailed as exc:
                 self.call(runtime.fail_add, job, str(exc))
                 raise
-            return self.call(runtime.finish_add, job, compiled)
+            return self._finish(job, compiled)
+
+    def _finish(self, job, compiled) -> dict:
+        """runtime.finish_steps: its store work on the owner thread, its model calls (step 2,
+        threads, summaries) off it, each under a compile slot, so users place in parallel and
+        calls that need nothing of each other go together."""
+        steps = self.runtime.finish_steps(job, compiled)
+        sent, thrown = None, None
+        while True:
+            try:
+                call = (
+                    self.call(steps.throw, thrown)
+                    if thrown is not None
+                    else self.call(steps.send, sent)
+                )
+            except StopIteration as done:
+                return done.value
+            try:
+                if isinstance(call, list):
+                    with ThreadPoolExecutor(len(call)) as pool:
+                        sent = [f.result() for f in [pool.submit(self._slotted, c) for c in call]]
+                else:
+                    sent = self._slotted(call)
+                thrown = None
+            except Exception as exc:  # noqa: BLE001 - handed back to the step that asked
+                sent, thrown = None, exc
+
+    def _slotted(self, call):
+        with self._compile_slots:
+            return call[0](*call[1:])
 
     def search(self, payload: object, mode: str | None) -> dict:
         runtime = self.runtime
@@ -96,7 +125,7 @@ class RuntimeHost:
                 while (job := self.call(runtime._window_job, user, final=True)) is not None:
                     with self._compile_slots:
                         compiled = runtime.compile_job(job)
-                    self.call(runtime.finish_add, job, compiled)
+                    self._finish(job, compiled)
                     windows += 1
         return {"status": "ok", "windows": windows}
 

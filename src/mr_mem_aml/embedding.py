@@ -81,23 +81,70 @@ class GeminiEmbedding:
         return tuple(float(v) for v in data["embedding"]["values"])
 
 
+class _VectorCache:
+    """Persistent SQLite cache keyed by (model, dimension, text). Hosted endpoints do not return
+    the same vector twice (2026-10-31: qwen3.7-text-embedding-flash, cosine 0.998 between two
+    calls), so without it a restart or a rerun re-pays every text and reorders the dense arm."""
+
+    def __init__(self, path: str | Path, model: str, dimension: int) -> None:
+        import sqlite3
+        import threading
+
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self._db = sqlite3.connect(str(path), check_same_thread=False)
+        self._db.execute("CREATE TABLE IF NOT EXISTS vec (k TEXT PRIMARY KEY, v BLOB)")
+        self._lock = threading.Lock()
+        self._prefix = f"{model}|{dimension}|"
+
+    def _k(self, text: str) -> str:
+        import hashlib
+
+        return hashlib.sha256((self._prefix + text).encode("utf-8")).hexdigest()
+
+    def get(self, text: str) -> tuple[float, ...] | None:
+        import array
+
+        with self._lock:
+            row = self._db.execute("SELECT v FROM vec WHERE k = ?", (self._k(text),)).fetchone()
+        return tuple(array.array("f", row[0])) if row else None
+
+    def put(self, text: str, vector: tuple[float, ...]) -> None:
+        import array
+
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO vec VALUES (?, ?)",
+                (self._k(text), array.array("f", vector).tobytes()),
+            )
+            self._db.commit()
+
+
 class OpenAICompatibleEmbedding:
     def __init__(
         self, *, base_url: str, model: str, dimension: int, api_key_env: str | None = None,
         send_dimensions: bool = False, headers: dict[str, str] | None = None,
-        timeout: float = 60, attempts: int = 4,
+        timeout: float = 60, attempts: int = 4, cache_path: str | Path | None = None,
     ) -> None:
         self._identity = EmbeddingIdentity("openai-compatible-http", model, dimension, "api")
         self.url = base_url.rstrip("/") + "/embeddings"
         self.model, self.api_key_env = model, api_key_env
         self.send_dimensions, self.headers = send_dimensions, dict(headers or {})
         self.timeout, self.attempts = timeout, attempts
+        self._cache = _VectorCache(cache_path, model, dimension) if cache_path else None
 
     @property
     def identity(self) -> EmbeddingIdentity:
         return self._identity
 
     def embed(self, text: str) -> tuple[float, ...]:
+        if self._cache is not None and (known := self._cache.get(text)) is not None:
+            return known
+        vector = self._request(text)
+        if self._cache is not None:
+            self._cache.put(text, vector)
+        return vector
+
+    def _request(self, text: str) -> tuple[float, ...]:
         headers = dict(self.headers)
         if self.api_key_env:
             headers["Authorization"] = f"Bearer {_key(self.api_key_env)}"
