@@ -256,6 +256,10 @@ class MemoryRuntime:
         self.thread_failures = 0
         self.compile_rejected = 0
         self._hyde = None  # the HyDE expander, built on first use
+        from mr_mem_aml.decision import DecisionBypass
+
+        # the readout-time bypass (decision.py): RuntimeHost.search calls it off the owner thread
+        self.decision = DecisionBypass(config.decision) if config.decision else None
         self.compile_failed_kept_raw = (
             0  # compiles that failed after retries; their raw stays searchable
         )
@@ -1658,6 +1662,22 @@ class MemoryRuntime:
                 if item.content.strip()
             ]
         }
+
+    def decision_hits(self, payload: dict) -> tuple[str, list, str]:
+        """For the decision bypass: the question, its raw hits as messages (search order), and the
+        person's language. Owner thread: reads the raw index and the source store."""
+        from mr_mem_aml.decision import Message
+
+        user_id, question = payload["user_id"].strip(), payload["query"].strip()
+        records = dict.fromkeys(
+            u.record_id for u, _ in self.raw.search(user_id, question[:4096], self.decision.hits)
+        )
+        hits = [
+            Message(m.role, m.content)
+            for r in records
+            if (m := self.source.message_by_record(r)) is not None
+        ]
+        return question, hits, self.language_of(user_id)
 
     def _hyde_passage(self, text: str) -> str:
         """The hypothetical passage HyDE searches with ("" when it cannot be had: the question

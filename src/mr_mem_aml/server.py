@@ -109,7 +109,19 @@ class RuntimeHost:
             and isinstance(payload.get("user_id"), str)
         ):
             self.flush(payload["user_id"])  # nothing to do once the user's history is compiled
-        return self.call(runtime.search, payload, mode=mode)
+        found = self.call(runtime.search, payload, mode=mode)
+        if runtime.decision is not None and (mode or runtime.config.search_mode) == "path_a":
+            # the decision model's calls off the owner thread; the hits read on it
+            question, hits, lang = self.call(runtime.decision_hits, payload)
+            note = runtime.decision.note(question, hits, lang)
+            if note:
+                top_k = payload.get("top_k", 100)
+                first = found["data"][0]["score"] if found["data"] else 0.0
+                found["data"] = [
+                    {"id": "decision-note", "content": note, "score": float(first) + 1.0},
+                    *found["data"],
+                ][:top_k]
+        return found
 
     def flush(self, user_id: str | None = None) -> dict:
         """Compile what is left of one user's history (or every user's), tail included: as Add does,

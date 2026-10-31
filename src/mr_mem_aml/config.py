@@ -86,6 +86,11 @@ class RuntimeConfig:
     # their SBs -> the Line around them, plus raw snippets; None keeps the PathAReader read.
     # Keys of line_read.LineReadPolicy (sbs, up, down, raw_k, sb_k, rrf_k, tz_minutes, raw_full)
     line_read: dict[str, int] | None = None
+    # Search, path_a with line_read: a decision model judges the question over its raw hits and may
+    # put one note in front (decision.py: the person's own contradicting statements, or a detail
+    # the person never stated). {"base_url" | "base_url_env", "api_key_env", "model", "timeout",
+    # "workers", "hits"}; None: off
+    decision: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.path_a_engine not in ("flat", "tree"):
@@ -117,6 +122,11 @@ class RuntimeConfig:
                 raise ValueError(
                     "line_read needs raw_base and the tree engine's Line graph (points or moves)"
                 )
+        if self.decision is not None and (
+            self.line_read is None
+            or not (self.decision.get("base_url") or self.decision.get("base_url_env"))
+        ):
+            raise ValueError("decision needs line_read and a base_url or base_url_env")
         if self.compile_window is not None:
             w = self.compile_window
             if self.path_a_engine != "tree":
