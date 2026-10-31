@@ -57,6 +57,11 @@ class RuntimeHost:
             if self._background
             else None
         )
+        if self._background and self.runtime.config.compile_window is not None:
+            # after a restart nothing would kick a user whose Adds are all in: what was left to
+            # compile waited for that user's first Search, which then found only raw hits
+            for user in self.call(self.runtime.source.users_with_pending):
+                self._kick(user)
 
     def call(self, fn, *args, **kwargs):
         return self._owner.submit(fn, *args, **kwargs).result()

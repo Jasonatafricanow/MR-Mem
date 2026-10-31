@@ -393,3 +393,40 @@ def test_a_window_of_many_short_messages_closes_at_max_messages(tmp_path):
         assert sum(map(len, backend.windows)) == 20
     finally:
         rt.close()
+
+
+def test_after_a_restart_background_compile_picks_up_what_was_left(tmp_path):
+    import time
+
+    from mr_mem_aml.server import RuntimeHost
+
+    backend = TreeBackend()
+    config = RuntimeConfig(
+        data_dir=tmp_path / "data",
+        compiler={"type": "command", "argv": ["x"]},
+        path_a_engine="tree",
+        compile_window={"soft": 3, "hard": 5},
+        compile_before_search=True,
+        background_compile={"search_wait": 0.2, "idle_tail": 0.1},
+    )
+    texts = ["a1", "a2", "a3", "a4", "a5", "a6"]
+    messages = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": t} for i, t in enumerate(texts)
+    ]
+    rt = MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+    rt.source.put_request(  # stored before the restart, never compiled
+        {"request_id": "r1", "user_id": "a", "session_id": "s", "messages": messages},
+        received_at=datetime.now(UTC),
+    )
+    rt.close()
+    assert backend.windows == []
+    host = RuntimeHost(
+        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while sum(map(len, backend.windows)) < len(texts) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert sum(map(len, backend.windows)) == len(texts)  # no Add, no Search needed
+    finally:
+        host.close()
