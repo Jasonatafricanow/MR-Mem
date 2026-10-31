@@ -52,6 +52,16 @@ FILL = {
     "en": "[Other raw messages the search found, not covered above]",
 }
 STANDING = {"zh": "【长期指令和偏好】", "en": "[Standing instructions and preferences]"}
+FORGET = {
+    "zh": "【人要求忘掉的事：每条只管它说的那一件，人说过的其它事照旧】",
+    "en": (
+        "[What the person asked to be forgotten: each request covers only the one thing it"
+        " names; everything else the person has said still holds]"
+    ),
+}
+FORGOT = re.compile(
+    r"\bforget\b|\bforgotten\b|忘掉|忘记|忘了", re.I
+)  # an SB written as a request to forget
 CHANGES = {"zh": "相对 {} 的改动（- 删去，+ 新增）", "en": "changes from {} (- removed, + added)"}
 STAMP = re.compile(
     r"\[(confirmed|likely|negated|unknown)(?:; [^\]]*)?\]\s*$"
@@ -126,6 +136,9 @@ class LineReadPolicy:
     # put on the time line (docs/LCE_FROZEN.md 4); without it an old value in one summary and the
     # new one in another could not be told apart
     thread_span: bool = False
+    # the person's requests to forget, given apart from the other standing instructions under a
+    # line saying each covers only what it names
+    forget_scope: bool = False
     outline: bool = (
         False  # also the whole history's outline: each thread (a stretch of a Line) by its
     )
@@ -429,13 +442,24 @@ def compose(
 
     if standing:
         chain = sorted(standing, key=lambda b: (*_order(step(b)), b))
-        text = (
-            STANDING[lang]
-            + "\n"
-            + "\n".join(
-                f"[{at_b(b)}] {unmarked(step(b).text)}".replace("[ ", "[", 1).replace("[] ", "", 1)
-                for b in chain
+
+        def said_as(b: str) -> str:
+            return f"[{at_b(b)}] {unmarked(step(b).text)}".replace("[ ", "[", 1).replace(
+                "[] ", "", 1
             )
+
+        # a request to forget is scoped to the one thing it names: given apart and said so, as
+        # listed among the standing instructions it read as "keep away from all of this"
+        # (PersonaMem: related preferences never asked to be forgotten were avoided too)
+        forget = [
+            b for b in chain if policy.forget_scope and FORGOT.search(step(b).text.split("\n")[0])
+        ]
+        rest = [b for b in chain if b not in forget]
+        text = "\n".join(
+            [
+                *([STANDING[lang], *map(said_as, rest)] if rest else []),
+                *([FORGET[lang], *map(said_as, forget)] if forget else []),
+            ]
         )
         items.append(
             {

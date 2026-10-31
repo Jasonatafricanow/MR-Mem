@@ -121,6 +121,10 @@ class DecisionBypass:
             "last_outcome": "not_checked",
         }
         self.hits = int(config.get("hits", 30))  # the raw hits judged, in search order
+        # the "never stated" note says, in effect, that the answer is not there: the nearest to
+        # an answer Search may not give (AML: Search must not generate final answers), and on
+        # PersonaMem it was put on 42 of 62 questions; off unless asked for
+        self.absence = bool(config.get("absence", False))
 
     def _ask(self, state: dict, questions: dict) -> dict:
         body = json.dumps({"model": self.model, "state": state, "questions": questions}).encode()
@@ -227,7 +231,7 @@ class DecisionBypass:
         )["kind"]["choice"]
         if kind == "yesno":
             return self._contradiction(question, hits, lang)
-        if kind == "specific":
+        if kind == "specific" and self.absence:
             return self._absence(question, hits, lang)
         return None
 

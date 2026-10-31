@@ -4,8 +4,8 @@ leaves the readout alone."""
 from mr_mem_aml.decision import DecisionBypass, Message
 
 
-def bypass(answers):
-    d = DecisionBypass({"base_url": "http://unused"})
+def bypass(answers, absence=True):
+    d = DecisionBypass({"base_url": "http://unused", "absence": absence})
     d._ask = lambda state, questions: answers(state, questions)
     return d
 
@@ -123,3 +123,12 @@ def test_retry_after_cannot_extend_the_total_deadline(monkeypatch):
     assert d.note("q", HITS) is None
     assert len(calls) == 1 and calls[0] <= 0.1
     assert d.health()["timeouts"] == 1
+
+
+def test_never_stated_note_is_off_by_default():
+    def where(state, questions):
+        if "kind" in questions:
+            return {"kind": {"choice": "specific"}}
+        return {"src": {"choice": "absent"}}
+
+    assert bypass(where, absence=False).note("Which ESLint rules did I enforce?", HITS) is None
