@@ -283,12 +283,18 @@ def test_a_compile_that_keeps_failing_keeps_the_raw_and_add_still_succeeds(tmp_p
         path_a_engine="tree",
         compile_window={"soft": 3, "hard": 5},
         keep_raw_on_compile_failure=True,
+        placement="points",
+        raw_base=True,
+        line_read={"projection": "relay", "raw_fill": 0, "hit_anchors": True},
     )
     rt = MemoryRuntime(config, compiler=SemanticCompiler(Down(), schema="tree"))
     try:
         out = add(rt, "r1", "u1", "a1", "u2", "a2", "u3", "a3")
         assert out["success"] is True and rt.compile_failed_kept_raw >= 1
         assert rt.source.open_window("u1") is None  # the window is passed, not retried on every Add
+        found = rt.search({"user_id": "u1", "query": "u1", "top_k": 100})["data"]
+        assert any("u1" in item["content"] for item in found)
+        assert rt.search({"user_id": "another", "query": "u1"})["data"] == []
     finally:
         rt.close()
 

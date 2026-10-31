@@ -152,6 +152,7 @@ class RuntimeHost:
             "hyde": config.hyde,
             "compile_concurrency": config.compile_concurrency,
             "thread_failures": runtime.thread_failures,
+            "decision": runtime.decision.health() if runtime.decision else {"configured": False},
         }
 
     def close(self) -> None:

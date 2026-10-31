@@ -11,7 +11,7 @@ import time
 from mr_mem_aml.config import RuntimeConfig
 
 
-def _check(config: RuntimeConfig) -> int:
+def _check(config: RuntimeConfig, *, check_decision: bool = False) -> int:
     """Preflight every working condition before a long evaluation run."""
     report: dict[str, str] = {}
     ok = True
@@ -53,6 +53,16 @@ def _check(config: RuntimeConfig) -> int:
     except Exception as exc:  # noqa: BLE001 - diagnostic boundary
         report["embedding"] = f"FAILED: {exc}"
         ok = False
+    if config.decision:
+        from mr_mem_aml.decision import DecisionBypass, Message
+
+        decision = DecisionBypass(config.decision)
+        if check_decision:
+            decision.note("Health check", [Message("user", "Health check")])
+            ok = ok and decision.health()["status"] == "available"
+        report["decision"] = decision.health()["status"]
+    else:
+        report["decision"] = "disabled"
     report["data_dir"] = str(config.data_dir)
     print(json.dumps(report, ensure_ascii=False, indent=1))
     return 0 if ok else 1
@@ -65,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default="BAAI/bge-small-en-v1.5", help="fetch-model")
     parser.add_argument("--dir", help="fetch-model: target directory for model files")
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument("--check-decision", action="store_true",
+                        help="check: also call the decision provider (may incur charges)")
     args = parser.parse_args(argv)
     if args.command == "fetch-model":
         if not args.dir:
@@ -81,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     config = RuntimeConfig.load(args.config)
     if args.command == "check":
-        return _check(config)
+        return _check(config, check_decision=args.check_decision)
     from mr_mem_aml.server import serve
 
     serve(config)

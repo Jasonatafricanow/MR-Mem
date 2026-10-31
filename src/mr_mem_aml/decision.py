@@ -111,6 +111,13 @@ class DecisionBypass:
         self.model = config.get("model", "decision-model-preview")
         self.timeout = float(config.get("timeout", 30))
         self.workers = int(config.get("workers", 16))
+        self.total_timeout = float(config.get("total_timeout", 15))
+        if self.timeout <= 0 or self.total_timeout <= 0 or self.workers < 1:
+            raise ValueError("decision timeouts and workers must be positive")
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._stats = {"requests": 0, "notes": 0, "failures": 0, "timeouts": 0,
+                       "last_outcome": "not_checked"}
         self.hits = int(config.get("hits", 30))  # the raw hits judged, in search order
 
     def _ask(self, state: dict, questions: dict) -> dict:
@@ -123,40 +130,97 @@ class DecisionBypass:
                 method="POST",
                 headers={"Content-Type": "application/json", "Authorization": "Bearer " + key},
             )
+            remaining = self._remaining()
+            if not _SLOTS.acquire(timeout=remaining):
+                raise TimeoutError("decision concurrency wait exceeded deadline")
+            delay = min(8, 2**attempt)
             try:
-                with _SLOTS, urllib.request.urlopen(request, timeout=self.timeout) as response:
+                with urllib.request.urlopen(
+                    request, timeout=min(self.timeout, self._remaining())
+                ) as response:
                     return json.loads(response.read())["answers"]
             except urllib.error.HTTPError as exc:
                 if exc.code != 429 and exc.code < 500:
                     raise
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                try:
+                    delay = max(delay, float(retry_after)) if retry_after else delay
+                except ValueError:
+                    pass
+            except TimeoutError:
+                raise
             except OSError:
                 pass
-            time.sleep(min(8, 2**attempt))
+            finally:
+                _SLOTS.release()
+            remaining = self._remaining()
+            if delay >= remaining:
+                raise TimeoutError("decision retry exceeds deadline")
+            time.sleep(delay)
         raise RuntimeError("decision model: gave up after retries")
 
+    def _remaining(self) -> float:
+        remaining = getattr(self._local, "deadline", 0) - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("decision deadline exceeded")
+        return remaining
+
+    def health(self) -> dict:
+        with self._lock:
+            stats = dict(self._stats)
+        stats["status"] = ("not_checked" if stats["last_outcome"] == "not_checked"
+                           else "degraded" if stats["last_outcome"] in ("failure", "timeout")
+                           else "available")
+        return {"configured": True, "total_timeout": self.total_timeout, **stats}
+
     def note(self, question: str, hits: list[Message], lang: str = "en") -> str | None:
+        # The caller stops waiting even if an underlying socket is slow to return.
+        deadline = time.monotonic() + self.total_timeout
+        def run():
+            self._local.deadline = deadline
+            return self._note(question, hits, lang)
+        with self._lock:
+            self._stats["requests"] += 1
+        pool = ThreadPoolExecutor(1)
+        future = pool.submit(run)
+        note, outcome = None, "ok"
+        try:
+            note = future.result(timeout=max(0, deadline - time.monotonic()))
+        except TimeoutError:
+            outcome = "timeout"
+        except Exception as exc:  # no source text, URL or credential in degradation logs
+            outcome = "failure"
+            log.warning("decision bypass skipped (%s)", type(exc).__name__)
+        finally:
+            future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+        with self._lock:
+            self._stats["last_outcome"] = outcome
+            self._stats["notes"] += int(note is not None)
+            self._stats["failures"] += int(outcome == "failure")
+            self._stats["timeouts"] += int(outcome == "timeout")
+        return note
+
+    def _note(self, question: str, hits: list[Message], lang: str = "en") -> str | None:
         """The note for this question over its raw hits (search order), or None."""
         lang = lang if lang in CONTRA else "en"
         hits = hits[: self.hits]
         if not hits:
             return None
-        try:
-            kind = self._ask(
-                {"question": question},
-                {
-                    "kind": {
-                        "type": "choice",
-                        "instructions": "这个问题属于哪一类？",
-                        "criteria": KINDS,
-                    }
-                },
-            )["kind"]["choice"]
-            if kind == "yesno":
-                return self._contradiction(question, hits, lang)
-            if kind == "specific":
-                return self._absence(question, hits, lang)
-        except Exception as exc:  # noqa: BLE001 - a bypass: the readout stands without it
-            log.warning("decision bypass skipped: %s", str(exc)[:200])
+        kind = self._ask(
+            {"question": question},
+            {
+                "kind": {
+                    "type": "choice",
+                    "instructions": "这个问题属于哪一类？",
+                    "criteria": KINDS,
+                }
+            },
+        )["kind"]["choice"]
+        if kind == "yesno":
+            return self._contradiction(question, hits, lang)
+        if kind == "specific":
+            return self._absence(question, hits, lang)
         return None
 
     @staticmethod
@@ -172,12 +236,15 @@ class DecisionBypass:
         mine = [m for m in hits if m.role == "user" and len(self._shown(m)) <= 6000]
         if len(mine) < 2:
             return None
+        deadline = self._local.deadline
+        def judge(m):
+            self._local.deadline = deadline
+            self._remaining()
+            return self._ask({"question": question, "message": self._shown(m)}, SAID)
         with ThreadPoolExecutor(self.workers) as pool:
             scores = list(
                 pool.map(
-                    lambda m: self._ask(
-                        {"question": question, "message": self._shown(m)}, SAID
-                    ),
+                    judge,
                     mine,
                 )
             )
