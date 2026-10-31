@@ -1935,6 +1935,11 @@ class MemoryRuntime:
             ranked,
             records,
             fill_records=pool,
+            uncompiled_records=[
+                r for r in records
+                if not any(self.core.canonical.get(b)
+                           for b in self._blocks_by_record.get(r, ()))
+            ],
             step=step,
             sources=sources,
             parents=up,

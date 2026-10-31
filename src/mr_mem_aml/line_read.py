@@ -370,6 +370,7 @@ def compose(
     raw_records: Sequence[str],
     *,
     fill_records: Sequence[str] | None = None,
+    uncompiled_records: Sequence[str] = (),
     step: Callable[[str], Step],
     sources: Callable[[str], Sequence[str]],
     parents: Callable[[str], Sequence[str]],
@@ -687,6 +688,9 @@ def compose(
                         record,
                         None if p is None else [tuple(x) if isinstance(x, list) else x for x in p],
                     )
+    # A raw hit without a usable SB must survive even when optional fill is off.
+    for record in uncompiled_records:
+        merge(record, None)
     found = [(r, m) for r in dict.fromkeys([*keep, *chars]) if (m := message(r)) is not None]
     found.sort(
         key=lambda x: (

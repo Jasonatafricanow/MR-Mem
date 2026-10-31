@@ -535,3 +535,22 @@ def test_p1s_whole_list_backs_the_lines_up_not_only_the_anchor_hits():
                        policy=lr.LineReadPolicy(sbs=1, projection="hits", raw_fill=100))
     filled = [i["id"] for i in items if i["kind"] == "source" and i["id"] != "raw:m1"]
     assert filled == ["raw:m2", "raw:m3", "raw:m4"]  # beyond the one anchor hit, in P1's order
+
+
+def test_uncompiled_raw_hit_survives_without_fill():
+    msgs = {r: lr.RawMessage(r, "user", None, (1, n))
+            for n, r in enumerate(["compiled", "uncompiled"], 1)}
+    items = lr.compose(
+        "q", ["sb"], list(msgs), uncompiled_records=["uncompiled"],
+        step=lambda b: lr.Step("A compiled topic", None, True, (1, 1)),
+        sources=lambda b: ["compiled"], parents=lambda b: [], children=lambda b: [],
+        message=msgs.get, lang="en", policy=lr.LineReadPolicy(projection="hits", raw_fill=0),
+    )
+    assert [i["id"] for i in items if i["kind"] == "source"] == [
+        "raw:compiled", "raw:uncompiled"]
+    empty = lr.compose(
+        "q", [], ["uncompiled"], uncompiled_records=["uncompiled"],
+        step=lambda b: None, sources=lambda b: [], parents=lambda b: [], children=lambda b: [],
+        message=msgs.get, lang="en", policy=lr.LineReadPolicy(raw_fill=0),
+    )
+    assert [i["id"] for i in empty] == ["raw:uncompiled"]
