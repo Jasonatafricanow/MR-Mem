@@ -896,6 +896,14 @@ class MemoryRuntime:
         scope = user_scope(user_id)
         blocks = blocks_from_json(compiled)
         committed = self._admit(scope, wid, blocks)
+        if self.embedding is not None and committed:
+            # the SB index embeds each SB's content: fetched here in one batch off the owner
+            # thread into the embedding cache, so the projection below reads them locally
+            # instead of holding the owner thread (and every Search) for one call per SB
+            try:
+                yield (self._embed_texts, [m.content for m in committed])
+            except Exception as exc:  # noqa: BLE001 - the projection embeds them itself, slower
+                log.warning("SB vectors for %s not prefetched: %s", wid, str(exc)[:200])
         self._project()
         self._generation += 1
         at = max(m.occurred_at for m in job.messages[:kept])
@@ -928,6 +936,20 @@ class MemoryRuntime:
                 )
         else:
             self._grow(scope, blocks, committed, compiled.get("refs", {}), at)
+        if self.embedding is not None:
+            # the texts a Search ranks by (each SB's first line, each stretch summary), embedded
+            # here in one batch off the owner thread: left to the Search, they were embedded one
+            # by one on the owner thread, and Searches queued past a 20-second gateway
+            texts = [m.content.split("\n")[0] for m in committed]
+            if self.config.placement == "moves":
+                texts += [s for s in (placement.get("summaries") or {}).values() if s]
+            missing = [t for t in dict.fromkeys(texts) if t and t not in self._vectors]
+            if missing:
+                try:
+                    got = yield (self._embed_texts, missing)
+                    self._vectors.update(zip(missing, got, strict=True))
+                except Exception as exc:  # noqa: BLE001 - a Search embeds them itself, slower
+                    log.warning("vectors for %s not prefetched: %s", wid, str(exc)[:200])
         self.source.set_window_done(wid)
         return {"window": wid, "messages": kept, "blocks": len(committed)}
 

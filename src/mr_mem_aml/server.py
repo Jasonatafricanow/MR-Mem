@@ -121,6 +121,28 @@ class RuntimeHost:
         with self._compile_slots:
             return call[0](*call[1:])
 
+    def _warm(self, payload: object) -> None:
+        """The query's vector, fetched on this request thread into the embedding cache before
+        the Search runs on the owner thread (which then reads it locally): one embedding call
+        on the owner thread held every other user's Search and Add behind it."""
+        embedding = self.runtime.embedding
+        if (
+            embedding is None
+            or not hasattr(embedding, "embed_many")
+            or not isinstance(payload, dict)
+        ):
+            return
+        query, options = payload.get("query"), payload.get("options")
+        if not isinstance(query, str) or not query.strip():
+            return
+        text = query.strip()
+        if self.runtime.config.append_options and isinstance(options, list) and options:
+            text = text + "\n" + "\n".join(str(o) for o in options)
+        try:
+            embedding.embed_many([text[:4096]])
+        except Exception as exc:  # noqa: BLE001 - the Search embeds it itself
+            log.warning("query vector not prefetched: %s", type(exc).__name__)
+
     def _kick(self, user: str, final: bool = False) -> threading.Event:
         """Have the user's due windows compiled in the background (``final``: the tail too, as
         flush does); returns the event set when the user's compiling is idle again. An Add with
@@ -190,6 +212,7 @@ class RuntimeHost:
                 idle.wait(float(self._background.get("search_wait", 15)))
             else:
                 self.flush(payload["user_id"])  # nothing to do once the history is compiled
+        self._warm(payload)
         found = self.call(runtime.search, payload, mode=mode)
         if runtime.decision is not None and (mode or runtime.config.search_mode) == "path_a":
             # the decision model's calls off the owner thread; the hits read on it
