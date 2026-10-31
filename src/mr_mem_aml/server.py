@@ -269,6 +269,7 @@ class RuntimeHost:
             # only their raw text, and those the endpoint refused: 0 window_failures alone hid them
             "compile_failed_kept_raw": runtime.compile_failed_kept_raw,
             "compile_rejected": runtime.compile_rejected,
+            "compile_capped": runtime.compile_capped,
             "decision": runtime.decision.health() if runtime.decision else {"configured": False},
             "background_compile": (
                 {

@@ -432,6 +432,15 @@ class AmlSourceStore:
             "WHERE user_id=? AND seq BETWEEN ? AND ? ORDER BY seq", (user_id, first_seq, last_seq)
         )
 
+    def chars_before(self, user_id: str, seq: int) -> int:
+        """Characters of the user's messages stored before ``seq``."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(content)),0) FROM messages WHERE user_id=? AND seq<?",
+                (user_id, seq),
+            ).fetchone()
+        return int(row[0])
+
     def users_with_pending(self) -> tuple[str, ...]:
         with self._lock:
             rows = self._conn.execute(

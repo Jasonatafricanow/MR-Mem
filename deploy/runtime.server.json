@@ -36,11 +36,15 @@
   "step1": "topic",
   "layer2": "stretches",
   "scene": "chat",
+  "compile_input": {
+    "assistant_head": 600
+  },
   "compile_window": {
     "soft": 40000,
     "hard": 80000,
     "measure": "chars",
-    "max_messages": 200
+    "max_messages": 200,
+    "max_chars_per_user": 10000000
   },
   "compile_concurrency": 8,
   "line_read": {

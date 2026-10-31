@@ -430,3 +430,16 @@ def test_after_a_restart_background_compile_picks_up_what_was_left(tmp_path):
         assert sum(map(len, backend.windows)) == len(texts)  # no Add, no Search needed
     finally:
         host.close()
+
+
+def test_a_history_past_max_chars_per_user_keeps_raw_only(tmp_path):
+    backend = TreeBackend()
+    rt = runtime(tmp_path, backend, soft=4, hard=6, max_chars_per_user=8)
+    try:
+        add(rt, "r1", *[f"m{i}" for i in range(12)])  # 2-3 characters each
+        rt.flush()
+        compiled = sum(map(len, backend.windows))
+        assert 0 < compiled < 12 and rt.compile_capped > 0  # the rest never went to the model
+        assert rt.source.users_with_pending() == ()  # capped windows are done, not left pending
+    finally:
+        rt.close()

@@ -266,6 +266,10 @@ class MemoryRuntime:
         self.compile_failed_kept_raw = (
             0  # compiles that failed after retries; their raw stays searchable
         )
+        # compile_window.max_chars_per_user: users past it, and their windows kept raw only
+        self._capped: set[str] = set()
+        self._capped_windows: set[str] = set()
+        self.compile_capped = 0
         self.window_failures = 0
         # work blocks that run past the person's feedback into the assistant's next
         # message (design 4.1); counted and logged, never refused
@@ -570,12 +574,25 @@ class MemoryRuntime:
 
         # size[i]: what the first i pending messages count toward the caps (messages or
         # characters); entries placement drops background notices, so they do not count
+        # compile_window.count_read (off): with compile_input.assistant_head, an assistant message
+        # counts as much as step 1 reads of it, so a window holds about three times the history
+        # and the instructions every window repeats are paid a third as often. Measured on BEAM
+        # 100k (2026-11-01): 34 -> 11 windows, input -33%, output -28%, but stretches cut coarser
+        # (81 -> 52) and 50.9 -> 46.5 in both passes; off
+        head = (
+            int((self.config.compile_input or {}).get("assistant_head") or 0)
+            if self.config.compile_window.get("count_read")
+            else 0
+        )
         size = [0]
         for _, m in pending:
             counted = self.config.placement not in ("entries", "moves") or not is_noise(
                 m.role, m.content
             )
-            size.append(size[-1] + (len(m.content) if chars else 1) * int(counted))
+            length = len(m.content)
+            if head and m.role == "assistant":
+                length = min(length, head)
+            size.append(size[-1] + (length if chars else 1) * int(counted))
         n = len(pending)
         # at most this many messages per window as well: step 1 writes, per SB, the messages it
         # covers, so its output grows with the count; a window of 500 short messages (40k chars,
@@ -614,6 +631,12 @@ class MemoryRuntime:
         seqs = tuple(seq for seq, _ in pending[:end])
         messages = tuple(m for _, m in pending[:end])
         carry = not (final and end == len(pending))  # the last window keeps its tail
+        cap = int(self.config.compile_window.get("max_chars_per_user") or 0)
+        if cap and (user_id in self._capped or self.source.chars_before(user_id, seqs[0]) >= cap):
+            # a user's history past the cap keeps its raw text only (searchable as P1 is):
+            # compile cost is every token read, and a few histories hold most of the tokens
+            self._capped.add(user_id)
+            self._capped_windows.add(f"{user_id}:w{seqs[0]}")
         return AddJob(
             request,
             messages,
@@ -756,6 +779,9 @@ class MemoryRuntime:
         """Any thread: the model call. Touches no store."""
         if job.compiled is not None:
             return job.compiled
+        if job.window is not None and job.window[0] in self._capped_windows:
+            self.compile_capped += 1  # past the user's cap: raw only, no model call
+            return self._journal(job, (), len(job.messages))
         trace: dict = {}  # entries placement: pieces, entries and audit for the journal
         try:
             started = time.monotonic()

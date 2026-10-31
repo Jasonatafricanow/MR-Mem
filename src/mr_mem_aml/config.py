@@ -153,6 +153,10 @@ class RuntimeConfig:
                 raise ValueError("compile_window needs 1 <= soft <= hard")
             if w.get("measure", "messages") not in ("messages", "chars"):
                 raise ValueError("compile_window measure must be 'messages' or 'chars'")
+            if "max_chars_per_user" in w and not (
+                type(w["max_chars_per_user"]) is int and w["max_chars_per_user"] >= 1
+            ):
+                raise ValueError("compile_window max_chars_per_user must be an integer >= 1")
             if "max_messages" in w and not (
                 type(w["max_messages"]) is int and w["max_messages"] >= 1
             ):
