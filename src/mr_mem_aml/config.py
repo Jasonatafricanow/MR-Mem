@@ -91,6 +91,10 @@ class RuntimeConfig:
     # seconds without an Add before the tail window is compiled too (30)}. For a gateway that
     # cuts requests short (InstaBox: about 20 seconds); None: Add compiles, Search flushes first
     background_compile: dict[str, float] | None = None
+    # what step 1 reads ({"assistant_head": n}: each assistant message to n characters, a code
+    # block in it to its first 200; search and readout keep the raw text whole). Evaluation
+    # ingests whole histories at once, where nothing is cached: compile cost is every token read
+    compile_input: dict[str, int] | None = None
     # Search, path_a with line_read: a decision model judges the question over its raw hits and may
     # put one note in front (decision.py: the person's own contradicting statements, or a detail
     # the person never stated). {"base_url" | "base_url_env", "api_key_env", "model", "timeout",

@@ -211,6 +211,9 @@ class OpenAICompatibleBackend:
             "chars_out": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
+            # input tokens the endpoint served from its prefix cache (billed far lower): DeepSeek's
+            # prompt_cache_hit_tokens, or OpenAI-style prompt_tokens_details.cached_tokens
+            "cache_hit_tokens": 0,
             "cut_at_max_tokens": 0,
         }
         self._usage_lock = threading.Lock()
@@ -256,6 +259,11 @@ class OpenAICompatibleBackend:
                         self.usage["chars_out"] += len(content)
                         self.usage["prompt_tokens"] += int(tokens.get("prompt_tokens") or 0)
                         self.usage["completion_tokens"] += int(tokens.get("completion_tokens") or 0)
+                        self.usage["cache_hit_tokens"] += int(
+                            tokens.get("prompt_cache_hit_tokens")
+                            or (tokens.get("prompt_tokens_details") or {}).get("cached_tokens")
+                            or 0
+                        )
                         self.usage["cut_at_max_tokens"] += (
                             data["choices"][0].get("finish_reason") == "length"
                         )
@@ -651,6 +659,9 @@ def _text(value: object, name: str, limit: int) -> str:
     return value.strip()
 
 
+_CODE = re.compile(r"```.*?```", re.S)
+
+
 class SemanticCompiler:
     def __init__(
         self,
@@ -661,6 +672,7 @@ class SemanticCompiler:
         schema: Schema = "flat",
         scene: str = "chat",
         step1: str = "moves",
+        assistant_head: int = 0,
     ) -> None:
         if step1 not in ("moves", "slim4", "topic"):
             raise ValueError("step1 must be 'moves', 'slim4' or 'topic'")
@@ -682,12 +694,20 @@ class SemanticCompiler:
         self.schema = schema
         self.scene = scene  # entries: how code assembles blocks (work or chat)
         self.step1 = step1  # moves: which step-1 prompt writes the SBs
+        # moves: step 1 reads each assistant message only to this many characters, a code block
+        # in it to its first 200 (0: whole). An assistant's SB says what it gave for which matter
+        # of the person's, never its contents (those stay in the raw text, which search and the
+        # readout still use whole); its long answers were most of what step 1 read (BEAM 83-97%
+        # of the characters, LongMemEval 88%)
+        self.assistant_head = max(0, int(assistant_head))
         self.version = {
             "tree": TREE_PROMPT_VERSION,
             "points": POINTS_PROMPT_VERSION,
             "entries": ENTRIES_PROMPT_VERSION,
             "moves": MOVES_PROMPT_VERSION,
         }.get(schema, PROMPT_VERSION) + ({"slim4": "-slim4", "topic": "-topic"}.get(step1, ""))
+        if self.assistant_head:
+            self.version += f"-ah{self.assistant_head}"
 
     def prompt(
         self,
@@ -910,6 +930,18 @@ class SemanticCompiler:
                 )
         raise CompileError(f"invalid compiler output after {self.attempts} attempts: {last}")
 
+    def _read(self, role: str, text: str) -> str:
+        """What step 1 reads of a message (assistant_head): an assistant message's head and its
+        end (its opening is often a preamble, what it concluded or changed comes last), each
+        code block in it to its first 200 characters."""
+        if not self.assistant_head or role != "assistant":
+            return text
+        short = _CODE.sub(lambda m: m.group(0)[:200].rstrip() + "\n```", text)
+        if len(short) <= self.assistant_head:
+            return short
+        tail = self.assistant_head // 4
+        return short[: self.assistant_head - tail] + " … " + short[-tail:]
+
     def _compile_moves(
         self, new, context, known_lines, window: bool, trace: dict | None, tail: bool = True
     ):
@@ -927,7 +959,7 @@ class SemanticCompiler:
         material = [
             {
                 "role": new[i].role,
-                "text": new[i].content,
+                "text": self._read(new[i].role, new[i].content),
                 "session": new[i].session_id,
                 **(
                     {"time": new[i].occurred_at.strftime("%Y-%m-%d %H:%M")}
@@ -938,7 +970,7 @@ class SemanticCompiler:
             for i in use
         ]
         ctx = [
-            {"role": m.role, "text": m.content, "session": m.session_id}
+            {"role": m.role, "text": self._read(m.role, m.content), "session": m.session_id}
             for m in context
             if not entry_mode.is_noise(m.role, m.content)
         ][-6:]
