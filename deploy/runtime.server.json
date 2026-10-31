@@ -28,8 +28,8 @@
   "keep_raw_on_compile_failure": true,
   "compile_before_search": true,
   "background_compile": {
-    "search_wait": 8,
-    "idle_tail": 5,
+    "search_wait": 15,
+    "idle_tail": 30,
     "max_backlog": 160000,
     "add_wait": 12
   },
