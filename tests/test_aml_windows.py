@@ -380,3 +380,16 @@ def test_background_compile_add_returns_at_once_and_search_waits_at_most_search_
         assert sum(map(len, backend.windows)) == len(texts)  # every window, tail included
     finally:
         host.close()
+
+
+def test_a_window_of_many_short_messages_closes_at_max_messages(tmp_path):
+    # by characters these never reach soft; step 1's output grows with the message count
+    backend = TreeBackend()
+    rt = runtime(tmp_path, backend, soft=10_000, hard=20_000, measure="chars", max_messages=6)
+    try:
+        add(rt, "r1", *[f"m{i}" for i in range(20)])
+        rt.flush()
+        assert all(len(w) <= 6 for w in backend.windows)
+        assert sum(map(len, backend.windows)) == 20
+    finally:
+        rt.close()

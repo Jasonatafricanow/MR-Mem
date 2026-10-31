@@ -39,7 +39,8 @@
   "compile_window": {
     "soft": 40000,
     "hard": 80000,
-    "measure": "chars"
+    "measure": "chars",
+    "max_messages": 200
   },
   "compile_concurrency": 8,
   "line_read": {

@@ -30,7 +30,7 @@
   "step1": "topic",
   "layer2": "stretches",
   "scene": "chat",
-  "compile_window": {"soft": 40000, "hard": 80000, "measure": "chars"},
+  "compile_window": {"soft": 40000, "hard": 80000, "measure": "chars", "max_messages": 200},
   "compile_concurrency": 8,
   "line_read": {"raw_k": 30, "sb_k": 30, "sbs": 16, "code_diff": true, "projection": "relay",
                 "reach": 3, "extend": 32, "assistant": "told", "raw_fill": 0,

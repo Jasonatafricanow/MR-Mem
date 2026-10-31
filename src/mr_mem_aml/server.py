@@ -260,6 +260,10 @@ class RuntimeHost:
             "hyde": config.hyde,
             "compile_concurrency": config.compile_concurrency,
             "thread_failures": runtime.thread_failures,
+            # compiles that failed after their retries (e.g. output cut at max_tokens) and kept
+            # only their raw text, and those the endpoint refused: 0 window_failures alone hid them
+            "compile_failed_kept_raw": runtime.compile_failed_kept_raw,
+            "compile_rejected": runtime.compile_rejected,
             "decision": runtime.decision.health() if runtime.decision else {"configured": False},
             "background_compile": (
                 {

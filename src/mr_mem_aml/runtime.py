@@ -576,11 +576,19 @@ class MemoryRuntime:
             )
             size.append(size[-1] + (len(m.content) if chars else 1) * int(counted))
         n = len(pending)
+        # at most this many messages per window as well: step 1 writes, per SB, the messages it
+        # covers, so its output grows with the count; a window of 500 short messages (40k chars,
+        # under soft) ran its output past 16000 tokens three times and kept only its raw text
+        cap = int(self.config.compile_window.get("max_messages") or 0)
         for i in range(1, n):
-            if size[i] > hard:
+            if size[i] > hard or (cap and i > cap):
                 break
             if size[i] >= soft and breaks(pending[i - 1][1], pending[i][1]):
                 return i
+        if cap and n > cap:  # past the cap: the last natural breakpoint in its second half
+            fit = [i for i in range(1, cap + 1) if size[i] <= hard]
+            nat = [i for i in fit if i >= cap // 2 and breaks(pending[i - 1][1], pending[i][1])]
+            return nat[-1] if nat else max([1, *fit])
         if size[n] >= hard:  # the most that fits under hard, at least one message
             return max(1, max(i for i in range(n + 1) if size[i] <= hard))
         return n if final and n else None
