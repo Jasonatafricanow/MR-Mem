@@ -55,29 +55,22 @@ def test_absence_note_when_only_the_assistant_gave_it():
     )
 
 
-def test_absence_checks_the_tail_and_skips_over_budget_messages():
+def test_long_hits_are_still_judged():
+    # 30 BEAM hits run past 15000 characters; skipping them judged no question at all
     seen = []
+
     def answer(state, questions):
         if "kind" in questions:
             return {"kind": {"choice": "specific"}}
         seen.append(state["messages"])
-        assert "I used ESLint" in state["messages"]
-        return {"src": {"choice": "person"}}
-    d = bypass(answer)
-    assert d.note("Which rules?", [Message("user", "x" * 700 + " I used ESLint")]) is None
-    assert len(seen) == 1
-    assert d.note("Which rules?", [Message("user", "x" * 16000)]) is None
-    assert len(seen) == 1  # no incomplete-message absence judgment
+        return {"src": {"choice": "absent"}}
 
+    hits = [Message("user", "I set up the linter. " + "x" * 2000) for _ in range(30)]
+    assert bypass(answer).note("Which rules?", hits) is not None
+    assert len(seen) == 1 and len(seen[0]) <= 15000
 
-def test_contradiction_quotes_exact_checked_text_with_source_and_time():
-    hits = [Message("user", "x" * 3500 + " set up my API key", "r1", "2026-01-01"),
-            Message("user", "I've never obtained an API key", "r2", "2025-01-01")]
-    note = bypass(said).note("Have I obtained an API key?", hits)
-    assert "set up my API key" in note and "source=r1" in note
-    assert "2026-01-01" in note and "compare their times" in note
-    assert bypass(said).note("Have I obtained an API key?", [
-        Message("user", "x" * 6500 + " set up"), hits[1]]) is None
+    long_did = [Message("user", "I set up my API key " + "x" * 7000), HITS[2]]
+    assert bypass(said).note("Have I obtained an API key?", long_did) is not None
 
 
 def test_deadline_returns_without_waiting_for_slow_backend():

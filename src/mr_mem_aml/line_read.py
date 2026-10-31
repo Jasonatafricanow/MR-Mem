@@ -116,6 +116,11 @@ class LineReadPolicy:
     thread_sbs: int = (
         12  # its SBs nearest the question (this many), in order - the stretch the question is on
     )
+    # the stretches nearest the question (this many of the thread hits) go down the index (frozen
+    # readout: a stretch summary helps find, then leads to its SBs and their words): each with its
+    # ``drill_sbs`` SBs nearest the question, and the words those SBs point to
+    drill: int = 0
+    drill_sbs: int = 4
     outline: bool = (
         False  # also the whole history's outline: each thread (a stretch of a Line) by its
     )
@@ -411,6 +416,7 @@ def compose(
     if policy.hit_anchors:  # ``hit_blocks``: the SB of each raw hit, in raw-search order
         top = list(dict.fromkeys([*top, *hit_blocks]))
     items, seen = [], set()
+    drilled: list[str] = []  # SBs reached from a stretch summary (policy.drill)
 
     def unmarked(text: str) -> str:  # the terminator is the memory side's own (docs/LCE_FROZEN.md)
         first = text.split("\n")[0]
@@ -502,10 +508,13 @@ def compose(
         known = threads()
         for n, t in enumerate(x for x in thread_hits if x in known):
             mine = [b for b in known[t]["members"] if step(b).text and b not in seen]
+            k = policy.drill_sbs if n < policy.drill else policy.thread_sbs
             near_ = sorted(
-                sorted(mine, key=lambda b: (-relevance(b), b))[: policy.thread_sbs],
+                sorted(mine, key=lambda b: (-relevance(b), b))[:k],
                 key=lambda b: (*_order(step(b)), b),
             )
+            if n < policy.drill:  # the stretch found by its summary leads down to its SBs' words
+                drilled.extend(near_)
             seen |= set(near_)
             items.append(
                 {
@@ -663,16 +672,23 @@ def compose(
 
     # "hits": of an SB's words only the messages the raw search hit (an SB over a whole talk would
     # pour all its messages out and crowd the hits out of the budget; 2026-10-31, LoCoMo)
-    hit = set(raw_records) if policy.raw_of_sb == "hits" else None
-    for block in top:
+    hits_only = set(raw_records) if policy.raw_of_sb == "hits" else None
+    deep = set(drilled)
+    for block in dict.fromkeys([*top, *drilled]):
         if policy.assistant == "told" and not said(
             block
         ):  # what the person was told: by its index only
             continue
+        # "hits": an SB brings only the messages the raw search hit, except an SB reached from a
+        # stretch summary, which brings what it points to (no raw hit found those words)
+        hit = None if block in deep else hits_only
+        # a message the raw search hit is given whole: the search matched the message, not the
+        # part of it this SB points to, and a message cut into several SBs would otherwise show
+        # only the part of the SB chosen for it
         if (ptr := pointers(block)) is None:
             for record in sources(block):
                 if hit is None or record in hit:
-                    merge(record, span(block, record))
+                    merge(record, None if hit is not None else span(block, record))
             continue
         own = {
             r: p for r, p in ptr["own"].items() if not any(r in d for d in ptr["parts"])
@@ -681,7 +697,9 @@ def compose(
             for record, p in d.items():
                 if hit is not None and record not in hit:
                     continue
-                if ptr.get("chars"):
+                if hit is not None:
+                    merge(record, None)
+                elif ptr.get("chars"):
                     merge_chars(record, p)
                 else:
                     merge(

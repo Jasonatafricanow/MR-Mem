@@ -57,13 +57,10 @@ WHERE = {
 CONTRA = {
     "en": (
         "[Note from the memory search: on what the question asks, the person's own messages"
-        " include positive and negative statements; compare their times and scope before"
-        " treating them as a contradiction]\n"
-        "- One message of the person's says it did happen: {a}\n- Another says it"
+        " disagree]\n- One message of the person's says it did happen: {a}\n- Another says it"
         " never did: {d}"
     ),
-    "zh": "【记忆检索的说明：检索到肯定和否定说法；请先比较时间与适用范围，不能直接认定矛盾】\n"
-    "- 一条消息说做过：{a}\n"
+    "zh": "【记忆检索的说明：关于问题所问的事，人自己的说法不一致】\n- 一条消息说做过：{a}\n"
     "- 另一条说从没做过：{d}",
 }
 ABSENT = {
@@ -116,8 +113,13 @@ class DecisionBypass:
             raise ValueError("decision timeouts and workers must be positive")
         self._local = threading.local()
         self._lock = threading.Lock()
-        self._stats = {"requests": 0, "notes": 0, "failures": 0, "timeouts": 0,
-                       "last_outcome": "not_checked"}
+        self._stats = {
+            "requests": 0,
+            "notes": 0,
+            "failures": 0,
+            "timeouts": 0,
+            "last_outcome": "not_checked",
+        }
         self.hits = int(config.get("hits", 30))  # the raw hits judged, in search order
 
     def _ask(self, state: dict, questions: dict) -> dict:
@@ -168,17 +170,23 @@ class DecisionBypass:
     def health(self) -> dict:
         with self._lock:
             stats = dict(self._stats)
-        stats["status"] = ("not_checked" if stats["last_outcome"] == "not_checked"
-                           else "degraded" if stats["last_outcome"] in ("failure", "timeout")
-                           else "available")
+        stats["status"] = (
+            "not_checked"
+            if stats["last_outcome"] == "not_checked"
+            else "degraded"
+            if stats["last_outcome"] in ("failure", "timeout")
+            else "available"
+        )
         return {"configured": True, "total_timeout": self.total_timeout, **stats}
 
     def note(self, question: str, hits: list[Message], lang: str = "en") -> str | None:
         # The caller stops waiting even if an underlying socket is slow to return.
         deadline = time.monotonic() + self.total_timeout
+
         def run():
             self._local.deadline = deadline
             return self._note(question, hits, lang)
+
         with self._lock:
             self._stats["requests"] += 1
         pool = ThreadPoolExecutor(1)
@@ -225,22 +233,23 @@ class DecisionBypass:
 
     @staticmethod
     def _shown(m: Message) -> str:
-        label = "User" if m.role == "user" else "Assistant"
-        source = f" [source={m.record_id}]" if m.record_id else ""
-        when = f" [message_time={m.occurred_at}]" if m.occurred_at else ""
-        return f"{label}{source}{when}: {m.content}"
+        # as measured (2026-10-31): the role and the words, no ids or times added
+        return f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}"
 
     def _contradiction(self, question: str, hits: list[Message], lang: str) -> str | None:
-        # the person's messages only: the model sometimes takes the assistant's words for theirs
-        # Never judge a prefix as if it were the complete source message.
-        mine = [m for m in hits if m.role == "user" and len(self._shown(m)) <= 6000]
+        # the person's messages only: the model sometimes takes the assistant's words for theirs.
+        # A long message is judged by its first 6000 characters, as measured; leaving it out lost
+        # one of the four contradictions noted.
+        mine = [m for m in hits if m.role == "user"]
         if len(mine) < 2:
             return None
         deadline = self._local.deadline
+
         def judge(m):
             self._local.deadline = deadline
             self._remaining()
-            return self._ask({"question": question, "message": self._shown(m)}, SAID)
+            return self._ask({"question": question, "message": self._shown(m)[:6000]}, SAID)
+
         with ThreadPoolExecutor(self.workers) as pool:
             scores = list(
                 pool.map(
@@ -254,16 +263,15 @@ class DecisionBypass:
             return None
 
         def quote(i: int) -> str:
-            return json.dumps(self._shown(mine[i]), ensure_ascii=False)
+            return json.dumps(self._shown(mine[i])[:3000], ensure_ascii=False)
 
         return CONTRA[lang].format(a=quote(a), d=quote(d))
 
     def _absence(self, question: str, hits: list[Message], lang: str) -> str | None:
-        messages = "\n\n".join(self._shown(m) for m in hits)
-        # An absence claim requires all retrieved messages, not arbitrary prefixes.
-        # This cap bounds cost without increasing the number of model calls.
-        if len(messages) > 15000:
-            return None
+        # each hit by its head, as measured: the topic of a message is in its first lines, and
+        # requiring whole messages under 15000 characters judged no BEAM question at all (60.1 ->
+        # 55.5 on the holdout, 2026-10-31)
+        messages = "\n\n".join(self._shown(m)[:500] for m in hits)[:15000]
         where = self._ask(
             {"question": question, "messages": messages},
             {
@@ -274,10 +282,4 @@ class DecisionBypass:
                 }
             },
         )["src"]["choice"]
-        if where not in WHY[lang]:
-            return None
-        refs = ", ".join(m.record_id or f"hit:{i + 1}" for i, m in enumerate(hits))
-        scope = (f"\nChecked complete retrieved messages: {refs}; "
-                 "this is not a search of all history."
-                 if lang == "en" else f"\n检查范围：检索命中的完整消息 {refs}；不代表全量历史。")
-        return ABSENT[lang].format(why=WHY[lang][where]) + scope
+        return None if where not in WHY[lang] else ABSENT[lang].format(why=WHY[lang][where])

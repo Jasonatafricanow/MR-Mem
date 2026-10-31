@@ -1666,19 +1666,39 @@ class MemoryRuntime:
     def decision_hits(self, payload: dict) -> tuple[str, list, str]:
         """For the decision bypass: the question, its raw hits as messages (search order), and the
         person's language. Owner thread: reads the raw index and the source store."""
+        from mr_mem_aml import line_read
         from mr_mem_aml.decision import Message
 
+        # the same raw hits the readout gave (its search text, options included, and its raw_k),
+        # so a note speaks of the evidence handed over, not of another search
         user_id, question = payload["user_id"].strip(), payload["query"].strip()
-        records = dict.fromkeys(
-            u.record_id for u, _ in self.raw.search(user_id, question[:4096], self.decision.hits)
-        )
+        text = question
+        options = payload.get("options")
+        if self.config.append_options and options:
+            text = text + "\n" + "\n".join(str(o) for o in options)
+        policy = line_read.LineReadPolicy.of(self.config.line_read)
+        records = self._raw_records(user_id, text[:4096], policy)[: self.decision.hits]
         hits = [
-            Message(m.role, m.content, r,
-                    m.occurred_at.isoformat() if self.source.time_given(r) else None)
+            Message(
+                m.role,
+                m.content,
+                r,
+                m.occurred_at.isoformat() if self.source.time_given(r) else None,
+            )
             for r in records
             if (m := self.source.message_by_record(r)) is not None
         ]
         return question, hits, self.language_of(user_id)
+
+    def _raw_records(self, user_id: str, text: str, policy) -> list[str]:
+        """The raw search's messages in order (a message split into units counts once), as many
+        as the readout takes: its head is the raw hits, the rest backs a fill."""
+        return list(
+            dict.fromkeys(
+                u.record_id
+                for u, _ in self.raw.search(user_id, text, max(policy.raw_k, policy.raw_fill))
+            )
+        )
 
     def _hyde_passage(self, text: str) -> str:
         """The hypothetical passage HyDE searches with ("" when it cannot be had: the question
@@ -1709,12 +1729,7 @@ class MemoryRuntime:
         policy = line_read.LineReadPolicy.of(self.config.line_read)
         # P1's raw list: its head finds the anchors; with raw_fill the whole list backs the Lines up
         # (LCE shares P1's evidence: what the Lines do not cover is still given, as P1 gives it)
-        pool = list(
-            dict.fromkeys(
-                u.record_id
-                for u, _ in self.raw.search(user_id, text, max(policy.raw_k, policy.raw_fill))
-            )
-        )
+        pool = self._raw_records(user_id, text, policy)
         records = pool[: policy.raw_k]
         sb_search = None if self.index is None else self.index.retrieval()
         # HyDE: a hypothetical passage searched beside the question
@@ -1937,9 +1952,9 @@ class MemoryRuntime:
             records,
             fill_records=pool,
             uncompiled_records=[
-                r for r in records
-                if not any(self.core.canonical.get(b)
-                           for b in self._blocks_by_record.get(r, ()))
+                r
+                for r in records
+                if not any(self.core.canonical.get(b) for b in self._blocks_by_record.get(r, ()))
             ],
             step=step,
             sources=sources,
