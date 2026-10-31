@@ -733,3 +733,17 @@ def test_between_people_needs_two_named_speakers():
     assert mv.between_people(chat)
     assert not mv.between_people(log) and not mv.between_people(notes)
     assert not mv.between_people(chat + [{"role": "assistant", "text": "Sure."}])
+
+
+def test_a_closed_stretch_needs_its_summary():
+    from mr_mem_aml.moves import close_prompt, parse_close
+
+    assert "s1 [2024-03-15] The person asks" in close_prompt(
+        "en", [{"text": "The person asks", "time": "2024-03-15"}]
+    )
+    assert parse_close({"summary": " Cause none, ... "}) == "Cause none, ..."
+    try:
+        parse_close({"summary": ""})
+        raise AssertionError("an empty summary must be asked again")
+    except ValueError:
+        pass

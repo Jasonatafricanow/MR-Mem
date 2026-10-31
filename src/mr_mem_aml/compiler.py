@@ -1066,6 +1066,11 @@ class SemanticCompiler:
         )
         return move_mode.parse_summaries(data, len(threads))
 
+    def close_stretch(self, lang: str, sbs: list[dict]) -> str:
+        """The summary of a stretch the talk turned away from (moves.STRETCH_CLOSE)."""
+        data = self._ask_json(move_mode.close_prompt(lang, sbs), move_mode.parse_close)
+        return move_mode.parse_close(data)
+
     def stretches(
         self,
         lang: str,

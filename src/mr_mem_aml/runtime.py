@@ -1130,6 +1130,21 @@ class MemoryRuntime:
             for i in s["sbs"]:
                 threads[i] = t
             summaries[t] = s["summary"]  # "" while the stretch is still open
+        if open_t and got["stretches"] and not got["stretches"][0]["joins_open"]:
+            # the talk turned away from OPEN: it has closed, and is summarized once, as any closed
+            # stretch (left without, 7 of 79 stretches never reached the stretch layer)
+            members = [
+                m for b in live[open_t]["members"] if (m := self.core.canonical.get(b)) is not None
+            ]
+            if members:
+                try:
+                    summaries[open_t] = yield (
+                        self.compiler.close_stretch,
+                        lang,
+                        [{"text": text(m), "time": self._span_of(m, user_id)} for m in members],
+                    )
+                except CompileError as exc:  # it stays open, as before: the window still places
+                    log.warning("closing stretch %s failed: %s", open_t, str(exc)[:200])
         settles = [
             [ref(progress[k]) for k in got["settles"].get(i, [])] for i in range(len(committed))
         ]

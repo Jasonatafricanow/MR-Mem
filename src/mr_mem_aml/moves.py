@@ -1816,6 +1816,63 @@ STRETCH = {
 }
 
 
+# A stretch left open by one window and not carried on by the next: the talk turned, so it has
+# closed and is summarized once, by the same rule as any closed stretch (STRETCH rule 5, word for
+# word). A call of its own, so the stretch call itself is never changed: an extra field there
+# changed how every stretch was cut and summarized (2026-10-31).
+STRETCH_CLOSE = {
+    "zh": (
+        "下面是对话里已经收口的一段，按顺序列出它的 SB，每个带着它所在消息的时间范围。给这一段写"
+        "摘要。\n"
+        "\n"
+        "summary：一到三句话，按顺序写：前因（因为什么聊起来的；对话是突然开始的就写无）、谁、何时"
+        "（这一段消息的时间范围）、做了什么、后果（结果怎样，话题因此转到了哪里）。这是比 SB 高一层"
+        "的结构性总结，讲这一段怎么变过来的：不写具体内容和单纯的数据（吃了什么、起点、目标、参数、"
+        "测量值、版本、步骤、代码、清单）。只有一种数值要写：它就是结果本身（分数提升了 30%、覆盖率"
+        "提到 78%），写最后的结果，不写起点和目标。时间照 SB 里的写法，不往下推算。\n"
+        "\n"
+        '只输出 JSON：{{"summary":"……"}}\n'
+        "\n"
+        "SBS：\n"
+        "{sbs}"
+    ),
+    "en": (
+        "Below is a stretch of a conversation that has closed: its SBs in order, each with the "
+        "time range of its messages. Summarize it.\n"
+        "\n"
+        "summary: one to three sentences, in this order: cause (what started it; none when the "
+        "talk just began), who, when (the time range of its messages), what they did, "
+        "consequence (what came of it, and where the talk went because of it). A structural "
+        "summary one level above the SBs, of how this stretch changed things: no contents and no "
+        "mere data (what was eaten, starting points, targets, parameters, measurements, versions, "
+        "steps, code, lists). One kind of figure is written: one that is the result itself (the "
+        "score rose 30%, coverage reached 78%), the final result, not the start or the target. "
+        "Times as the SBs give them, not worked out further.\n"
+        "\n"
+        'Output only JSON: {{"summary":"..."}}\n'
+        "\n"
+        "SBS:\n"
+        "{sbs}"
+    ),
+}
+
+
+def close_prompt(lang: str, sbs: list[dict]) -> str:
+    """sbs: {"text", "time"} of the closed stretch, in order."""
+    return STRETCH_CLOSE[lang].format(
+        sbs="\n".join(
+            f"s{n + 1} [{s['time']}] {s['text']}" if s.get("time") else f"s{n + 1} {s['text']}"
+            for n, s in enumerate(sbs)
+        )
+    )
+
+
+def parse_close(data: object) -> str:
+    if not isinstance(data, dict) or not str(data.get("summary") or "").strip():
+        raise ValueError("a closed stretch needs its summary")
+    return str(data["summary"]).strip()[:2000]
+
+
 def stretch_prompt(
     lang: str, sbs: list[dict], open_sbs: list[str], earlier: list[str], progress: list[str]
 ) -> str:
