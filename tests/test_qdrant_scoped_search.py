@@ -40,10 +40,7 @@ def test_scoped_search_matches_qdrant_and_follows_upserts():
             ],
             wait=True,
         )
-        index._scope_upserted(
-            scope_json(user_scope(user)), index.point_id(memory_id), memory_id,
-            index._embedding.embed(memory_id),
-        )
+        index._scope_upserted(scope_json(user_scope(user)), index.point_id(memory_id))
 
     for n in range(60):
         put("a" if n % 3 else "b", f"m{n}")

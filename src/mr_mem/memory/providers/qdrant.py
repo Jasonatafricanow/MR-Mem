@@ -2,7 +2,6 @@
 
 import json
 import threading
-from collections import OrderedDict
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -51,84 +50,39 @@ class QdrantIndex:
             "mr_embedding": asdict(self.identity),
             "mr_schema": "qdrant-cosine-v1",
         }
-        # one scope's points (ids, memory ids, unit vectors), the most recently searched scopes:
-        # Qdrant's local mode scores every point of every scope and filters the payloads in
-        # Python, so a query took ~2 s at 150k points (AML Full, 2026-11-01) and a gateway cut
-        # the queued Searches at 20 s. The same exact cosine search, over this scope alone
-        self._scopes: OrderedDict[str, tuple[list[str], list[str], Any]] = OrderedDict()
-        self._scopes_lock = threading.Lock()
-        self._scopes_kept = 32
+        # scope -> rows of Qdrant's local collection: its local mode scores every point of every
+        # scope and filters the payloads in Python, so a query took ~2 s at 150k points (AML Full,
+        # 2026-11-01) and 16 queued Searches ran past a gateway's 20 s; a filtered scroll is worse
+        # (every page sorts all ids). One pass over the payloads groups the rows; a search scores
+        # its scope's rows only: the same exact cosine ranking. None: not grouped yet
+        self._rows: dict[str, list[int]] | None = None
+        self._rows_lock = threading.Lock()
 
-    def _scope_filter(self, scope: str) -> Any:
-        return self._models.Filter(
-            must=[
-                self._models.FieldCondition(key=key, match=self._models.MatchValue(value=value))
-                for key, value in {
-                    "mr_namespace": self._namespace,
-                    "mr_target": self.target,
-                    "mr_scope": scope,
-                }.items()
-            ]
-        )
+    def _local(self) -> Any:
+        """Qdrant's local-mode collection (qdrant-client 1.19 internals); raises when remote."""
+        return self._client._client.collections[self.collection]
 
-    def _scope_points(self, scope: str) -> tuple[list[str], list[str], Any]:
-        """The scope's points, read from Qdrant once and kept up to date by the writer."""
-        import numpy as np
+    def _scope_rows(self, scope: str) -> list[int]:
+        with self._rows_lock:
+            if self._rows is None:
+                rows: dict[str, list[int]] = {}
+                for n, payload in enumerate(self._local().payload):
+                    if (
+                        payload.get("mr_namespace") == self._namespace
+                        and payload.get("mr_target") == self.target
+                    ):
+                        rows.setdefault(payload.get("mr_scope"), []).append(n)
+                self._rows = rows
+            return list(self._rows.get(scope, ()))
 
-        with self._scopes_lock:
-            if scope in self._scopes:
-                self._scopes.move_to_end(scope)
-                return self._scopes[scope]
-        ids, memories, rows, offset = [], [], [], None
-        while True:
-            points, offset = self._client.scroll(
-                self.collection,
-                scroll_filter=self._scope_filter(scope),
-                limit=1000,
-                offset=offset,
-                with_payload=True,
-                with_vectors=True,
-            )
-            for point in points:
-                payload = point.payload if isinstance(point.payload, dict) else {}
-                memory_id = payload.get("mr_memory_id")
-                if (
-                    isinstance(memory_id, str)
-                    and memory_id.strip()
-                    and all(payload.get(k) == v for k, v in self._metadata.items())
-                    and payload.get("mr_scope") == scope
-                    and str(point.id) == self.point_id(memory_id)
-                ):
-                    ids.append(str(point.id))
-                    memories.append(memory_id)
-                    rows.append(point.vector)
-            if offset is None:
-                break
-        matrix = np.asarray(rows, dtype=np.float32).reshape(len(rows), self.identity.dimension)
-        matrix /= np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
-        with self._scopes_lock:
-            self._scopes[scope] = (ids, memories, matrix)
-            while len(self._scopes) > self._scopes_kept:
-                self._scopes.popitem(last=False)
-        return ids, memories, matrix
-
-    def _scope_upserted(self, scope: str, point_id: str, memory_id: str, vector) -> None:
-        import numpy as np
-
-        with self._scopes_lock:
-            if scope not in self._scopes:
-                return  # read whole from Qdrant when it is first searched
-            ids, memories, matrix = self._scopes[scope]
-            row = np.asarray(vector, dtype=np.float32)
-            row /= max(float(np.linalg.norm(row)), 1e-12)
-            if point_id in ids:
-                matrix[ids.index(point_id)] = row
-            else:
-                self._scopes[scope] = (
-                    [*ids, point_id],
-                    [*memories, memory_id],
-                    np.vstack([matrix, row[None, :]]),
-                )
+    def _scope_upserted(self, scope: str, point_id: str) -> None:
+        with self._rows_lock:
+            if self._rows is None:
+                return  # grouped whole when first searched
+            n = self._local().ids.get(point_id)
+            rows = self._rows.setdefault(scope, [])
+            if n is not None and n not in rows:
+                rows.append(n)
 
     def _check(self) -> None:
         if self._embedding.identity != self.identity:
@@ -240,7 +194,7 @@ class QdrantProjectionWriter:
             )
         except Exception as exc:
             raise RetrievalProviderUnavailable("Qdrant projection failed") from exc
-        index._scope_upserted(scope, point_id, memory.memory_id, vector)
+        index._scope_upserted(scope, point_id)
         return point_id
 
 
@@ -316,21 +270,39 @@ class QdrantRetrievalProvider:
     def _scoped(self, query: MemoryRetrievalQuery, vector) -> tuple[RetrievedMemoryCandidate, ...]:
         import numpy as np
 
-        ids, memories, matrix = self._index._scope_points(scope_json(query.scope))
-        if not ids:
+        index = self._index
+        scope = scope_json(query.scope)
+        local = index._local()
+        (name,) = local.vectors
+        rows = np.asarray(index._scope_rows(scope), dtype=np.int64)
+        if rows.size:
+            rows = rows[np.asarray(local.deleted)[rows] == 0]  # 0/1 flags, not bools
+        if not rows.size:
             return ()
         q = np.asarray(vector, dtype=np.float32)
         q /= max(float(np.linalg.norm(q)), 1e-12)
-        scores = matrix @ q
-        k = min(query.limit, len(ids))
-        top = np.argpartition(-scores, k - 1)[:k]
-        top = top[np.argsort(-scores[top], kind="stable")]
-        return tuple(
-            RetrievedMemoryCandidate(
-                memories[i], "qdrant", provider_ref=ids[i], score=float(scores[i])
-            )
-            for i in top
-        )
+        matrix = np.asarray(local.vectors[name][rows], dtype=np.float32)
+        scores = (matrix @ q) / np.maximum(np.linalg.norm(matrix, axis=1), 1e-12)
+        result = []
+        for i in np.argsort(-scores, kind="stable"):
+            if len(result) == query.limit:
+                break
+            n = int(rows[i])
+            payload, point = local.payload[n], local.ids_inv[n]
+            memory_id = payload.get("mr_memory_id")
+            if (
+                isinstance(memory_id, str)
+                and memory_id.strip()
+                and all(payload.get(k) == v for k, v in index._metadata.items())
+                and payload.get("mr_scope") == scope
+                and str(point) == index.point_id(memory_id)
+            ):
+                result.append(
+                    RetrievedMemoryCandidate(
+                        memory_id, "qdrant", provider_ref=str(point), score=float(scores[i])
+                    )
+                )
+        return tuple(result)
 
 
 def open_qdrant_index(
