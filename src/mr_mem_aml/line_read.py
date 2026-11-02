@@ -35,6 +35,7 @@ SIDE = {
 }
 WHO = {"zh": {"user": "用户", "assistant": "助手"}, "en": {"user": "Person", "assistant": "Agent"}}
 HEAD = {"zh": ("【一段】", "【原文片段】"), "en": ("[A line]", "[Raw excerpts]")}
+CARRIED = {"zh": "【这些步骤的原话】", "en": "[The words of these steps]"}
 OUTLINE = {
     "zh": "【整段历史的提纲：人推进的每件事，现在走到哪，按开始先后】",
     "en": (
@@ -99,6 +100,14 @@ class LineReadPolicy:
     # past ``sbs``: without a fill a hit whose SB ranks below ``sbs`` was lost (2026-10-31, BEAM:
     # 128 of the person's 1800 top-30 hits, 12 in the top 10)
     hit_anchors: bool = False
+    # each SB shown carries the words it projects (its pointers' paragraphs or characters) inside
+    # its own item, beside the raw hits: an SB is a projection, not a record, and the details a
+    # question asks for stay in the words (BEAM holdout 11-02: 91% of the gold messages reached an
+    # SB, 44% reached the answer as words). Inside the item, not as raw items, so the top_k count
+    # holds; ``sb_raw_chars`` caps the words carried in all, the furthest SBs' first (AML cuts the
+    # answer input at 117,760 tokens from the end)
+    sb_raw: bool = False
+    sb_raw_chars: int = 300_000
     raw_full: int = (
         0  # > 0: after the Lines, this many raw hits whole in raw-search order (no snippets,
     )
@@ -617,6 +626,50 @@ def compose(
                     "content": OUTLINE[lang] + "\n" + "\n".join(out),
                 }
             )
+    carried_budget = [policy.sb_raw_chars]
+    carried: set[str] = set(raw_records)  # the raw hits are given as raw items anyway
+
+    def words(chain: list[str]) -> str:
+        """policy.sb_raw: the words the steps of ``chain`` point to, in message order, each
+        message once in the readout, within what is left of ``sb_raw_chars``."""
+        want: dict[str, list] = {}
+        for block in chain:
+            if (ptr := pointers(block)) is None:
+                for record in sources(block):
+                    want.setdefault(record, []).append(("keep", span(block, record)))
+                continue
+            for d in [ptr["own"], *ptr["parts"]]:
+                for record, p in d.items():
+                    want.setdefault(record, []).append(("chars" if ptr.get("chars") else "keep", p))
+        got = sorted(
+            ((r, m) for r in want if r not in carried and (m := message(r)) is not None),
+            key=lambda x: (x[1].place is None, x[1].place or (0, 0), x[1].time or datetime.min),
+        )
+        out = []
+        for record, m in got:
+            ps = want[record]
+            if any(p is None for _, p in ps):
+                given = m.text.strip()
+            elif all(kind == "chars" for kind, _ in ps):
+                given = cut_chars(m.text, [tuple(x) for _, p in ps for x in p])
+            else:
+                given = cut(
+                    m.text,
+                    {
+                        tuple(x) if isinstance(x, list) else x
+                        for kind, p in ps
+                        if kind == "keep"
+                        for x in p
+                    },
+                )
+            line = f"[{at_m(m)} {who.get(m.role, m.role)}] {given}".replace("[ ", "[", 1)
+            if len(line) > carried_budget[0]:
+                break
+            carried_budget[0] -= len(line)
+            carried.add(record)
+            out.append(line)
+        return ("\n" + CARRIED[lang] + "\n" + "\n".join(out)) if out else ""
+
     if policy.projection in ("event", "all"):
         groups = (
             events(top, part_of, parts, carries, policy.near_events)
@@ -657,7 +710,10 @@ def compose(
                 {
                     "id": f"line:{head}",
                     "kind": "line",
-                    "content": line_head + "\n" + show(chain, lambda b: b in rank),
+                    "content": line_head
+                    + "\n"
+                    + show(chain, lambda b: b in rank)
+                    + (words(chain) if policy.sb_raw else ""),
                     "score": float(len(top) - best),
                     "occurred_at": step(head).time,
                 }
