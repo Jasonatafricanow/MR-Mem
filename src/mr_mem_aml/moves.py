@@ -1044,12 +1044,40 @@ def between_people(messages: list[dict]) -> bool:
     return len(speakers) >= 2 and sum(names[s] for s in speakers) * 2 >= len(messages)
 
 
+# STEP1_TOPIC's rule 8 with block numbers (compile_input.blocks; docs/LCE_DESIGN.md 5.5): an SB is
+# compiled from these words, so it says which blocks of a message it comes from
+TOPIC_BLOCKS_RULE = {
+    "zh": (
+        '8. turns 写这件事来自原文的哪些块。消息没有分段编号的，写消息（"M3"、"M3-M20"）；'
+        '消息分成了编号的段（M3.1、M3.2……）的，只写和这件事有关的那几段（"M3.2-M3.5"，或者 '
+        '"M3.1,M3.4"），可以和别的消息连着写（"M3.2-M3.5,M4,M5.1"）；代码段可以写到行'
+        '（"M3.4:5-18"）。只有整条消息的每一段都和这件事有关，才写整条。同一条消息的不同段可以'
+        "属于不同的 SB。段的内容可能只显示了开头，按开头判断它讲什么。\n"
+    ),
+    "en": (
+        '8. turns: the blocks of the raw text the thing comes from. A message without numbered '
+        'paragraphs is written whole ("M3", "M3-M20"); a message shown in numbered paragraphs (M3'
+        '.1, M3.2 ...) by only the paragraphs on this thing ("M3.2-M3.5", or "M3.1,M3.4"), which '
+        'can run on with other messages ("M3.2-M3.5,M4,M5.1"); a code paragraph can go down to '
+        'its lines ("M3.4:5-18"). Write a message whole only when every paragraph of it is on '
+        "this thing. Different paragraphs of one message can belong to different SBs. A "
+        "paragraph may show only its beginning: judge what it is about from that.\n"
+    ),
+}
+_TOPIC_RULE_8 = re.compile(r"8\. turns.*?\n(?=\n## )", re.S)
+
+
 def step1_prompt_slim4(
-    lang: str, new: list[dict], context: list[dict], scene: str = "work", grain: str = "meaning"
+    lang: str,
+    new: list[dict],
+    context: list[dict],
+    scene: str = "work",
+    grain: str = "meaning",
+    blocks: bool = False,
 ) -> str:
     """As step1_prompt: NEW messages are M1, M2 ... in order. The chat scene has its own
     templates (STEP1_CHAT; STEP1_PEOPLE for a chat between people; STEP1_TOPIC, by the thing
-    talked about, with ``grain="topic"``)."""
+    talked about, with ``grain="topic"``). ``blocks``: STEP1_TOPIC asks for block numbers."""
     order = list(dict.fromkeys(m.get("session") for m in [*context, *new]))
     tag = (
         (lambda m: f" {SESSION[lang]}{chr(65 + order.index(m.get('session')) % 26)}")
@@ -1063,6 +1091,8 @@ def step1_prompt_slim4(
         if scene == "chat"
         else STEP1_SLIM4[lang]
     )
+    if blocks and grain == "topic":
+        template = _TOPIC_RULE_8.sub(lambda _: TOPIC_BLOCKS_RULE[lang], template)
     return template.format(
         cap=ANSWER_SBS,
         context="\n".join(_line(lang, "", m, 600, tag(m)).replace("[ ", "[", 1) for m in context)

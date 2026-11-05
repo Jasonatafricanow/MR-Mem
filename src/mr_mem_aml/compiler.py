@@ -673,6 +673,7 @@ class SemanticCompiler:
         scene: str = "chat",
         step1: str = "moves",
         assistant_head: int = 0,
+        blocks: bool = False,
     ) -> None:
         if step1 not in ("moves", "slim4", "topic"):
             raise ValueError("step1 must be 'moves', 'slim4' or 'topic'")
@@ -700,6 +701,8 @@ class SemanticCompiler:
         # readout still use whole); its long answers were most of what step 1 read (BEAM 83-97%
         # of the characters, LongMemEval 88%)
         self.assistant_head = max(0, int(assistant_head))
+        # step 1 says which paragraphs of a message an SB comes from (docs/LCE_DESIGN.md 5.5)
+        self.blocks = bool(blocks)
         self.version = {
             "tree": TREE_PROMPT_VERSION,
             "points": POINTS_PROMPT_VERSION,
@@ -708,6 +711,8 @@ class SemanticCompiler:
         }.get(schema, PROMPT_VERSION) + ({"slim4": "-slim4", "topic": "-topic"}.get(step1, ""))
         if self.assistant_head:
             self.version += f"-ah{self.assistant_head}"
+        if self.blocks:
+            self.version += "-blocks"
 
     def prompt(
         self,
@@ -936,11 +941,37 @@ class SemanticCompiler:
         code block in it to its first 200 characters."""
         if not self.assistant_head or role != "assistant":
             return text
+        if self.blocks:
+            return self._read_blocks(text)
         short = _CODE.sub(lambda m: m.group(0)[:200].rstrip() + "\n```", text)
         if len(short) <= self.assistant_head:
             return short
         tail = self.assistant_head // 4
         return short[: self.assistant_head - tail] + " … " + short[-tail:]
+
+    def _read_blocks(self, text: str) -> str:
+        """assistant_head with block numbers: every paragraph stays, cut to its share of the
+        budget, so what step 1 numbers is what the raw text numbers and an SB's blocks cut the raw
+        text right. A message that cannot keep its numbering is shown as one paragraph (its SBs
+        then point to it whole)."""
+        paras = move_mode.paragraphs(text)
+        if sum(len(p) for p in paras) <= self.assistant_head:
+            return text
+        tail = self.assistant_head // 4
+        if len(paras) == 1:
+            return text[: self.assistant_head - tail] + " … " + text[-tail:]
+        share = max(80, self.assistant_head // len(paras))
+        shown = []
+        for p in paras:
+            if move_mode.is_code(p):
+                shown.append(p[:200].rstrip() + "\n```" if len(p) > 200 else p)
+            else:
+                shown.append(p[:share].rstrip() + " …" if len(p) > share else p)
+        short = "\n\n".join(shown)
+        if len(move_mode.paragraphs(short)) == len(paras):
+            return short
+        flat = re.sub(r"\s*\n\s*", " ", text.replace("```", ""))
+        return flat[: self.assistant_head - tail] + " … " + flat[-tail:]
 
     def _compile_moves(
         self, new, context, known_lines, window: bool, trace: dict | None, tail: bool = True
@@ -977,10 +1008,17 @@ class SemanticCompiler:
         used_roles = [roles[i] for i in use]
         sessions = [new[i].session_id for i in use]
         paras = [len(move_mode.paragraphs(m["text"])) for m in material]
-        texts = [m["text"] for m in material]
+        # the spans are cut from the raw text, which the readout gives: with blocks, what step 1
+        # read numbers its paragraphs as the raw text does
+        texts = [new[i].content for i in use] if self.blocks else [m["text"] for m in material]
         if self.step1 in ("slim4", "topic") and self.scene == "chat":
             prompt = move_mode.step1_prompt_slim4(
-                lang, material, ctx, self.scene, "topic" if self.step1 == "topic" else "meaning"
+                lang,
+                material,
+                ctx,
+                self.scene,
+                "topic" if self.step1 == "topic" else "meaning",
+                self.blocks,
             )
             answer: list[str] = []
 

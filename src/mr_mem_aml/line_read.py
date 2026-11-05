@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher, unified_diff
 
+from mr_mem.memory.providers.bm25 import lexical_tokens
 from mr_mem_aml.moves import code_lines, is_code, paragraphs, span_key
 
 SIDE = {
@@ -108,6 +109,11 @@ class LineReadPolicy:
     # answer input at 117,760 tokens from the end)
     sb_raw: bool = False
     sb_raw_chars: int = 300_000
+    # > 0: of a carried message longer than ``sb_raw_long`` characters, only this many paragraphs,
+    # those whose words are rarest among the question's (a topic SB rightly points to a whole long
+    # answer; the block numbers cannot narrow that, the question can). No model, no vectors
+    sb_raw_paras: int = 0
+    sb_raw_long: int = 1200
     raw_full: int = (
         0  # > 0: after the Lines, this many raw hits whole in raw-search order (no snippets,
     )
@@ -323,6 +329,30 @@ def pieces(steps: set[str], parents: Callable[[str], Sequence[str]]) -> list[set
                 for x in merged:
                     group[x] = merged
     return list({id(g): g for g in group.values()}.values())
+
+
+def _nearest_paragraphs(text: str, question: str, k: int) -> str:
+    """The ``k`` paragraphs of a message that hold the question's rarest words, in their order; "…"
+    where some are left out. A message with none of the question's words gives its first."""
+    paras = paragraphs(text)
+    if len(paras) <= k:
+        return text
+    words = [set(lexical_tokens(p)) for p in paras]
+    asked = set(lexical_tokens(question))
+    weight = {t: 1.0 / sum(t in w for w in words) for t in asked if any(t in w for w in words)}
+    score = [sum(weight.get(t, 0.0) for t in w) for w in words]
+    chosen = sorted(sorted(range(len(paras)), key=lambda i: (-score[i], i))[:k])
+    if not any(score[i] for i in chosen):
+        chosen = [0]
+    out, last = [], -1
+    for i in chosen:
+        if i != last + 1:
+            out.append("…")
+        out.append(paras[i])
+        last = i
+    if last != len(paras) - 1:
+        out.append("…")
+    return "\n\n".join(out)
 
 
 def cut_chars(text: str, spans) -> str:
@@ -662,6 +692,8 @@ def compose(
                         for x in p
                     },
                 )
+            if policy.sb_raw_paras and len(given) > policy.sb_raw_long:
+                given = _nearest_paragraphs(given, question, policy.sb_raw_paras)
             line = f"[{at_m(m)} {who.get(m.role, m.role)}] {given}".replace("[ ", "[", 1)
             if len(line) > carried_budget[0]:
                 break

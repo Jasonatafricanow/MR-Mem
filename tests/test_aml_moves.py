@@ -774,3 +774,53 @@ def test_the_open_stretch_is_cut_with_the_window():
             raise AssertionError(f"must be asked again: {bad}")
         except ValueError:
             pass
+
+
+def test_block_numbers_cut_the_raw_text_with_compression_on():
+    # an SB's blocks are paragraph numbers of the raw text, also when step 1 reads an assistant
+    # message cut down: spans taken from the shortened text cut the raw text in the wrong place
+    import json as _json
+    from types import SimpleNamespace
+
+    from mr_mem_aml.compiler import SemanticCompiler
+
+    first = ("Opening words " * 40).strip()
+    second = ("The second paragraph about tokens " * 30).strip()
+    third = ("Closing words " * 40).strip()
+    raw = "\n\n".join([first, second, third])
+    seen = {}
+
+    class Backend:
+        def complete(self, prompt):
+            seen["prompt"] = prompt
+            return (
+                'JSON:\n[{"turns":"M1","text":"The person asks","when":"before",'
+                '"status":"confirmed","standing":false},'
+                '{"turns":"M2.2","text":"The assistant explains tokens","when":"before",'
+                '"status":"unknown","standing":false}]\nSTOP: M2'
+            )
+
+    def message(role, text, n):
+        return SimpleNamespace(
+            role=role,
+            content=text,
+            session_id="s",
+            record_id=f"r{n}",
+            occurred_at=None,
+            time_given=False,
+        )
+
+    compiler = SemanticCompiler(
+        Backend(), schema="moves", step1="topic", assistant_head=600, blocks=True
+    )
+    blocks = compiler._compile_moves(
+        [message("user", "How do tokens work?", 1), message("assistant", raw, 2)],
+        (),
+        {"language": "en"},
+        False,
+        None,
+    )
+    assert "(M2.3)" in seen["prompt"] and "only the paragraphs on this thing" in seen["prompt"]
+    assert second not in seen["prompt"]  # compression still holds
+    [(start, end)] = _json.loads(blocks[1].pointers)["own"]["r2"]
+    assert raw[start:end] == second

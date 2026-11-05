@@ -235,6 +235,7 @@ class MemoryRuntime:
             scene=config.scene,
             step1=config.step1,
             assistant_head=(config.compile_input or {}).get("assistant_head", 0),
+            blocks=bool((config.compile_input or {}).get("blocks", False)),
         )
         self._trees: dict[str, object] = {}
         self.tree_failures: list[str] = []

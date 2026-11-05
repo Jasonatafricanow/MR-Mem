@@ -94,6 +94,9 @@ class RuntimeConfig:
     # what step 1 reads ({"assistant_head": n}: each assistant message to n characters, a code
     # block in it to its first 200; search and readout keep the raw text whole). Evaluation
     # ingests whole histories at once, where nothing is cached: compile cost is every token read
+    # {"blocks": true}: step 1 says which paragraphs of a message an SB comes from, as character
+    # spans of the raw text (docs/LCE_DESIGN.md 5.5); assistant_head then cuts each paragraph, not
+    # the message, so that the numbers hold
     compile_input: dict[str, int] | None = None
     # Search, path_a with line_read: a decision model judges the question over its raw hits and may
     # put one note in front (decision.py: the person's own contradicting statements, or a detail

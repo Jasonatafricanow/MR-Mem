@@ -663,3 +663,15 @@ def test_embeddings_are_batched_in_order_and_cached(tmp_path):
         assert len(seen) == 3  # all from the cache
     finally:
         server.shutdown()
+
+
+def test_nearest_paragraphs_keep_the_ones_with_the_questions_rare_words_in_order():
+    from mr_mem_aml.line_read import _nearest_paragraphs
+
+    paras = [f"common filler paragraph number {n}" for n in range(6)]
+    paras[1] = "common filler about the deadline"
+    paras[4] = "common filler with the budget of forty units"
+    got = _nearest_paragraphs("\n\n".join(paras), "What budget and deadline did we set?", 2)
+    assert got.split("\n\n") == ["…", paras[1], "…", paras[4], "…"]
+    # nothing of the question in it: the message's opening, not an arbitrary paragraph
+    assert _nearest_paragraphs("\n\n".join(paras), "zebra?", 2).split("\n\n")[0] == paras[0]
