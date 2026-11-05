@@ -113,6 +113,9 @@ class LineReadPolicy:
     # those whose words are rarest among the question's (a topic SB rightly points to a whole long
     # answer; the block numbers cannot narrow that, the question can). No model, no vectors
     sb_raw_paras: int = 0
+    # with assistant "told" the assistant's words stay behind the index, carried here too unless
+    # asked for: they doubled the readout and buried the person's (BEAM holdout, 11-05)
+    sb_raw_assistant: bool = False
     sb_raw_long: int = 1200
     raw_full: int = (
         0  # > 0: after the Lines, this many raw hits whole in raw-search order (no snippets,
@@ -672,7 +675,13 @@ def compose(
                 for record, p in d.items():
                     want.setdefault(record, []).append(("chars" if ptr.get("chars") else "keep", p))
         got = sorted(
-            ((r, m) for r in want if r not in carried and (m := message(r)) is not None),
+            (
+                (r, m)
+                for r in want
+                if r not in carried
+                and (m := message(r)) is not None
+                and (policy.sb_raw_assistant or policy.assistant != "told" or m.role == "user")
+            ),
             key=lambda x: (x[1].place is None, x[1].place or (0, 0), x[1].time or datetime.min),
         )
         out = []
