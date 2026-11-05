@@ -229,6 +229,12 @@ class RuntimeHost:
         self._bg_pool.submit(self._drain, user)
         return state["idle"]
 
+    def _compiling(self, user: str) -> threading.Event | None:
+        """The event set when the compiling under way for the user ends; None when there is none."""
+        with self._guard:
+            state = self._bg.get(user)
+            return state["idle"] if state is not None and state["running"] else None
+
     def _drain(self, user: str) -> None:
         runtime, state = self.runtime, self._bg[user]
         while True:
@@ -265,9 +271,16 @@ class RuntimeHost:
             and isinstance(payload, dict)
             and isinstance(payload.get("user_id"), str)
         ):
-            if self._background:  # compile what is left, but answer within search_wait
-                idle = self._kick(payload["user_id"], final=True)
-                idle.wait(float(self._background.get("search_wait", 15)))
+            if self._background:  # answer within search_wait
+                # closing the tail is the natural breakpoint's business (idle_tail), not a
+                # Search's: a stream of Add and Search cut every window to a few messages. The
+                # tail not compiled yet is found by the raw search
+                if self._background.get("search_closes_tail", True):
+                    idle = self._kick(payload["user_id"], final=True)
+                else:
+                    idle = self._compiling(payload["user_id"])
+                if idle is not None:
+                    idle.wait(float(self._background.get("search_wait", 15)))
             else:
                 self.flush(payload["user_id"])  # nothing to do once the history is compiled
         self._warm(payload)

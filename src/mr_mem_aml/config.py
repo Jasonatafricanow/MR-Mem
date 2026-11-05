@@ -88,7 +88,9 @@ class RuntimeConfig:
     line_read: dict[str, int] | None = None
     # windows compiled in the background, not inside Add: {"search_wait": seconds a Search waits
     # for the user's compiling to go idle before it answers with what is there (15), "idle_tail":
-    # seconds without an Add before the tail window is compiled too (30)}. For a gateway that
+    # seconds without an Add before the tail window is compiled too (30), "search_closes_tail":
+    # false: a Search only waits for the compiling under way, it does not compile the tail}. For a
+    # gateway that
     # cuts requests short (InstaBox: about 20 seconds); None: Add compiles, Search flushes first
     background_compile: dict[str, float] | None = None
     # what step 1 reads ({"assistant_head": n}: each assistant message to n characters, a code

@@ -700,7 +700,7 @@ def test_an_untimed_message_is_dated_by_its_session_so_far_never_by_storage(tmp_
     at = store.session_times("u")
     assert set(at) == {"q1:2"}  # not from a later message, another session, or the storage time
     assert at["q1:2"].date().isoformat() == "2024-03-14"
-    assert _when(None, 0, (1, 3), at["q1:2"], "en") == "S1 #3, session began 03-14"
+    assert _when(None, 0, (1, 3), at["q1:2"], "en") == "S1 #3, session began 2024-03-14"
     assert _when(None, 0, (2, 4), None, "en") == "S2 #4"
     store.close()
 

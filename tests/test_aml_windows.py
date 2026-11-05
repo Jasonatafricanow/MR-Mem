@@ -568,3 +568,34 @@ def test_add_fetches_its_vectors_off_the_owner_thread(tmp_path):
         assert len(host.runtime.raw._users["a"].ids) == 4  # indexed with the fetched vectors
     finally:
         host.close()
+
+
+def test_a_search_does_not_close_the_tail_when_told_not_to(tmp_path):
+    from mr_mem_aml.server import RuntimeHost
+
+    backend = TreeBackend()
+    config = RuntimeConfig(
+        data_dir=tmp_path / "data",
+        compiler={"type": "command", "argv": ["x"]},
+        path_a_engine="tree",
+        compile_window={"soft": 100, "hard": 200},
+        compile_before_search=True,
+        background_compile={"search_wait": 1, "idle_tail": 60, "search_closes_tail": False},
+    )
+    host = RuntimeHost(
+        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+    )
+    try:
+        host.add(
+            {
+                "request_id": "r1",
+                "user_id": "a",
+                "session_id": "s",
+                "messages": [{"role": "user", "content": "a tail not due yet"}],
+            }
+        )
+        found = host.search({"query": "tail", "user_id": "a", "top_k": 5}, None)
+        assert backend.windows == []  # no window compiled on the Search's account
+        assert isinstance(found["data"], list)
+    finally:
+        host.close()

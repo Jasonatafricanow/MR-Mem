@@ -2024,7 +2024,7 @@ class MemoryRuntime:
                 ]
             )
         ]
-        return line_read.compose(
+        return line_read.compose_within(
             text,
             ranked,
             records,
@@ -2056,6 +2056,7 @@ class MemoryRuntime:
             threads=lambda: self.source.threads(user_id),
             thread_hits=thread_hits,
             hit_blocks=hit_blocks,
+            blocks_of=lambda r: self._blocks_by_record.get(r, ()),
         )
 
 

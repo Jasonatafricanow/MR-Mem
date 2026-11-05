@@ -64,10 +64,13 @@ def _compose():
 def test_lines_first_then_the_raw_the_chosen_sbs_cite_whole():
     items = _compose()
     assert [i["kind"] for i in items] == ["line", "source"]  # r2: a raw hit no chosen SB points to
-    assert "[10-13 10:00 已发生] 定了去重键" in items[0]["content"]
+    assert "[2026-10-13 10:00 已发生] 定了去重键" in items[0]["content"]
     assert "[未确认] 开始清洗" in items[0]["content"]  # no message time: order only
     assert items[1]["id"] == "raw:r1"  # cited by the chosen SB, before r2
-    assert items[1]["content"] == "【原文片段】\n[10-13 10:00 助手] 过程话\n去重键改为内容加时间戳"
+    assert (
+        items[1]["content"]
+        == "【原文片段】\n[2026-10-13 10:00 助手] 过程话\n去重键改为内容加时间戳"
+    )
 
 
 def test_cited_raw_comes_by_the_index_even_when_the_raw_search_missed_it():
@@ -142,7 +145,7 @@ def test_times_are_shown_at_the_persons_offset():
         lang="zh",
         policy=lr.LineReadPolicy(tz_minutes=480),
     )
-    assert "[10-13 00:00 已发生] s" in items[0]["content"]
+    assert "[2026-10-13 00:00 已发生] s" in items[0]["content"]
 
 
 def test_steps_without_times_follow_the_message_order_and_show_where_they_sit():
@@ -675,3 +678,135 @@ def test_nearest_paragraphs_keep_the_ones_with_the_questions_rare_words_in_order
     assert got.split("\n\n") == ["…", paras[1], "…", paras[4], "…"]
     # nothing of the question in it: the message's opening, not an arbitrary paragraph
     assert _nearest_paragraphs("\n\n".join(paras), "zebra?", 2).split("\n\n")[0] == paras[0]
+
+
+def test_a_raw_hit_sits_under_its_sb_with_its_time_and_the_words_do_not_change():
+    t = datetime(2026, 10, 13, 10, 0)
+    msgs = {
+        "said": lr.RawMessage("I moved the launch to May 3", "user", t, (1, 1)),
+        "answer": lr.RawMessage("Noted, May 3 it is", "assistant", t, (1, 2)),
+        "other": lr.RawMessage("Unrelated words", "user", t, (1, 3)),
+        "bare": lr.RawMessage("Not compiled yet", "user", t, (1, 4)),
+    }
+    steps = {
+        "person": lr.Step("The person moves the launch", t, True, (1, 1)),
+        "told": lr.Step("The assistant acknowledges", t, True, (1, 2)),
+        "far": lr.Step("The person talks of something else", t, True, (1, 3)),
+    }
+    src = {"person": ["said", "answer"], "told": ["answer"], "far": ["other"]}
+
+    def read(**policy):
+        return lr.compose(
+            "launch",
+            ["person", "far", "told"],
+            ["said", "answer", "other", "bare"],
+            uncompiled_records=["bare"],
+            step=steps.__getitem__,
+            sources=lambda b: src[b],
+            parents=lambda b: ["person"] if b == "told" else [],
+            children=lambda b: ["told"] if b == "person" else [],
+            message=msgs.get,
+            lang="en",
+            policy=lr.LineReadPolicy(
+                projection="hits", assistant="told", raw_of_sb="hits", raw_fill=0, **policy
+            ),
+            relevance=lambda b: {"person": 2.0, "told": 3.0, "far": 1.0}[b],
+            blocks_of=lambda r: [b for b, s in src.items() if r in s],
+        )
+
+    apart, under = read(), read(raw_under_sb=True)
+    assert [i["id"] for i in apart if i["kind"] == "source"] == [
+        "raw:said",
+        "raw:answer",
+        "raw:other",
+        "raw:bare",
+    ]
+    assert [i["id"] for i in under if i["kind"] == "source"] == ["raw:bare"]
+    text = next(i["content"] for i in under if i["id"] == "line:person")
+    lines = text.split("\n")
+    at = next(n for n, x in enumerate(lines) if "moves the launch" in x)
+    # the person's step holds them, the closer "told" line does not, and the told line comes after
+    assert "10-13 10:00" in lines[at + 1] and lines[at + 1].endswith("I moved the launch to May 3")
+    assert lines[at + 2].endswith("Noted, May 3 it is")
+    assert "acknowledges" in lines[at + 3]
+    assert "Unrelated words" in next(i["content"] for i in under if i["id"] == "line:far")
+    for words in ("May 3 it is", "launch to May 3", "Unrelated words", "Not compiled yet"):
+        assert sum(words in i["content"] for i in apart) == 1
+        assert sum(words in i["content"] for i in under) == 1
+
+
+def test_raw_under_sb_needs_a_projection_that_shows_steps():
+    with pytest.raises(ValueError):
+        lr.LineReadPolicy.of({"raw_under_sb": True, "projection": "event"})
+
+
+def test_carried_words_sit_under_their_step_and_the_whole_readout_keeps_its_budget():
+    t = datetime(2026, 10, 13, 10, 0)
+    msgs = {
+        "hit": lr.RawMessage("The hit", "user", t, (1, 2)),
+        "near": lr.RawMessage("Words of the near step", "user", t, (1, 1)),
+        "far": lr.RawMessage("Words of the far step " * 40, "user", t, (1, 3)),
+    }
+    steps = {
+        "near": lr.Step("The person does the near thing", t, True, (1, 1)),
+        "far": lr.Step("The person does the far thing", t, True, (1, 3)),
+    }
+    src = {"near": ["near", "hit"], "far": ["far"]}
+
+    def read(**policy):
+        return lr.compose_within(
+            "q",
+            ["near", "far"],
+            ["hit"],
+            step=steps.__getitem__,
+            sources=lambda b: src[b],
+            parents=lambda b: [],
+            children=lambda b: [],
+            message=msgs.get,
+            lang="en",
+            policy=lr.LineReadPolicy(
+                projection="hits",
+                assistant="told",
+                raw_of_sb="hits",
+                raw_fill=0,
+                raw_under_sb=True,
+                sb_raw=True,
+                **policy,
+            ),
+            relevance=lambda b: 1.0,
+            blocks_of=lambda r: [b for b, s in src.items() if r in s],
+        )
+
+    text = "\n".join(i["content"] for i in read())
+    assert lr.CARRIED["en"] not in text
+    lines = text.split("\n")
+    at = next(n for n, x in enumerate(lines) if "near thing" in x)
+    assert lines[at + 1].endswith("Words of the near step")  # message order under the step
+    assert lines[at + 2].endswith("The hit")
+    joined = "\n".join(i["content"] for i in read(readout_tokens=60))
+    assert "Words of the near step" in joined and "The hit" in joined
+    assert "Words of the far step" not in joined  # the rest of the readout is measured first
+
+
+def test_a_session_date_is_written_once_in_a_readout():
+    day = datetime(2024, 4, 5)
+    msgs = {r: lr.RawMessage(r, "user", None, (3, n), day) for n, r in enumerate(["r1", "r2"], 1)}
+    steps = {"a": lr.Step("The person does a", None, True, (3, 1), session=day)}
+
+    def read(**policy):
+        return lr.compose(
+            "q",
+            ["a"],
+            ["r1", "r2"],
+            step=steps.__getitem__,
+            sources=lambda b: ["r1", "r2"],
+            parents=lambda b: [],
+            children=lambda b: [],
+            message=msgs.get,
+            lang="en",
+            policy=lr.LineReadPolicy(projection="hits", raw_of_sb="hits", raw_fill=0, **policy),
+        )
+
+    count = lambda items: sum(i["content"].count("session began") for i in items)  # noqa: E731
+    assert count(read()) == 3
+    assert count(read(session_once=True)) == 1

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher, unified_diff
 
@@ -117,6 +117,19 @@ class LineReadPolicy:
     # asked for: they doubled the readout and buried the person's (BEAM holdout, 11-05)
     sb_raw_assistant: bool = False
     sb_raw_long: int = 1200
+    # docs/LCE_FROZEN.md §5: a raw hit is given under the SB it belongs to, with its message time,
+    # not in a list of its own. Same messages, same words; only where they sit. A hit with no SB
+    # in the Lines (uncompiled, its SB among the standing ones) stays a raw item
+    raw_under_sb: bool = False
+    # a session's date on the first entry of that session the readout writes, not on each of its
+    # untimed messages: said on every one it was read as that message's own date
+    session_once: bool = False
+    # > 0: the words ``sb_raw`` carries also stop within this estimate of tokens (compose_within)
+    sb_raw_tokens: int = 0
+    # > 0: the whole readout within this estimate of tokens: what ``sb_raw`` carries gets what the
+    # rest leaves (AML cuts the answer input from the tail; a fixed cap on the words alone cannot
+    # know how long the rest is, nor Chinese from English)
+    readout_tokens: int = 0
     raw_full: int = (
         0  # > 0: after the Lines, this many raw hits whole in raw-search order (no snippets,
     )
@@ -176,6 +189,8 @@ class LineReadPolicy:
         policy = cls(**(value or {}))
         if min(policy.raw_k, policy.sb_k, policy.sbs) < 1:
             raise ValueError("line_read needs positive raw_k, sb_k, sbs")
+        if policy.raw_under_sb and (policy.raw_full or policy.projection not in ("hits", "relay")):
+            raise ValueError("line_read raw_under_sb needs projection hits or relay, no raw_full")
         if policy.extend_from not in ("all", "person"):
             raise ValueError("line_read extend_from must be 'all' or 'person'")
         if policy.carry not in ("edges", "threads"):
@@ -416,13 +431,19 @@ def _when(
     """The message time when the source gave one, then where it sits: session and message number.
     With no message time, the date the source gave its session, said as the session's, not the
     step's."""
-    at = "" if t is None else (t + timedelta(minutes=tz_minutes)).strftime("%m-%d %H:%M")
+    at = "" if t is None else (t + timedelta(minutes=tz_minutes)).strftime("%Y-%m-%d %H:%M")
     where = "" if place is None else f"S{place[0]} #{place[1]}"
     if t is None and session is not None:
         where += ("，" if lang == "zh" else ", ") + SESSION_FROM[lang].format(
-            (session + timedelta(minutes=tz_minutes)).strftime("%m-%d")
+            (session + timedelta(minutes=tz_minutes)).strftime("%Y-%m-%d")
         )
     return " ".join(x for x in (at, where.lstrip("，, ")) if x)
+
+
+def estimate_tokens(text: str) -> int:
+    """About what a model counts: four characters of English, one and a half of Chinese."""
+    wide = sum(ord(c) > 127 for c in text)
+    return int((len(text) - wide) / 4 + wide / 1.5)
 
 
 def _order(s: Step) -> tuple:
@@ -454,6 +475,7 @@ def compose(
     threads: Callable[[], dict[str, dict]] = dict,
     thread_hits: Sequence[str] = (),
     hit_blocks: Sequence[str] = (),
+    blocks_of: Callable[[str], Sequence[str]] = lambda record: (),
 ) -> list[dict]:
     """Evidence items: the person's standing instructions and preferences first, whatever the
     question (they apply to what is asked, not to what it is about), then Line pieces ("line"),
@@ -466,11 +488,22 @@ def compose(
     selection at all)."""
     side, who, (line_head, raw_head) = SIDE[lang], WHO[lang], HEAD[lang]
 
+    dated: set[int] = set()  # policy.session_once: the sessions whose date has been written
+
+    def once(place: tuple[int, int] | None, session: datetime | None) -> datetime | None:
+        if not policy.session_once or place is None or session is None:
+            return session
+        if place[0] in dated:
+            return None
+        dated.add(place[0])
+        return session
+
     def at_b(b: str) -> str:  # where and when a step sits
-        return _when(step(b).time, policy.tz_minutes, step(b).place, step(b).session, lang)
+        s = step(b)
+        return _when(s.time, policy.tz_minutes, s.place, once(s.place, s.session), lang)
 
     def at_m(m: RawMessage) -> str:  # where and when a message sits
-        return _when(m.time, policy.tz_minutes, m.place, m.session, lang)
+        return _when(m.time, policy.tz_minutes, m.place, once(m.place, m.session), lang)
 
     top = list(ranked[: policy.sbs])
     if policy.hit_anchors:  # ``hit_blocks``: the SB of each raw hit, in raw-search order
@@ -532,11 +565,16 @@ def compose(
 
     said = lambda b: any((m := message(r)) is not None and m.role == "user" for r in sources(b))  # noqa: E731
 
-    def show(chain: list[str], whole: Callable[[str], bool] = lambda b: True) -> str:
+    def show(
+        chain: list[str],
+        whole: Callable[[str], bool] = lambda b: True,
+        hung: Callable[[str], Sequence[str]] = lambda b: (),
+    ) -> str:
         """The steps in order; with "told", each SB of the assistant by its first line under the
-        person's step it answers (the nearest step of the person above it here), or where it is."""
+        person's step it answers (the nearest step of the person above it here), or where it is.
+        ``hung``: the raw hits given right under their step."""
         if policy.assistant == "step":
-            return "\n".join(line(b, whole(b)) for b in chain)
+            return "\n".join(x for b in chain for x in (line(b, whole(b)), *hung(b)))
         here, under = set(chain), {}
         for b in chain:
             if said(b):
@@ -555,7 +593,11 @@ def compose(
         out = []
         for b in chain:
             if said(b):
-                out += [line(b, whole(b)), *(told(a, "  - ") for a in under.get(b, ()))]
+                out += [
+                    line(b, whole(b)),
+                    *hung(b),
+                    *(told(a, "  - ") for a in under.get(b, ())),
+                ]
             elif b in under.get(None, ()):
                 out.append(told(b, ""))
         return "\n".join(out)
@@ -659,21 +701,147 @@ def compose(
                     "content": OUTLINE[lang] + "\n" + "\n".join(out),
                 }
             )
+
+    def downward() -> list[tuple[str, RawMessage, str]]:
+        """The raw given: (record, message, its line), in message order."""
+        # downward index: what the chosen SBs point to, whether or not the raw search hit it; a
+        # message one SB points to whole is given whole
+        keep: dict[str, set[int] | None] = {}
+        chars: dict[str, list | None] = {}  # fragments: character spans cut with the SB
+
+        def merge(record: str, p) -> None:
+            have = keep.get(record, set())
+            keep[record] = None if p is None or have is None else have | set(p)
+
+        def merge_chars(record: str, p) -> None:
+            have = chars.get(record, [])
+            chars[record] = None if p is None or have is None else have + [tuple(x) for x in p]
+
+        # "hits": of an SB's words only the messages the raw search hit (an SB over a whole talk
+        # would pour all its messages out and crowd the hits out of the budget; 2026-10-31, LoCoMo)
+        hits_only = set(raw_records) if policy.raw_of_sb == "hits" else None
+        deep = set(drilled)
+        for block in dict.fromkeys([*top, *drilled]):
+            if policy.assistant == "told" and not said(
+                block
+            ):  # what the person was told: by its index only
+                continue
+            # "hits": an SB brings only the messages the raw search hit, except an SB reached from a
+            # stretch summary, which brings what it points to (no raw hit found those words)
+            hit = None if block in deep else hits_only
+            # a message the raw search hit is given whole: the search matched the message, not the
+            # part of it this SB points to, and a message cut into several SBs would otherwise show
+            # only the part of the SB chosen for it
+            if (ptr := pointers(block)) is None:
+                for record in sources(block):
+                    if hit is None or record in hit:
+                        merge(record, None if hit is not None else span(block, record))
+                continue
+            own = {
+                r: p for r, p in ptr["own"].items() if not any(r in d for d in ptr["parts"])
+            }  # a part points into it
+            for d in [own, *ptr["parts"]]:
+                for record, p in d.items():
+                    if hit is not None and record not in hit:
+                        continue
+                    if hit is not None:
+                        merge(record, None)
+                    elif ptr.get("chars"):
+                        merge_chars(record, p)
+                    else:
+                        merge(
+                            record,
+                            None
+                            if p is None
+                            else [tuple(x) if isinstance(x, list) else x for x in p],
+                        )
+        # A raw hit without a usable SB must survive even when optional fill is off.
+        for record in uncompiled_records:
+            merge(record, None)
+        found = [(r, m) for r in dict.fromkeys([*keep, *chars]) if (m := message(r)) is not None]
+        found.sort(
+            key=lambda x: (
+                x[1].place is None,
+                x[1].place or (0, 0),
+                x[1].time is None,
+                x[1].time or datetime.min,
+            )
+        )
+        earlier: list[tuple[str, list[str]]] = []  # code already given: (where, its lines)
+
+        def changes(text: str, where: str) -> str:  # code seen before: only its changed lines
+            def one(m: re.Match) -> str:
+                body = m.group(2).split("\n")
+                near = max(
+                    earlier, key=lambda e: SequenceMatcher(None, e[1], body).ratio(), default=None
+                )
+                earlier.append((where, body))
+                if near is None or SequenceMatcher(None, near[1], body).ratio() < 0.5:
+                    return m.group(0)
+                diff = [
+                    x
+                    for x in unified_diff(near[1], body, lineterm="", n=0)
+                    if x[:1] in "+-" and not x.startswith(("+++", "---"))
+                ]
+                return (
+                    f"{m.group(1)}\n# {CHANGES[lang].format(near[0])}\n" + "\n".join(diff) + "\n```"
+                )
+
+            return re.sub(r"(```[^\n]*)\n(.*?)\n?```", one, text, flags=re.S)
+
+        given_ = []
+        for record, m in found:
+            text = (
+                cut_chars(m.text, chars[record]) if record in chars else cut(m.text, keep[record])
+            )
+            if policy.code_diff:
+                text = changes(text, _when(None, 0, m.place) or record)
+            given_.append(
+                (record, m, f"[{at_m(m)} {who.get(m.role, m.role)}] {text}".replace("[ ", "[", 1))
+            )
+        return given_
+
+    given: list[tuple[str, RawMessage, str]] | None = None
+    under_sb: set[str] = set()
     carried_budget = [policy.sb_raw_chars]
+    carried_tokens = [policy.sb_raw_tokens]
+    hanging: dict[str, list[tuple[RawMessage, str]]] = {}
+
+    def hang(blocks: Sequence[str], m: RawMessage, text: str) -> bool:
+        """Under the closest of ``blocks`` (the SB a hit's rank goes to, rank_blocks); under "told"
+        an assistant's step gives its first line only, so a person's step holds it."""
+        at = [b for b in blocks if policy.assistant != "told" or said(b)]
+        if at:
+            hanging.setdefault(max(at, key=relevance), []).append((m, text))
+        return bool(at)
+
+    def hung_under(b: str) -> list[str]:  # what hangs under a step, in message order
+        return [
+            text
+            for _, text in sorted(
+                hanging.get(b, ()),
+                key=lambda x: (x[0].place is None, x[0].place or (0, 0), x[0].time or datetime.min),
+            )
+        ]
+
     carried: set[str] = set(raw_records)  # the raw hits are given as raw items anyway
 
     def words(chain: list[str]) -> str:
         """policy.sb_raw: the words the steps of ``chain`` point to, in message order, each
-        message once in the readout, within what is left of ``sb_raw_chars``."""
+        message once in the readout, within what is left of ``sb_raw_chars``. With
+        ``raw_under_sb`` each goes under its step and nothing is returned."""
         want: dict[str, list] = {}
+        pointed: dict[str, list[str]] = {}
         for block in chain:
             if (ptr := pointers(block)) is None:
                 for record in sources(block):
                     want.setdefault(record, []).append(("keep", span(block, record)))
+                    pointed.setdefault(record, []).append(block)
                 continue
             for d in [ptr["own"], *ptr["parts"]]:
                 for record, p in d.items():
                     want.setdefault(record, []).append(("chars" if ptr.get("chars") else "keep", p))
+                    pointed.setdefault(record, []).append(block)
         got = sorted(
             (
                 (r, m)
@@ -704,11 +872,16 @@ def compose(
             if policy.sb_raw_paras and len(given) > policy.sb_raw_long:
                 given = _nearest_paragraphs(given, question, policy.sb_raw_paras)
             line = f"[{at_m(m)} {who.get(m.role, m.role)}] {given}".replace("[ ", "[", 1)
-            if len(line) > carried_budget[0]:
+            cost = estimate_tokens(line)
+            if len(line) > carried_budget[0] or (policy.sb_raw_tokens and cost > carried_tokens[0]):
                 break
             carried_budget[0] -= len(line)
+            carried_tokens[0] -= cost
             carried.add(record)
-            out.append(line)
+            if policy.raw_under_sb:
+                hang(pointed[record], m, line)
+            else:
+                out.append(line)
         return ("\n" + CARRIED[lang] + "\n" + "\n".join(out)) if out else ""
 
     if policy.projection in ("event", "all"):
@@ -739,6 +912,11 @@ def compose(
         hits = [b for b in top if b not in seen]
         rank = {b: n for n, b in enumerate(hits)}
         shown = (set(hits) | between(set(hits), parents, policy.gap)) - seen
+        if policy.raw_under_sb:
+            given = downward()
+            for record, m, text in given:
+                if hang([b for b in blocks_of(record) if b in shown], m, text):
+                    under_sb.add(record)
         for group in sorted(
             pieces(shown, parents), key=lambda g: min(rank.get(b, len(hits)) for b in g)
         ):
@@ -747,14 +925,15 @@ def compose(
             head = (
                 hits[best] if best < len(hits) else chain[0]
             )  # only steps between hits given elsewhere
+            listed = words(chain) if policy.sb_raw else ""  # before show: it may hang them
             items.append(
                 {
                     "id": f"line:{head}",
                     "kind": "line",
                     "content": line_head
                     + "\n"
-                    + show(chain, lambda b: b in rank)
-                    + (words(chain) if policy.sb_raw else ""),
+                    + show(chain, lambda b: b in rank, hung_under)
+                    + listed,
                     "score": float(len(top) - best),
                     "occurred_at": step(head).time,
                 }
@@ -793,99 +972,15 @@ def compose(
                     }
                 )
         return items
-    # downward index: what the chosen SBs point to, whether or not the raw search hit it; a message
-    # one SB points to whole is given whole
-    keep: dict[str, set[int] | None] = {}
-    chars: dict[str, list | None] = {}  # fragments: character spans cut with the SB
-
-    def merge(record: str, p) -> None:
-        have = keep.get(record, set())
-        keep[record] = None if p is None or have is None else have | set(p)
-
-    def merge_chars(record: str, p) -> None:
-        have = chars.get(record, [])
-        chars[record] = None if p is None or have is None else have + [tuple(x) for x in p]
-
-    # "hits": of an SB's words only the messages the raw search hit (an SB over a whole talk would
-    # pour all its messages out and crowd the hits out of the budget; 2026-10-31, LoCoMo)
-    hits_only = set(raw_records) if policy.raw_of_sb == "hits" else None
-    deep = set(drilled)
-    for block in dict.fromkeys([*top, *drilled]):
-        if policy.assistant == "told" and not said(
-            block
-        ):  # what the person was told: by its index only
-            continue
-        # "hits": an SB brings only the messages the raw search hit, except an SB reached from a
-        # stretch summary, which brings what it points to (no raw hit found those words)
-        hit = None if block in deep else hits_only
-        # a message the raw search hit is given whole: the search matched the message, not the
-        # part of it this SB points to, and a message cut into several SBs would otherwise show
-        # only the part of the SB chosen for it
-        if (ptr := pointers(block)) is None:
-            for record in sources(block):
-                if hit is None or record in hit:
-                    merge(record, None if hit is not None else span(block, record))
-            continue
-        own = {
-            r: p for r, p in ptr["own"].items() if not any(r in d for d in ptr["parts"])
-        }  # a part points into it
-        for d in [own, *ptr["parts"]]:
-            for record, p in d.items():
-                if hit is not None and record not in hit:
-                    continue
-                if hit is not None:
-                    merge(record, None)
-                elif ptr.get("chars"):
-                    merge_chars(record, p)
-                else:
-                    merge(
-                        record,
-                        None if p is None else [tuple(x) if isinstance(x, list) else x for x in p],
-                    )
-    # A raw hit without a usable SB must survive even when optional fill is off.
-    for record in uncompiled_records:
-        merge(record, None)
-    found = [(r, m) for r in dict.fromkeys([*keep, *chars]) if (m := message(r)) is not None]
-    found.sort(
-        key=lambda x: (
-            x[1].place is None,
-            x[1].place or (0, 0),
-            x[1].time is None,
-            x[1].time or datetime.min,
-        )
-    )
-    earlier: list[tuple[str, list[str]]] = []  # code already given: (where, its lines)
-
-    def changes(text: str, where: str) -> str:  # code seen before: only its changed lines
-        def one(m: re.Match) -> str:
-            body = m.group(2).split("\n")
-            near = max(
-                earlier, key=lambda e: SequenceMatcher(None, e[1], body).ratio(), default=None
-            )
-            earlier.append((where, body))
-            if near is None or SequenceMatcher(None, near[1], body).ratio() < 0.5:
-                return m.group(0)
-            diff = [
-                x
-                for x in unified_diff(near[1], body, lineterm="", n=0)
-                if x[:1] in "+-" and not x.startswith(("+++", "---"))
-            ]
-            return f"{m.group(1)}\n# {CHANGES[lang].format(near[0])}\n" + "\n".join(diff) + "\n```"
-
-        return re.sub(r"(```[^\n]*)\n(.*?)\n?```", one, text, flags=re.S)
-
-    for n, (record, m) in enumerate(found):
-        given = cut_chars(m.text, chars[record]) if record in chars else cut(m.text, keep[record])
-        if policy.code_diff:
-            given = changes(given, _when(None, 0, m.place) or record)
-        text = (
-            raw_head + "\n" if n == 0 else ""
-        ) + f"[{at_m(m)} {who.get(m.role, m.role)}] {given}".replace("[ ", "[", 1)
+    if given is None:
+        given = downward()
+    rest = [g for g in given if g[0] not in under_sb]
+    for n, (record, m, text) in enumerate(rest):
         items.append(
             {
                 "id": f"raw:{record}",
                 "kind": "source",
-                "content": text,
+                "content": (raw_head + "\n" if n == 0 else "") + text,
                 "score": -float(n),
                 "occurred_at": m.time,
             }
@@ -900,7 +995,7 @@ def compose(
             or (policy.fill_skip == "single" and len(sources(b)) == 1)
             for r in sources(b)
         }
-        covered = {*keep, *chars, *stand_in}
+        covered = {*(g[0] for g in given), *stand_in}
         pool = (
             raw_records if fill_records is None else fill_records
         )  # P1's own list, as deep as it goes
@@ -916,8 +1011,20 @@ def compose(
                     "id": f"raw:{record}",
                     "kind": "source",
                     "content": text,
-                    "score": -float(len(found) + k),
+                    "score": -float(len(rest) + k),
                     "occurred_at": m.time,
                 }
             )
     return items
+
+
+def compose_within(question: str, ranked: Sequence[str], raw_records: Sequence[str], **kw) -> list:
+    """compose; with ``readout_tokens``, the readout without the carried words is measured first,
+    and they get what it leaves."""
+    policy = kw.pop("policy")
+    if not (policy.readout_tokens and policy.sb_raw):
+        return compose(question, ranked, raw_records, policy=policy, **kw)
+    rest = compose(question, ranked, raw_records, policy=replace(policy, sb_raw=False), **kw)
+    used = sum(estimate_tokens(i["content"]) for i in rest)
+    left = max(1, policy.readout_tokens - used)  # 0 would mean no cap
+    return compose(question, ranked, raw_records, policy=replace(policy, sb_raw_tokens=left), **kw)
