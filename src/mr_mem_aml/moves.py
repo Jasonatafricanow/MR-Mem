@@ -903,9 +903,11 @@ STEP1_TOPIC = {
         '5. text：一到两句话，按第 2 条的主干写。主语：人和助手的对话写"人""助手"，不用人设或'
         "系统提示里的名字；几个人之间写他们的名字（没有名字写说话者 A／B）。原文说了的写清，没说"
         "的不补，不写后来才发生的事。\n"
-        "6. 时间只解析一层：消息带着它说出口的时间（消息时间）。这件事本身发生的时间如果是相对说"
-        '法（三年之前、上周、明天），以消息时间为基准写出它约在何时，如"约 2023 年（三年之前）我'
-        '说过十年前去过冰岛"；这件事内容里再套着的时间（十年前）原样留着，不往下推算。\n'
+        "6. 时间只解析一层：消息带着它说出口的时间（消息时间）。这件事本身说是在相对的时间发生或"
+        "要发生（昨天、上周五、上周、下个月、三年之前），就以消息时间为基准，在这几个字旁边写上它"
+        '对应的日期或月份："昨天（2022-08-21）赢了比赛""上周（2022-08-07 那周）收到一封信""约 '
+        '2023 年（三年之前）我说过十年前去过冰岛"。只写这一个时间，即这件事本身的；这件事内容里'
+        "再套着的时间（十年前）原样留着，不往下推算。\n"
         "7. when 和 status 说这件事到这个 SB 结束时的状态：已经发生或成立填 before、confirmed；"
         "没发生 before、negated；安排好了的 after、likely（有日期写上，如 after 2024-03-31）；只"
         "是提议或推荐、没被接受的 after、unknown；取消或不做的 after、negated。助手说了不等于那件"
@@ -967,10 +969,13 @@ STEP1_TOPIC = {
         "m prompt; between people use their names (speaker A / B when the words give none). Wr"
         "ite what the raw text says, add nothing it does not, nothing that happened later.\n"
         "6. Time, one level only: each message carries when it was said (its message time). Wh"
-        "en the time of the thing itself is said relatively (three years ago, last week, tomor"
-        'row), write about when it was from the message time, as "about 2023 (three years ag'
-        'o) I said I had been to Iceland ten years before"; a time inside the thing (ten year'
-        "s before) stays as said, not worked out further.\n"
+        "en the thing itself is said to have happened or to be coming at a relative time (yeste"
+        "rday, last Friday, last week, next month, three years ago), write the date or month it "
+        'works out to from the message time beside the words: "won a tournament yesterday (202'
+        '2-08-21)", "a letter last week (week of 2022-08-07)", "about 2023 (three years ago) I'
+        ' said I had been to Iceland ten years before". Only that one time, the time of the th'
+        "ing; a time inside the thing (ten years before) stays as said, not worked out further"
+        ".\n"
         "7. when and status: where the thing stands when this SB ends: it happened or holds, be"
         "fore and confirmed; it did not, before and negated; it is arranged, after and likely ("
         'add its date, "after 2024-03-31"); only proposed or recommended and not taken up, af'

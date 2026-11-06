@@ -810,3 +810,21 @@ def test_a_session_date_is_written_once_in_a_readout():
     count = lambda items: sum(i["content"].count("session began") for i in items)  # noqa: E731
     assert count(read()) == 3
     assert count(read(session_once=True)) == 1
+
+
+def test_a_fill_gives_every_message_the_lines_do_not_hold_when_the_pool_is_the_whole_history():
+    msgs = {f"r{n}": lr.RawMessage(f"message {n}", "assistant", None, (1, n)) for n in range(40)}
+    items = lr.compose(
+        "q",
+        ["sb"],
+        list(msgs)[:30],
+        fill_records=list(msgs),
+        step=lambda b: lr.Step("The person pastes a document", None, True, (1, 0)),
+        sources=lambda b: ["r0"],
+        parents=lambda b: [],
+        children=lambda b: [],
+        message=msgs.get,
+        lang="en",
+        policy=lr.LineReadPolicy(projection="hits", assistant="told", raw_fill=2000),
+    )
+    assert sum(any(f"message {n}" in i["content"] for i in items) for n in range(40)) == 40

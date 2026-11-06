@@ -121,6 +121,10 @@ class LineReadPolicy:
     # not in a list of its own. Same messages, same words; only where they sit. A hit with no SB
     # in the Lines (uncompiled, its SB among the standing ones) stays a raw item
     raw_under_sb: bool = False
+    # > 0: a history within this estimate of tokens (and of top_k's reach in messages) is given
+    # whole, what the Lines do not hold as a fill: raw_k cut a document pasted in 42 messages to
+    # 30 where P1's 100 held all of it. A short history needs no selecting
+    whole_under_tokens: int = 0
     # a session's date on the first entry of that session the readout writes, not on each of its
     # untimed messages: said on every one it was read as that message's own date
     session_once: bool = False

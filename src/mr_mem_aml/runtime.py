@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1805,9 +1805,22 @@ class MemoryRuntime:
         from mr_mem_aml import line_read
 
         policy = line_read.LineReadPolicy.of(self.config.line_read)
+        whole = (
+            self.source.history_if_within(user_id, WHOLE_HISTORY_MESSAGES)
+            if policy.whole_under_tokens
+            else None
+        )
+        if whole is not None and (
+            sum(line_read.estimate_tokens(text_) for _, text_ in whole) > policy.whole_under_tokens
+        ):
+            whole = None
+        if whole is not None:
+            policy = replace(policy, raw_fill=len(whole))
         # P1's raw list: its head finds the anchors; with raw_fill the whole list backs the Lines up
         # (LCE shares P1's evidence: what the Lines do not cover is still given, as P1 gives it)
         pool = self._raw_records(user_id, text, policy)
+        if whole is not None:  # what the search did not reach, in order: all of a short history
+            pool = list(dict.fromkeys([*pool, *(record for record, _ in whole)]))
         records = pool[: policy.raw_k]
         sb_search = None if self.index is None else self.index.retrieval()
         # HyDE: a hypothetical passage searched beside the question
@@ -2058,6 +2071,9 @@ class MemoryRuntime:
             hit_blocks=hit_blocks,
             blocks_of=lambda r: self._blocks_by_record.get(r, ()),
         )
+
+
+WHOLE_HISTORY_MESSAGES = 80  # with the Line items, within AML's top_k of 100
 
 
 def _within(items: list[dict], limit: int) -> list[dict]:

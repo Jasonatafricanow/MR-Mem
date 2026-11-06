@@ -360,6 +360,16 @@ class AmlSourceStore:
             ).fetchone()
         return None if row is None else (row[0], row[1], row[2], json.loads(row[3]))
 
+    def history_if_within(self, user_id: str, messages: int) -> list[tuple[str, str]] | None:
+        """(record_id, text) of the user's messages in order, None when there are more than
+        ``messages``."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT record_id, content FROM messages WHERE user_id=? ORDER BY seq LIMIT ?",
+                (user_id, messages + 1),
+            ).fetchall()
+        return None if len(rows) > messages else [(r[0], r[1]) for r in rows]
+
     def pending_size(self, user_id: str) -> tuple[int, int]:
         """(characters, messages) of a user's messages no compile window has taken yet."""
         with self._lock:
