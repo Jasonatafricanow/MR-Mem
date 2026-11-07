@@ -13,6 +13,7 @@ from mr_mem_aml import moves as mv
 from mr_mem_aml.compiler import SemanticCompiler
 from mr_mem_aml.config import RuntimeConfig
 from mr_mem_aml.runtime import MemoryRuntime
+from tests.aml_live_backend import LiveBackend
 
 pytest.importorskip("lce")
 
@@ -74,50 +75,9 @@ def test_the_tail_after_the_person_goes_to_the_next_window():
     assert mv.tail_start(["assistant", "user"]) is None
 
 
-def test_step1_slim4_spans_become_sources_with_the_agent_messages():
-    roles = ["user", "assistant", "assistant", "user", "assistant"]
-    data = [
-        {"id": "b1", "turns": "M1-M3", "summary": "建了 worktree，用户同意", "unresolved": None},
-        {"id": "b2", "turns": "M4-M9", "summary": "推送完成", "unresolved": "M4"},  # clipped to M5
-        {"id": "b3", "turns": "10-09#46", "summary": "x"},  # no M span: dropped
-        {"id": "b4", "turns": "M2", "summary": ""},
-    ]  # no summary: dropped
-    sbs = mv.parse_step1_slim4(data, roles)
-    assert [(b["sources"], b["situation"], b["move"], b["unresolved"]) for b in sbs] == [
-        ([0, 1, 2], "建了 worktree，用户同意", "", None),
-        ([3, 4], "推送完成", "", 3),
-    ]
-    assert mv.content_of(sbs[0]["situation"], sbs[0]["move"], "zh") == "建了 worktree，用户同意"
-
-
-def test_step1_slim4_leaving_most_of_the_person_out_is_asked_again():
-    roles = ["user", "assistant", "user", "assistant", "user"]
-    with pytest.raises(ValueError):
-        mv.check_step1_slim4([{"turns": "M1-M2", "summary": "s"}], roles)
-    mv.check_step1_slim4([{"turns": "M1-M3", "summary": "s"}], roles)
-    assert mv.extract_json_array('```json\n[{"turns":"M1","summary":"s"}]\n```') == [
-        {"turns": "M1", "summary": "s"}
-    ]
-
 
 # --- step 2 ---------------------------------------------------------------------
 
-
-def test_step2_links_only_to_candidates_or_earlier_sbs():
-    data = {
-        "links": [
-            {"sb": "s2", "to": "N1", "why": "carries out"},
-            {"sb": "s2", "to": "s1"},
-            {"sb": "s1", "to": "s2"},  # later SB: dropped
-            {"sb": "s1", "to": "N7"},  # no such candidate: dropped
-            {"sb": "s2", "to": "N1"},
-        ],  # duplicate: dropped
-        "settles": [{"sb": "s2", "step": "N2"}, {"sb": "s3", "step": "N1"}],
-    }
-    out = mv.parse_step2(data, n_sbs=2, n_cands=2)
-    assert out["after"] == {1: [("N", 0), ("s", 0)]}
-    assert out["why"][(1, ("N", 0))] == "carries out"
-    assert out["settles"] == {1: [1]}
 
 
 def test_prompts_follow_the_language():
@@ -125,13 +85,8 @@ def test_prompts_follow_the_language():
     en = mv.step1_prompt("en", [{"role": "user", "text": "go ahead"}], [])
     assert "用中文写" in zh and "[M1 人] 开始吧" in zh
     assert "Write in English" in en and "[M1 Person] go ahead" in en
-    p2 = mv.step2_prompt(
-        "en",
-        [{"text": "a", "time": "t"}],
-        [{"text": "b", "time": "t0", "state": "happened"}],
-        [[0]],
-    )
-    assert "s1 [t] a\n   candidates: N1" in p2 and "N1 [t0, happened] b" in p2
+    st = mv.stretch_prompt("zh", [{"text": "a", "time": "t"}], [], [], [])
+    assert "s1 [t] a" in st and "前因" in st
 
 
 # --- runtime: two steps per window, journal, replay -------------------------------
@@ -139,22 +94,16 @@ def test_prompts_follow_the_language():
 
 class TwoStepBackend:
     """Step 1: one SB per message of the person, about the agent message before it.
-    Step 2: every SB after the first builds on the SB just before it (s or the latest N)."""
+    The stretch layer: one closed stretch over the window's SBs, so they go on one after another
+    on the Line."""
 
     def __init__(self):
-        self.calls = {"step1": 0, "step2": 0}
+        self.calls = {"step1": 0, "stretches": 0}
 
     def complete(self, prompt: str) -> str:
-        if "SBs of this window" in prompt or "本窗口的 SB" in prompt:
-            self.calls["step2"] += 1
-            sbs = re.findall(r"^s(\d+) ", prompt, flags=re.M)
-            cands = re.findall(r"^N(\d+) ", prompt, flags=re.M)
-            links = [
-                {"sb": f"s{k}", "to": f"s{int(k) - 1}", "why": "next"} for k in sbs if int(k) > 1
-            ]
-            if cands:
-                links.append({"sb": "s1", "to": f"N{cands[-1]}", "why": "carries on"})
-            return json.dumps({"links": links, "settles": []})
+        if re.search(r"\nSBS[:：]\n", prompt):
+            self.calls["stretches"] += 1
+            return LiveBackend()._stretches(prompt)
         self.calls["step1"] += 1
         new = re.split(r"NEW[:：]\n", prompt, maxsplit=1)[1]
         rows = re.findall(r"^\[M(\d+)[^\]]* (Person|人|Agent)\] (.*)$", new, flags=re.M)
@@ -176,12 +125,10 @@ def runtime(tmp_path: Path, backend) -> MemoryRuntime:
     config = RuntimeConfig(
         data_dir=tmp_path / "data",
         compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree",
         compile_window={"soft": 3, "hard": 5},
         scene="work",
-        placement="moves",
     )
-    return MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="moves", scene="work"))
+    return MemoryRuntime(config, compiler=SemanticCompiler(backend, scene="work"))
 
 
 def add(rt, rid, *texts, start_minute=0):
@@ -201,13 +148,13 @@ def edges(tmp_path: Path) -> int:
     return sqlite3.connect(path).execute("SELECT COUNT(*) FROM line_edges").fetchone()[0]
 
 
-def test_two_steps_per_window_links_on_the_graph_and_journal(tmp_path):
+def test_step1_and_the_stretch_layer_link_on_the_graph_and_journal(tmp_path):
     backend = TwoStepBackend()
     rt = runtime(tmp_path, backend)
     try:
         add(rt, "r1", "报告一", "好，继续", "报告二", "改一下格式", "报告三", "可以")
         rt.flush()
-        assert backend.calls["step1"] == backend.calls["step2"] >= 1
+        assert backend.calls["step1"] == backend.calls["stretches"] >= 1
         assert len(rt.core.load_all()) == 3  # one SB per point of the person
         assert all("→ 人：move" in m.content for m in rt.core.load_all())  # Chinese prompt
         assert edges(tmp_path) >= 2
@@ -264,24 +211,11 @@ def test_a_journaled_window_replays_both_steps_without_a_model_call(tmp_path):
             "fine",
         )
         rt.flush()
-        assert replay.calls == {"step1": 0, "step2": 0}
+        assert replay.calls == {"step1": 0, "stretches": 0}
         assert edges(tmp_path / "b") == edges(tmp_path / "a")
     finally:
         rt.close()
 
-
-def test_moves_is_the_work_scene_only():
-    with pytest.raises(ValueError):
-        SemanticCompiler(TwoStepBackend(), schema="moves", scene="chat")
-    with pytest.raises(ValueError):
-        RuntimeConfig(
-            data_dir=Path("x"),
-            compiler={"type": "command", "argv": ["x"]},
-            path_a_engine="tree",
-            compile_window={"soft": 3, "hard": 5},
-            scene="chat",
-            placement="moves",
-        )
 
 
 def test_a_step1_answer_missing_most_of_the_person_is_asked_again():
@@ -312,76 +246,26 @@ def test_interleaved_sessions_are_marked_and_about_stays_in_its_session():
     ] == [0, 2]
 
 
-def test_chat_scene_with_slim4_carries_the_unanswered_question_only():
-    assert mv.tail_start(["user", "assistant", "user"], "chat") == 2
-    assert mv.tail_start(["user", "assistant", "user", "user"], "chat") == 2
-    assert mv.tail_start(["user", "assistant"], "chat") is None
-    assert mv.tail_start(["user", "user", "user"], "chat") is None  # between people: nothing waits
-    assert "Return only a valid JSON array" in mv.step1_prompt_slim4(
-        "en", [{"role": "user", "text": "hi"}], []
-    )
-    for lang in ("zh", "en"):  # the chat scene has its own template (SB freeze 9-25)
-        chat = mv.step1_prompt_slim4(lang, [{"role": "user", "text": "hi"}], [], "chat")
-        assert '"status":"unknown"' in chat and mv.SUMMARY[lang] not in chat
-        assert mv.SUMMARY[lang] in mv.step1_prompt_slim4(lang, [{"role": "user", "text": "hi"}], [])
-    sbs = mv.parse_step1_slim4(
-        [
-            {"turns": "M1", "text": "has finished A", "status": "happened"},
-            {
-                "turns": "M1-M2",
-                "text": "asks how to do B; assistant recommends C",
-                "status": "unknown",
-            },
-            {"turns": "M2", "text": "plans D", "status": "not yet"},
-        ],
-        ["user", "assistant"],
-    )
-    assert [(b["situation"][:5], b["happened"]) for b in sbs] == [
-        ("has f", True),
-        ("asks ", False),
-        ("plans", False),
-    ]
-    assert "same matter going on" in mv.step2_prompt("en", [{"text": "s"}], [], [[]], "chat")
-    SemanticCompiler(object(), schema="moves", scene="chat", step1="slim4")
-    with pytest.raises(ValueError):
-        SemanticCompiler(object(), schema="moves", scene="chat")
-
-
-def test_chat_step2_shows_earlier_steps_under_the_persons_matter():
-    cands = [
-        {"text": "wants a sprint plan", "time": "t0", "matter": 0, "who": "person"},
-        {"text": "gives a two-week plan", "time": "t1", "matter": 0, "who": "assistant"},
-        {"text": "asks about Docker", "time": "t2", "matter": 2, "who": "person"},
-    ]
-    p2 = mv.step2_prompt("en", [{"text": "sprint 1 is done", "time": "t3"}], cands, [[1]], "chat")
-    assert "s1 [t3] sprint 1 is done\n   matters: N1\n" in p2
-    assert (
-        "N1 (the person) [t0] wants a sprint plan\n"
-        "   N2 (the assistant) [t1] gives a two-week plan\n"
-        "N3"
-    ) in p2
-
 
 def test_chat_step1_carries_standing_instructions_into_the_journal():
     from mr_mem_aml.compiler import CompiledBlock, blocks_from_json, blocks_to_json
 
-    sb = mv.parse_step1_slim4(
+    sb = mv.parse_step1_chat(
         [
             {
                 "turns": "M1",
                 "text": "always use version numbers",
-                "status": "happened",
+                "when": "before",
+                "status": "confirmed",
                 "standing": True,
             }
         ],
         ["user"],
     )[0]
     assert sb["standing"] is True
-    block = CompiledBlock("c", ("r",), None, None, standing=True)
+    block = CompiledBlock("c", ("r",), standing=True)
     assert blocks_from_json(blocks_to_json((block,)))[0].standing is True
-    assert '"standing":false' in mv.step1_prompt_slim4(
-        "en", [{"role": "user", "text": "hi"}], [], "chat"
-    )
+    assert '"standing":false' in mv.step1_prompt_topic("en", [{"role": "user", "text": "hi"}], [])
 
 
 def test_long_messages_are_numbered_by_paragraph_and_turns_may_point_into_them():
@@ -395,11 +279,8 @@ def test_long_messages_are_numbered_by_paragraph_and_turns_may_point_into_them()
         "```py\nx = 1\n```",
         "why?",
     ]  # code on its own
-    prompt = mv.step1_prompt_slim4(
-        "en",
-        [{"role": "user", "text": "plan?"}, {"role": "assistant", "text": long}],
-        [],
-        scene="chat",
+    prompt = mv.step1_prompt_topic(
+        "en", [{"role": "user", "text": "plan?"}, {"role": "assistant", "text": long}], []
     )
     assert "(M2.2) Week 1: backend" in prompt and "(M1.1)" not in prompt
     data = [
@@ -408,8 +289,8 @@ def test_long_messages_are_numbered_by_paragraph_and_turns_may_point_into_them()
         {"turns": "M2.2-3", "text": "same paragraphs"},
         {"turns": "M2.1-M2.4", "text": "all of it"},
     ]
-    sbs = mv.parse_step1_slim4(data, ["user", "assistant"], [1, 4])
-    got = {b["situation"]: (b["sources"], b["spans"]) for b in sbs}
+    sbs = mv.parse_step1_chat(data, ["user", "assistant"], [1, 4])
+    got = {b["situation"].split(" [")[0]: (b["sources"], b["spans"]) for b in sbs}
     assert got == {
         "asked for a plan; got week 1": ([0, 1], {1: [2, 3]}),
         "whole": ([0, 1], {}),
@@ -422,11 +303,8 @@ def test_chat_step1_sbs_and_what_builds_on_them_come_from_one_answer():
     from mr_mem_aml import moves as mv
 
     answer = "Sure!\n\nWeek 1: backend\n\n```python\na = 1\nb = 2\nc = 3\n```"
-    prompt = mv.step1_prompt_slim4(
-        "en",
-        [{"role": "user", "text": "plan?"}, {"role": "assistant", "text": answer}],
-        [],
-        scene="chat",
+    prompt = mv.step1_prompt_topic(
+        "en", [{"role": "user", "text": "plan?"}, {"role": "assistant", "text": answer}], []
     )
     assert "(M2.3) ```python" in prompt and "  2| b = 2" in prompt  # code lines are numbered
     raw = (
@@ -623,92 +501,6 @@ def test_words_copied_from_code_with_bare_quotes_still_read():
     assert mv.extract_json_array(raw)[0]["to"] == 'Unauthorized"}), 403'
 
 
-def test_step2_says_which_thread_each_sb_is_in_and_how_each_stands_now():
-    data = {
-        "links": [],
-        "settles": [],
-        "threads": [
-            {"sb": "s1", "thread": "T2"},
-            {"sb": "s2", "thread": "new"},
-            {"sb": "s3", "thread": "s2"},
-            {"sb": "s4", "thread": "T9"},
-        ],
-        "summaries": [
-            {"thread": "T2", "summary": "coverage 65% on 03-27, later 78%"},
-            {"thread": "s2", "summary": "adds autocomplete"},
-        ],
-    }
-    out = mv.parse_step2(data, 4, 0, 2)
-    assert out["thread"] == {0: ("T", 1), 1: ("s", 1), 2: ("s", 1)}  # T9 is not shown: dropped
-    assert out["summaries"] == {
-        ("T", 1): "coverage 65% on 03-27, later 78%",
-        ("s", 1): "adds autocomplete",
-    }
-
-
-def test_a_new_thread_says_which_steps_result_led_to_it():
-    data = {
-        "links": [],
-        "settles": [],
-        "threads": [
-            {
-                "sb": "s1",
-                "thread": "new",
-                "from": "N2",
-                "why": "the model was chosen, so the readout came next",
-            },
-            {"sb": "s2", "thread": "new"},
-            {"sb": "s3", "thread": "T1", "from": "N1"},
-        ],
-    }
-    out = mv.parse_step2(data, 3, 2, 1)
-    assert out["from"] == {0: (("N", 1), "the model was chosen, so the readout came next")}
-
-
-def test_thread_summaries_are_asked_on_their_own_and_read_by_thread():
-    prompt = mv.summarize_prompt(
-        "en",
-        [
-            {"before": "", "new": ["The person wants autocomplete."]},
-            {"before": "Rate limits tracked.", "new": ["The assistant gives a cache."]},
-        ],
-    )
-    assert (
-        "T2\nSummary so far: Rate limits tracked." in prompt
-        and "- The assistant gives a cache." in prompt
-    )
-    got = mv.parse_summaries(
-        {
-            "summaries": [
-                {"thread": "T2", "summary": "Caching was delivered."},
-                {"thread": "T9", "summary": "not shown"},
-            ]
-        },
-        2,
-    )
-    assert got == {1: "Caching was delivered."}
-
-
-def test_threads_are_their_own_call_and_say_what_a_new_one_came_from():
-    prompt = mv.threads_prompt(
-        "en", [{"text": "The person adds a cache", "time": ""}], [{"summary": "Rate limits."}]
-    )
-    assert "T1 Rate limits." in prompt and "s1 [] The person adds a cache" in prompt
-    out = mv.parse_threads(
-        {
-            "threads": [
-                {"sb": "s1", "thread": "new", "from": "T1", "why": "limits led to it"},
-                {"sb": "s2", "thread": "s1"},
-            ]
-        },
-        2,
-        1,
-    )
-    assert out == {
-        "thread": {0: ("s", 0), 1: ("s", 0)},
-        "from": {0: (("T", 0), "limits led to it")},
-    }
-
 
 # --- chat step 1: broken answers, pasted material, people (2026-10-31, mini AML run) ------------
 
@@ -737,14 +529,6 @@ def test_chat_check_takes_pasted_material_answered_and_stops():
     # nothing to compile (a machine log): no retry
     mv.check_step1_chat([], ["user"] * 9, done=9)
 
-
-def test_between_people_needs_two_named_speakers():
-    chat = [{"role": "user", "text": f"{n}: hi there"} for n in ("Nate", "Joanna") * 3]
-    log = [{"role": "user", "text": '[ { "second": 0, "event": "unit_made" } ]'}] * 6
-    notes = [{"role": "user", "text": "MARCH 3, 2026 1. Flyers won't look"}] * 6
-    assert mv.between_people(chat)
-    assert not mv.between_people(log) and not mv.between_people(notes)
-    assert not mv.between_people(chat + [{"role": "assistant", "text": "Sure."}])
 
 
 def test_the_open_stretch_is_cut_with_the_window():
@@ -810,9 +594,7 @@ def test_block_numbers_cut_the_raw_text_with_compression_on():
             time_given=False,
         )
 
-    compiler = SemanticCompiler(
-        Backend(), schema="moves", step1="topic", assistant_head=600, blocks=True
-    )
+    compiler = SemanticCompiler(Backend(), assistant_head=600, blocks=True)
     blocks = compiler._compile_moves(
         [message("user", "How do tokens work?", 1), message("assistant", raw, 2)],
         (),

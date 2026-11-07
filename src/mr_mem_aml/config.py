@@ -15,9 +15,7 @@ class RuntimeConfig:
     data_dir: Path
     compiler: dict[str, Any]
     search_mode: str = "path_a"  # path_a | baseline
-    lce_enabled: bool = True
     context_messages: int = 20
-    assistant_policy: str = "attributed"  # attributed | context_only
     embedding: dict[str, Any] | None = None
     hyde: str = "off"  # off | fallback | augmented
     # the completion backend HyDE writes its hypothetical passage with; None: the compiler's
@@ -42,48 +40,23 @@ class RuntimeConfig:
     # closed);
     # AML never calls flush, and Search may run 30 minutes.
     compile_before_search: bool = False
-    # existing lines shown to the compiler per batch (path_a_lines.select_known_lines)
-    line_policy: dict[str, int] = field(
-        default_factory=lambda: {"recent": 10, "cued": 10, "due": 10}
-    )
-    # LCE engine: "flat" = Thread handoff into per-Thread Baselines (older);
-    # "tree" = Thread + Path A Line trees ported from LCE (design v6 4.4-4.5).
-    path_a_engine: str = "flat"
-    # committed steps shown to the tree compiler per batch
-    step_policy: dict[str, int] = field(default_factory=lambda: {"recent": 10, "cued": 10})
-    # Tree engine: compile in windows of our own instead of per Add (design 4.7):
-    # {"soft": n, "hard": n, "measure": "messages" | "chars", "gap_minutes": a pause that
-    # ends a stretch}; "chars" counts the text, as message lengths differ a hundredfold.
-    # Add stores raw text at once; a window closes at the first natural breakpoint
-    # after "soft", where a block is complete (session change, long pause, and the
+    # Compile in windows of our own, not per Add (design 4.7): {"soft": n, "hard": n,
+    # "measure": "messages" | "chars", "gap_minutes": a pause that ends a stretch,
+    # "max_messages", "max_chars_per_user"}; "chars" counts the text, as message lengths
+    # differ a hundredfold. Add stores raw text at once; a window closes at the first natural
+    # breakpoint after "soft", where an SB is complete (session change, long pause, and the
     # turn boundary of the scene), at "hard" at the latest; flush compiles what is left.
-    compile_window: dict[str, int | str] | None = None
+    compile_window: dict[str, int | str] = field(
+        default_factory=lambda: {"soft": 40000, "hard": 80000, "measure": "chars"}
+    )
     # Conversation scene (design 4.1, 4.7): "chat" = the interaction is the content,
     # a turn ends when the person speaks again after the assistant; "work" = a block
     # is the assistant's report and the person's feedback on it, so a turn ends when
     # the assistant speaks again after the person.
     scene: str = "chat"
-    # Tree engine placement: "lines" = blocks placed on lines judged by their
-    # summaries; "points" = each block linked to the earlier steps it carries on,
-    # lines are what the links make, and no summary takes part in placement;
-    # "entries" = placed like "points", but the model only writes per-message
-    # entries and code assembles the blocks and links (trial, compiler entries.py);
-    # "moves" = work scene, two steps per window: the model writes the SBs ("what
-    # happened -> what the person did"), then places them among candidates retrieved
-    # with each SB's own text (compiler moves.py, user 2026-10-24).
-    placement: str = "lines"
-    # placement "moves", step 2: per SB the top "k" earlier SBs by each of four
-    # searches, plus the "latest" SBs before the window
-    place_policy: dict[str, int] = field(default_factory=lambda: {"k": 10, "latest": 15})
-    # placement "moves", step 1: "moves" = one SB per point of the person; "slim4" = one SB
-    # per stretch with one result, as the bbz_diag slim4 prompt (trial, 2026-10-26, Chinese only)
-    step1: str = "moves"
-    # placement "moves", after step 1: "steps" = step 2's links, then the threads call and the
-    # summaries call; "stretches" = one call cutting the SBs into stretches and summarizing the
-    # closed ones (docs/LCE_FROZEN.md, 2026-10-31)
-    layer2: str = "steps"
     # search in path_a mode reads by the upward index (line_read.py, design 5.3, 5.5): raw hits ->
-    # their SBs -> the Line around them, plus raw snippets; None keeps the PathAReader read.
+    # their SBs -> the Line around them, plus raw snippets; None: the PathAReader read, which
+    # gives raw hits and SBs without the Lines.
     # Keys of line_read.LineReadPolicy (sbs, up, down, raw_k, sb_k, rrf_k, tz_minutes, raw_full)
     line_read: dict[str, int] | None = None
     # windows compiled in the background, not inside Add: {"search_wait": seconds a Search waits
@@ -107,35 +80,14 @@ class RuntimeConfig:
     decision: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
-        if self.path_a_engine not in ("flat", "tree"):
-            raise ValueError("path_a_engine must be 'flat' or 'tree'")
-        if self.placement not in ("lines", "points", "entries", "moves"):
-            raise ValueError("placement must be 'lines', 'points', 'entries' or 'moves'")
-        if self.placement == "moves" and (
-            (self.scene != "work" and self.step1 not in ("slim4", "topic"))
-            or self.compile_window is None
-        ):
-            raise ValueError(
-                "placement 'moves' compiles in windows, in the work scene unless step1 is 'slim4'"
-            )
         if self.scene not in ("chat", "work"):
             raise ValueError("scene must be 'chat' or 'work'")
-        if self.step1 not in ("moves", "slim4", "topic"):
-            raise ValueError("step1 must be 'moves', 'slim4' or 'topic'")
-        if self.layer2 not in ("steps", "stretches"):
-            raise ValueError("layer2 must be 'steps' or 'stretches'")
         if self.line_read is not None:
             from mr_mem_aml.line_read import LineReadPolicy
 
             LineReadPolicy.of(self.line_read)
-            if not (
-                self.raw_base
-                and self.path_a_engine == "tree"
-                and self.placement in ("points", "moves")
-            ):
-                raise ValueError(
-                    "line_read needs raw_base and the tree engine's Line graph (points or moves)"
-                )
+            if not self.raw_base:
+                raise ValueError("line_read needs raw_base")
         if self.decision is not None and (
             self.line_read is None
             or not (self.decision.get("base_url") or self.decision.get("base_url_env"))
@@ -143,29 +95,22 @@ class RuntimeConfig:
             raise ValueError("decision needs line_read and a base_url or base_url_env")
         if self.background_compile is not None:
             b = self.background_compile
-            if self.compile_window is None:
-                raise ValueError("background_compile needs compile_window")
             if not all(
                 isinstance(b.get(k, 1), int | float) and b.get(k, 1) >= 0
                 for k in ("search_wait", "idle_tail")
             ):
                 raise ValueError("background_compile search_wait and idle_tail must be >= 0")
-        if self.compile_window is not None:
-            w = self.compile_window
-            if self.path_a_engine != "tree":
-                raise ValueError("compile_window needs path_a_engine 'tree'")
-            if not 1 <= w.get("soft", 0) <= w.get("hard", 0):
-                raise ValueError("compile_window needs 1 <= soft <= hard")
-            if w.get("measure", "messages") not in ("messages", "chars"):
-                raise ValueError("compile_window measure must be 'messages' or 'chars'")
-            if "max_chars_per_user" in w and not (
-                type(w["max_chars_per_user"]) is int and w["max_chars_per_user"] >= 1
-            ):
-                raise ValueError("compile_window max_chars_per_user must be an integer >= 1")
-            if "max_messages" in w and not (
-                type(w["max_messages"]) is int and w["max_messages"] >= 1
-            ):
-                raise ValueError("compile_window max_messages must be an integer >= 1")
+        w = self.compile_window
+        if not 1 <= w.get("soft", 0) <= w.get("hard", 0):
+            raise ValueError("compile_window needs 1 <= soft <= hard")
+        if w.get("measure", "messages") not in ("messages", "chars"):
+            raise ValueError("compile_window measure must be 'messages' or 'chars'")
+        if "max_chars_per_user" in w and not (
+            type(w["max_chars_per_user"]) is int and w["max_chars_per_user"] >= 1
+        ):
+            raise ValueError("compile_window max_chars_per_user must be an integer >= 1")
+        if "max_messages" in w and not (type(w["max_messages"]) is int and w["max_messages"] >= 1):
+            raise ValueError("compile_window max_messages must be an integer >= 1")
         if self.search_mode not in ("path_a", "baseline"):
             raise ValueError("search_mode must be 'path_a' or 'baseline'")
         if self.hyde not in ("off", "fallback", "augmented"):

@@ -16,8 +16,6 @@
   },
   "hyde": "off",
   "search_mode": "path_a",
-  "lce_enabled": true,
-  "assistant_policy": "attributed",
   "context_messages": 20,
   "compile_concurrency": 8,
   "read_policy": {"source_text_for_hits": false},

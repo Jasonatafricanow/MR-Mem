@@ -15,7 +15,6 @@
   },
   "hyde": "off",
   "search_mode": "path_a",
-  "lce_enabled": true,
   "compile_concurrency": 2,
   "host": "127.0.0.1",
   "port": 8765

@@ -59,7 +59,7 @@ class RuntimeHost:
             if self._background
             else None
         )
-        if self._background and self.runtime.config.compile_window is not None:
+        if self._background:
             # after a restart nothing would kick a user whose Adds are all in: what was left to
             # compile waited for that user's first Search, which then found only raw hits
             for user in self.call(self.runtime.source.users_with_pending):
@@ -77,7 +77,7 @@ class RuntimeHost:
         runtime = self.runtime
         arrived = time.monotonic()
         self._warm_add(payload)
-        if self._background and runtime.config.compile_window is not None:
+        if self._background:
             # stored and searchable before this returns (AML's Add contract); the compile of the
             # windows now due goes on in the background (a 20-second gateway cut synchronous Adds)
             job = self.call(runtime.prepare_add, payload)
@@ -94,13 +94,25 @@ class RuntimeHost:
             job = self.call(runtime.prepare_add, payload)
             if isinstance(job, dict):
                 return job
-            try:
-                with self._compile_slots:
-                    compiled = runtime.compile_job(job)
-            except CompileFailed as exc:
-                self.call(runtime.fail_add, job, str(exc))
-                raise
-            return self._finish(job, compiled)
+            # as MemoryRuntime.add: every window now due, in turn; the raw text is stored and
+            # searchable already, so a window that fails is counted and left to the next Add or
+            # the flush, and Add still answers as AML's contract asks
+            from mr_mem_aml.runtime import _echo
+
+            request, blocks = job.request, 0
+            while job is not None:
+                try:
+                    with self._compile_slots:
+                        compiled = runtime.compile_job(job)
+                    blocks += self._finish(job, compiled)["blocks"]
+                except CompileFailed as exc:
+                    runtime.window_failures += 1
+                    log.warning("window %s not compiled yet: %s", job.window[0], str(exc)[:300])
+                    break
+                job = self.call(
+                    runtime._window_job, request["user_id"], final=False, request=request
+                )
+            return {**_echo(request), "blocks": blocks}
 
     def _finish(self, job, compiled) -> dict:
         """runtime.finish_steps: its store work on the owner thread, its model calls (step 2,
@@ -144,7 +156,7 @@ class RuntimeHost:
             return
         # in messages as well: short messages close windows at max_messages long before the
         # characters reach the limit
-        cap = 2 * int((self.runtime.config.compile_window or {}).get("max_messages") or 10**9)
+        cap = 2 * int(self.runtime.config.compile_window.get("max_messages") or 10**9)
         deadline = arrived + float(self._background.get("add_wait", 12))
 
         def over() -> bool:
@@ -267,7 +279,6 @@ class RuntimeHost:
         runtime = self.runtime
         if (
             runtime.config.compile_before_search
-            and runtime.config.compile_window is not None
             and isinstance(payload, dict)
             and isinstance(payload.get("user_id"), str)
         ):
@@ -307,8 +318,6 @@ class RuntimeHost:
         under that user's lock with the model call off the owner thread, so a user still adding
         is never compiled from two threads at once."""
         runtime = self.runtime
-        if runtime.config.compile_window is None:
-            return self.call(runtime.flush)
         users = [user_id] if user_id else list(self.call(runtime.source.users_with_pending))
         windows = 0
         for user in users:
@@ -326,11 +335,9 @@ class RuntimeHost:
         return {
             "status": "ok",
             "search_mode": config.search_mode,
-            "lce_enabled": config.lce_enabled,
             "dense": runtime.index is not None,
             "hyde": config.hyde,
             "compile_concurrency": config.compile_concurrency,
-            "thread_failures": runtime.thread_failures,
             # compiles that failed after their retries (e.g. output cut at max_tokens) and kept
             # only their raw text, and those the endpoint refused: 0 window_failures alone hid them
             "compile_failed_kept_raw": runtime.compile_failed_kept_raw,
@@ -479,11 +486,10 @@ def serve(config: RuntimeConfig) -> None:
     host = RuntimeHost(lambda: MemoryRuntime(config))
     server = build_server(config, host)
     log.info(
-        "MR-Mem Path A listening on http://%s:%s (mode=%s, lce=%s, compile_concurrency=%s)",
+        "MR-Mem Path A listening on http://%s:%s (mode=%s, compile_concurrency=%s)",
         config.host,
         config.port,
         config.search_mode,
-        config.lce_enabled,
         config.compile_concurrency,
     )
     try:

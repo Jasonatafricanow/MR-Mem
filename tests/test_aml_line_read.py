@@ -57,7 +57,7 @@ def _compose():
         children=lambda b: ["b"] if b == "a" else [],
         message=msgs.get,
         lang="zh",
-        policy=lr.LineReadPolicy(),
+        policy=lr.LineReadPolicy(projection="walk"),
     )
 
 

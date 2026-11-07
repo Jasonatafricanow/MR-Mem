@@ -7,6 +7,5 @@
   },
   "embedding": null,
   "search_mode": "path_a",
-  "lce_enabled": true,
   "port": 8765
 }

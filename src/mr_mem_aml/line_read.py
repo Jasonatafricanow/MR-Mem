@@ -138,10 +138,10 @@ class LineReadPolicy:
         0  # > 0: after the Lines, this many raw hits whole in raw-search order (no snippets,
     )
     # no budget for them): the Lines on top of exactly what P1 would give
-    projection: str = (
-        "walk"  # "hits" (design 5.3): only the steps the question hits, and the steps on
-    )
-    # the Line between two of them; "walk": up and down from each, whatever is there
+    # "relay" (the default): anchors from the hits, then the steps along the Line nearest the
+    # question; "hits" (design 5.3): only the steps the question hits, and the steps on the Line
+    # between two of them; "walk": up and down from each, whatever is there
+    projection: str = "relay"
     gap: int = 3  # "hits", "relay": the longest run of steps shown between two hit steps
     reach: int = 3  # "relay": how far along the Line (either way) from an anchor a step may be
     extend: int = 16  # "relay": how many such steps join the anchors, the most relevant first

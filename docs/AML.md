@@ -9,10 +9,12 @@
 | 模块 | 职责 |
 |---|---|
 | `source_store` | 原文按 request_id 只写一次；按 SourceRef 回查原文 |
-| `compiler` | 一次模型调用产出 SemanticBlock、Thread 信号和首次即成熟信号；`PROMPT_VERSION` 标记提示词版本 |
+| `compiler` | 补全后端（命令行 / OpenAI 兼容端点）和唯一的编译路径：每个窗口先由第一步写出 SB，再由段层切段、给收口的段写摘要（冻结定义 §2，每窗 2 次调用） |
+| `moves` | 编译提示词与解析：聊天场景按在聊的那件事切 SB（`STEP1_TOPIC`），工作场景按人的回应切（`STEP1`），段层（`STRETCH`） |
 | `embedding` | 本地 FastEmbed（如 bge）、任意 OpenAI 兼容 `/embeddings` 端点、Gemini，或火山方舟多模态向量（`ark`，如 doubao-embedding-vision，带本地向量缓存）（可选） |
 | `raw_arm` | 原文检索（`raw_base=true` 时启用）：每条消息一个单元，BM25 + 向量，RRF k=60、每路候选 200，即 P1 基线协议；单元保留所属消息的 record id，用于向上找到编译产物 |
-| `runtime` | Add / Search 管路：准入 Canonical → 向量投影 → 交给核心 `apply_block_signals`；检索交给核心 `PathAReader` |
+| `runtime` | Add / Search 管路：按窗口编译 → 准入 Canonical → 向量投影 → 长到 Line 树上；Search 走 `line_read`（原文命中 → SB → Line 和段），`baseline` 模式和不设 `line_read` 时交给核心 `PathAReader` |
+| `line_read` | Path A 读出：原文命中挂在所属 SB 下、带消息时间，SB 带它投影的原话，沿 Line 和段带出经过 |
 | `server` | HTTP 服务，对齐 AML 官方契约 |
 | `__main__` | `mr-mem-aml check / serve` |
 
@@ -21,29 +23,27 @@
 ```text
 POST /add
   AMLSourceStore        原文按 request_id 只写一次；同一 request_id 内容不同 → 422
-  SemanticCompiler      一次模型调用，同时产出 Block、Thread 信号、首次即成熟的 commit
-                        结果先记入 journal；重试时复用，不再调用模型
-  Canonical 准入         按语义身份幂等
-  向量投影（可选）        完成前不返回 200
   原文检索单元（raw_base）  编译前就写入原文索引，原文立即可检索
-  编译输入               KNOWN_LINES = 核心 select_known_lines（最近活跃 + 内容唤醒 + 到点的计划），
-                        每条带状态和摘要；提示词 v3
-  Path A（核心）         path_a_ingest.apply_block_signals：Thread 维护、成熟交接、commit / revise
-                        成熟 = 编译器判断这件事已经结束；时间一律用消息时间；全部按 processing_input_id 幂等
-  内容审核拒绝（可选）     skip_rejected_compiles=true 时，模型端永久拒绝（4xx）的请求只保留原文、不产出 Block，计数
-  → 200 时，内容已持久化且可检索
+  → 200 时，原文已持久化且可检索；编译按窗口进行（compile_window），background_compile 时在后台
+  编译窗口               在 soft 之后的第一个自然断点收口（会话切换、长停顿、场景的回合边界），最迟 hard
+  第一步（SB）            一次模型调用写出本窗的 SB；模型可停在 SB 收口处，没编完的尾巴进下一窗
+                        结果先记入 journal；重试、重启时复用，不再调用模型
+  Canonical 准入         按语义身份幂等；向量投影（可选）
+  段层                  一次模型调用把本窗 SB 切成段、接上未收口的段或更早的段，给收口的段写摘要
+  Line 树               SB 按段内顺序和段的承接长到 Line 上（晨昏线：已发生 / 进行中）
+  编译失败               keep_raw_on_compile_failure / skip_rejected_compiles 时只保留原文、计数，Add 仍返回 200
 
 POST /search            {"query","user_id","top_k"} → {"data":[{"id","content","score","created_at"}]}
   请求头 X-MRMem-Search-Mode: baseline | path_a   单次请求覆盖配置里的读取模式
-POST /admin/flush       重扫所有 Scope，重试仍未交接的成熟 Thread
+POST /admin/flush       把所有用户（或指定用户）剩下的消息编完，尾巴也编
 GET  /health
 ```
 
 `raw_base=true` 时，Search 的基线是原文检索列表（与 P1 完全一致），Path A 模式在其上加入向上找到的投影（见 PATH_A.md §4）。多选题的选项按 `append_options` 追加到查询。
 
 失败语义：
-- 模型调用或 LCE 失败，**都不会回滚 Canonical**。请求保留为可恢复状态，返回 503 和 `Retry-After`，用同一个 request_id 重试即可续跑。
-- Thread 维护失败只记日志并计入 `/health` 的 `thread_failures`，不阻塞写入。
+- 原文存好即返回 200；窗口编译失败**不会回滚 Canonical**，也不让 Add 失败：计入 `/health` 的 `window_failures`，由下一次 Add 或 flush 重试（开 `keep_raw_on_compile_failure` 时直接只留原文）。
+- 后台编译积压过多时（`background_compile.max_backlog`），Add 等待后返回 503，由 AML 重试。
 
 ## 3. 评测建议：三组对照
 
@@ -82,11 +82,11 @@ mr-mem-aml serve --config runtime.json
 | `compile_concurrency` | 同时进行的模型调用数（不同 `user_id` 之间并行），默认 4，范围 1–64。按端点的限流设置 |
 | `hyde` | `off` / `fallback` / `augmented`，使用编译器同一个后端 |
 | `search_mode` | 默认读取模式：`path_a` 或 `baseline` |
-| `lce_enabled` | `false` 时不写 LCE（纯基线运行） |
-| `assistant_policy` | `attributed`：助手消息里有信息价值的内容可以编译成 Block，并标明来自助手；`context_only`：只编译用户消息 |
 | `context_messages` | 每次编译带入的同一会话之前的消息条数（只作上下文，不可引用） |
 | `read_policy` | 见核心文档 [PATH_A.md](PATH_A.md) 第 4 节 |
 | `auth_token_env` | 设置后，所有 POST 请求需要鉴权，接受 AML 的三种方式：`Authorization: Bearer <token>`、`Authorization: Token <token>`、`X-Api-Key: <token>`。`GET /health` 不鉴权 |
+
+编译窗口、场景、编译输入、读出（`line_read`）、后台编译、决策旁路等字段，是否建议开、实测效果和成本，见 [CONFIG_GUIDE.md](CONFIG_GUIDE.md)。
 
 注意：
 - **基线配置要和你之前跑基线时保持一致**，特别是 embedding 模型和 HyDE 开关，否则 A 组不等于你已有的基线。
@@ -120,6 +120,6 @@ mr-mem-aml serve --config runtime.json
 ## 6. 已知限制
 
 - 编译质量完全取决于所用模型和提示词（`PROMPT_VERSION`）。换模型或改提示词后，需要重新编译整个数据集，不能和旧结果混用。
-- 编译器会拿到该用户已有的问题列表（KNOWN_LINES），以便复用同一个问题，让后续信号落到同一条认知线上。
+- 段层每窗只看未收口的那一段、最近的 8 个已收口段和最多 10 个进行中的步骤；更早的段要靠检索带回，不进编译输入。
 - 本适配层**自存原文**（`aml_source.sqlite`），因为 AML 只通过 Add 推送对话，没有宿主存储可回查。这是 ADR-0001 的无宿主例外，**不适用于 agent 接入**；agent 接入应由宿主保有原文，通过 `render_source` 回查。
 - Path A 本身的限制见 [PATH_A.md](PATH_A.md) 第 5 节。

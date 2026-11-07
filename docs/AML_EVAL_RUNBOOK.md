@@ -87,8 +87,6 @@ python -m pytest -q                        # 必须全部通过；失败就停�
   "hyde": "off",
   "compile_concurrency": 8,
   "search_mode": "path_a",
-  "lce_enabled": true,
-  "assistant_policy": "attributed",
   "context_messages": 20,
   "read_policy": {"source_text_for_hits": false},
   "host": "127.0.0.1",
@@ -131,7 +129,7 @@ mr-mem-aml check --config $RUN/ingest.json
    mr-mem-aml serve --config $RUN/ingest.json
    ```
 
-   确认 `GET http://127.0.0.1:8765/health` 返回 200，且 `lce_enabled` 为 `true`。
+   确认 `GET http://127.0.0.1:8765/health` 返回 200，且 `status` 为 `ok`。
 
 2. 用用户现有的 AML 式测试管路发送全部 Add 请求到 `http://127.0.0.1:8765/add`。要求：
    - **不同用户可以并发，同一用户必须串行。** 管路并发数设为与 `compile_concurrency` 相同（例如 8）；同一 `user_id` 的分块按时间顺序发送，上一块返回 200 之后再发下一块。

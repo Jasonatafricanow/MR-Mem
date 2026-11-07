@@ -23,15 +23,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from mr_mem import MemoryCore, MemoryLifecycle, SemanticMemoryCandidate, ThreadStatus
+from mr_mem import MemoryCore, MemoryLifecycle, SemanticMemoryCandidate
 from mr_mem.contracts import Scope
-from mr_mem.integrations.path_a_ingest import (
-    BlockSignals,
-    CommitSignal,
-    ThreadSignal,
-    apply_block_signals,
-)
-from mr_mem.integrations.path_a_lines import LineCard, select_known_lines
 from mr_mem.integrations.path_a_read import PathAReader, RawHit
 from mr_mem.memory.providers.bm25 import BM25RetrievalProvider
 from mr_mem.memory.providers.hybrid import (
@@ -52,7 +45,7 @@ from mr_mem_aml.compiler import (
     blocks_to_json,
 )
 from mr_mem_aml.config import RuntimeConfig
-from mr_mem_aml.entries import CONTEXT_KEEP, is_noise
+from mr_mem_aml.moves import is_noise
 from mr_mem_aml.source_store import AmlSourceStore, RequestConflict, user_scope
 
 log = logging.getLogger("mr_mem_aml")
@@ -224,19 +217,10 @@ class MemoryRuntime:
         self.backend = None if compiler is not None else build_backend(config.compiler)
         self.compiler = compiler or SemanticCompiler(
             self.backend,
-            assistant_policy=config.assistant_policy,
-            schema=(
-                "flat"
-                if config.path_a_engine != "tree"
-                else config.placement
-                if config.placement in ("points", "entries", "moves")
-                else "tree"
-            ),
             scene=config.scene,
-            step1=config.step1,
             assistant_head=(config.compile_input or {}).get("assistant_head", 0),
-            # on by default where step 1 cuts by the thing talked about, the one that writes them
-            blocks=bool((config.compile_input or {}).get("blocks", config.step1 == "topic")),
+            # on by default in the chat scene, whose step 1 writes them
+            blocks=bool((config.compile_input or {}).get("blocks", config.scene == "chat")),
         )
         self._trees: dict[str, object] = {}
         self.tree_failures: list[str] = []
@@ -253,12 +237,10 @@ class MemoryRuntime:
                 create=True,
             )
             self.core.canonical.projection_queue().register_projection_target(self.index.target)
-        self._lce: dict[str, object] = {}
-        self._language: dict[str, str] = {}  # placement "moves": decided once per user
+        self._language: dict[str, str] = {}  # decided once per user
         self._bm25: tuple[int, BM25RetrievalProvider] | None = None
         self._generation = 0
         self._vectors: dict[str, tuple[float, ...]] = {}
-        self.thread_failures = 0
         self.compile_rejected = 0
         self._hyde = None  # the HyDE expander, built on first use
         from mr_mem_aml.decision import DecisionBypass
@@ -273,9 +255,6 @@ class MemoryRuntime:
         self._capped_windows: set[str] = set()
         self.compile_capped = 0
         self.window_failures = 0
-        # work blocks that run past the person's feedback into the assistant's next
-        # message (design 4.1); counted and logged, never refused
-        self.past_feedback: list[str] = []
         # upward link raw record -> Blocks compiled from it
         self._blocks_by_record: dict[str, list[str]] = {}
         self._standing: dict[
@@ -301,40 +280,6 @@ class MemoryRuntime:
         unit = None if self.raw is None else self.raw.unit(unit_id)
         return None if unit is None else unit.record_id
 
-    def line_report(self) -> list[dict]:
-        """Every line per user with its state, for offline inspection (e.g. split lines)."""
-        out = []
-        users = {m.user_id for ms in self.source.all_request_messages().values() for m in ms}
-        for user_id in sorted(users):
-            scope = user_scope(user_id)
-            lce = self.lce_for(scope)
-            threads = {t.open_question: t for t in self.core.products.list_threads(scope)}
-            for question, last_active in sorted(self.source.lines(user_id), key=lambda x: x[1]):
-                thread = threads.get(question)
-                head = None if lce is None else lce.lineage_head(question)
-                out.append(
-                    {
-                        "user_id": user_id,
-                        "question": question,
-                        "last_active": last_active.isoformat(),
-                        "thread": None
-                        if thread is None
-                        else {
-                            "status": thread.status.value,
-                            "mature": thread.mature,
-                            "summary": thread.working_summary,
-                            "support": len(thread.handoff_memory_ids),
-                        },
-                        "lce": None
-                        if head is None
-                        else {
-                            "revision": head.revision_number,
-                            "content": head.content,
-                            "support": len(head.supporting_memory_ids),
-                        },
-                    }
-                )
-        return out
 
     def tree_report(self) -> list[dict]:
         """Tree engine: every user's Lines (nested, each step with its side of the
@@ -401,7 +346,6 @@ class MemoryRuntime:
                     "threads": matters,
                     "lone_blocks": lone,
                     "relations_refused": list(self.tree_failures),
-                    "past_feedback": list(self.past_feedback),
                 }
             )
         return out
@@ -452,7 +396,7 @@ class MemoryRuntime:
         return [tuple(self.embedding.embed(t)) for t in texts]
 
     def tree_for(self, scope: Scope):
-        """LCE Thread + Path A trees of one Scope (path_a_engine="tree")."""
+        """The Line tree (Thread + Path A) of one Scope."""
         key = scope.user_id or ""
         if key not in self._trees:
             from mr_mem.lce.path_a import PathATree
@@ -470,8 +414,6 @@ class MemoryRuntime:
     def close(self) -> None:
         for tree in self._trees.values():
             tree.close()
-        for session in self._lce.values():
-            session.close()
         if self.index is not None:
             self.index.close()
         self.source.close()
@@ -479,19 +421,6 @@ class MemoryRuntime:
 
     # -- composition ----------------------------------------------------
 
-    def lce_for(self, scope: Scope):
-        if not self.config.lce_enabled:
-            return None
-        key = scope.user_id or ""
-        if key not in self._lce:
-            from mr_mem.integrations.lce_path_a import LcePathA
-
-            self._lce[key] = LcePathA(
-                canonical_path=self.canonical_path,
-                lce_root=Path(self.config.data_dir) / "lce",
-                scope=scope,
-            )
-        return self._lce[key]
 
     def _retrieval(self) -> MemoryRetrievalService:
         if self._bm25 is None or self._bm25[0] != self._generation:
@@ -527,14 +456,7 @@ class MemoryRuntime:
         job = self.prepare_add(payload)
         if isinstance(job, dict):
             return job
-        if job.window is not None:
-            return self._run_windows(job)
-        try:
-            compiled = self.compile_job(job)
-        except CompileFailed as exc:
-            self.fail_add(job, str(exc))
-            raise
-        return self.finish_add(job, compiled)
+        return self._run_windows(job)
 
     def _run_windows(self, job: AddJob) -> dict:
         """Compile every window that is due. Raw text is already stored and
@@ -575,7 +497,7 @@ class MemoryRuntime:
             )
 
         # size[i]: what the first i pending messages count toward the caps (messages or
-        # characters); entries placement drops background notices, so they do not count
+        # characters); background notices are not compiled, so they do not count
         # compile_window.count_read (off): with compile_input.assistant_head, an assistant message
         # counts as much as step 1 reads of it, so a window holds about three times the history
         # and the instructions every window repeats are paid a third as often. Measured on BEAM
@@ -588,9 +510,7 @@ class MemoryRuntime:
         )
         size = [0]
         for _, m in pending:
-            counted = self.config.placement not in ("entries", "moves") or not is_noise(
-                m.role, m.content
-            )
+            counted = not is_noise(m.role, m.content)
             length = len(m.content)
             if head and m.role == "assistant":
                 length = min(length, head)
@@ -643,17 +563,13 @@ class MemoryRuntime:
             request,
             messages,
             self._context(messages[0]),
-            (
-                {"language": self.language_of(user_id)}
-                if self.config.placement == "moves"
-                else self.known_steps(user_id, messages)
-            ),
+            {"language": self.language_of(user_id)},
             None,
             (f"{user_id}:w{seqs[0]}", seqs, carry),
         )
 
     def language_of(self, user_id: str) -> str:
-        """Placement "moves": the person's language, decided once per user from the
+        """The person's language, decided once per user from the
         person's own messages stored so far, then kept (the prompt follows it)."""
         if user_id not in self._language:
             from mr_mem_aml.moves import person_language
@@ -667,21 +583,8 @@ class MemoryRuntime:
         return self._language[user_id]
 
     def _context(self, first) -> tuple:
-        """Earlier messages of the session shown as CONTEXT. Entries placement drops
-        background notices and keeps the last real messages, so it reaches further
-        back until it has them or the session starts."""
-        limit = self.config.context_messages
-        rows = self.source.context_before(first, limit)
-        if self.config.placement != "entries":
-            return rows
-        while (
-            0 < limit < 1000
-            and len(rows) == limit
-            and sum(not is_noise(m.role, m.content) for m in rows) < CONTEXT_KEEP
-        ):
-            limit *= 2
-            rows = self.source.context_before(first, limit)
-        return rows
+        """Earlier messages of the session shown as CONTEXT."""
+        return self.source.context_before(first, self.config.context_messages)
 
     def prepare_add(self, payload: object) -> AddJob | dict:
         """Owner thread: persist raw text once; return a response or a compile job."""
@@ -698,84 +601,9 @@ class MemoryRuntime:
             from mr_mem_aml.raw_arm import units_for
 
             self.raw.add(units_for(rid, messages))
-        if self.config.compile_window is not None:
-            self.source.set_done(rid)  # stored and searchable; windows compile later
-            job = self._window_job(request["user_id"], final=False, request=request)
-            return job if job is not None else {**_echo(request), "blocks": 0}
-        compiled = self.source.compiled(rid)
-        if compiled is not None:  # journaled earlier: never pay inference twice
-            return AddJob(request, messages, (), (), compiled)
-        return AddJob(
-            request,
-            messages,
-            self._context(messages[0]),
-            (
-                self.known_steps(request["user_id"], messages)
-                if self.config.path_a_engine == "tree"
-                else self.known_lines(request["user_id"], messages)
-            ),
-        )
-
-    def known_steps(self, user_id: str, messages) -> dict:
-        """Owner thread: threads, committed steps and denials the tree compiler sees."""
-        known = self.tree_for(user_scope(user_id)).known(
-            batch_text="\n".join(m.content for m in messages)[:8000],
-            now=max(m.occurred_at for m in messages),
-            threads_policy=self.config.line_policy,
-            steps_policy=self.config.step_policy,
-            embed=None if self.embedding is None else self._embed_cached,
-        )
-        return {**known.payload, "_refs": known.refs}  # refs are journaled, never prompted
-
-    def known_lines(self, user_id: str, messages) -> tuple[dict, ...]:
-        """Owner thread: the existing lines the compiler sees for this batch."""
-        scope = user_scope(user_id)
-        lce = self.lce_for(scope)
-        threads = {t.open_question: t for t in self.core.products.list_threads(scope)}
-        cards = []
-        for question, last_active in self.source.lines(user_id):
-            thread = threads.get(question)
-            summary, settled, support = None, True, ()
-            if thread is not None and thread.status is ThreadStatus.OPEN:
-                summary, settled, support = (
-                    thread.working_summary,
-                    False,
-                    thread.current_support_ids,
-                )
-            elif lce is not None and (head := lce.lineage_head(question)) is not None:
-                summary, support = head.content, head.supporting_memory_ids
-            elif thread is not None:
-                summary, support = thread.working_summary, thread.current_support_ids
-            blocks = [
-                m.content for mid in support[-3:] if (m := self.core.canonical.get(mid)) is not None
-            ]
-            cards.append(
-                LineCard(
-                    question,
-                    summary,
-                    settled,
-                    last_active,
-                    "\n".join([question, summary or "", *blocks]),
-                )
-            )
-        policy = self.config.line_policy
-        selection = select_known_lines(
-            cards,
-            batch_text="\n".join(m.content for m in messages)[:8000],
-            now=max(m.occurred_at for m in messages),
-            recent=policy["recent"],
-            cued=policy["cued"],
-            due=policy["due"],
-            embed=None if self.embedding is None else self._embed_cached,
-        )
-        return tuple(
-            {
-                "question": c.question,
-                "state": "settled" if c.settled else "open",
-                **({"summary": c.summary} if c.summary else {}),
-            }
-            for c in selection.lines
-        )
+        self.source.set_done(rid)  # stored and searchable; windows compile later
+        job = self._window_job(request["user_id"], final=False, request=request)
+        return job if job is not None else {**_echo(request), "blocks": 0}
 
     def compile_job(self, job: AddJob) -> str:
         """Any thread: the model call. Touches no store."""
@@ -784,24 +612,18 @@ class MemoryRuntime:
         if job.window is not None and job.window[0] in self._capped_windows:
             self.compile_capped += 1  # past the user's cap: raw only, no model call
             return self._journal(job, (), len(job.messages))
-        trace: dict = {}  # entries placement: pieces, entries and audit for the journal
+        trace: dict = {}  # step 1's output and audit, kept in the journal
         try:
             started = time.monotonic()
-            if job.window is not None and (job.window[2] or self.config.placement == "moves"):
-                # moves: even the last window may stop where its SBs close; the flush goes on
-                blocks, kept = self.compiler.compile(
-                    job.messages,
-                    job.context,
-                    job.known_lines,
-                    window=True,
-                    trace=trace,
-                    tail=job.window[2],
-                )
-            else:
-                blocks = self.compiler.compile(
-                    job.messages, job.context, job.known_lines, trace=trace
-                )
-                kept = len(job.messages)
+            # even the last window may stop where its SBs close; the flush goes on
+            blocks, kept = self.compiler.compile(
+                job.messages,
+                job.context,
+                job.known_lines,
+                window=True,
+                trace=trace,
+                tail=job.window[2],
+            )
             log.info(
                 "compiled %s: %d messages -> %d blocks in %.1fs",
                 job.request["request_id"] or job.window[0],
@@ -815,18 +637,6 @@ class MemoryRuntime:
                     job.request["request_id"] or job.window[0],
                     len(blocks),
                     sum(bool(m["move"]) for m in trace["moves"]),
-                )
-            elif trace:
-                audit = trace["audit"]
-                log.info(
-                    "entries %s: %d entries; unresolved %d, redirected %d, dropped %d, "
-                    "user coverage %s",
-                    job.request["request_id"] or job.window[0],
-                    len(trace["entries"]),
-                    len(audit["unresolved"]),
-                    len(audit["redirected"]),
-                    len(audit["dropped"]),
-                    audit["user_coverage"],
                 )
         except CompileError as exc:
             if self.config.keep_raw_on_compile_failure:
@@ -855,17 +665,11 @@ class MemoryRuntime:
         self, job: AddJob, blocks, kept: int | None = None, trace: dict | None = None
     ) -> dict:
         data = blocks_to_json(blocks, self.compiler.version)
-        if isinstance(job.known_lines, dict):  # tree: how the prompt's refs resolve
-            data["refs"] = dict(job.known_lines.get("_refs", {}))
-        if job.window is not None:
-            data["kept"] = len(job.messages) if kept is None else kept
-        if trace:  # entries placement: kept for audit and replay, never ingested
+        data["kept"] = len(job.messages) if kept is None else kept
+        if trace:  # kept for audit and replay, never ingested
             data["assembly"] = trace
         return data
 
-    def fail_add(self, job: AddJob, error: str) -> None:
-        """Owner thread: record a failed compile so the request stays resumable."""
-        self.source.set_error(job.request["request_id"], error)
 
     def finish_add(self, job: AddJob, compiled: str) -> dict:
         """Owner thread: journal, admit, project, derive Path A; the model calls of placement made
@@ -892,32 +696,7 @@ class MemoryRuntime:
         and gets the result back, so only the store work needs the owner thread (2026-10-31:
         step 2, threads and summaries ran on it, one user at a time, whatever
         compile_concurrency said)."""
-        if job.window is not None:
-            return (yield from self._finish_window(job, compiled))
-        request = job.request
-        rid, scope = request["request_id"], user_scope(request["user_id"])
-        if self.source.compiled(rid) is None:
-            self.source.set_compiled(rid, compiled)
-        blocks = blocks_from_json(self.source.compiled(rid))  # first journal entry wins
-        try:
-            committed = self._admit(scope, rid, blocks)
-            self._project()
-            self._generation += 1
-            at = max(m.occurred_at for m in job.messages)
-            if self.config.path_a_engine == "tree":
-                commit_failures = self._grow(
-                    scope, blocks, committed, self.source.compiled(rid).get("refs", {}), at
-                )
-            else:
-                commit_failures = self._derive(scope, request["user_id"], blocks, committed, at)
-        except RetryableError as exc:
-            self.source.set_error(rid, str(exc))
-            raise
-        if commit_failures:
-            self.source.set_error(rid, f"{commit_failures} Path A commit(s) failed")
-            raise RetryableError("canonical Memory stored; Path A commit failed, retry request")
-        self.source.set_done(rid)
-        return {**_echo(request), "blocks": len(committed)}
+        return (yield from self._finish_window(job, compiled))
 
     def _finish_window(self, job: AddJob, compiled: dict) -> dict:
         wid, seqs, _ = job.window
@@ -944,48 +723,43 @@ class MemoryRuntime:
         self._project()
         self._generation += 1
         at = max(m.occurred_at for m in job.messages[:kept])
-        if self.config.placement == "moves":
-            placement = compiled.get("placement")
-            if placement is None and not committed:
-                # no SB (capped, or a compile that kept raw only): nothing to place. Going on,
-                # the stretch step averaged no vectors once a user had 8 closed stretches and
-                # failed the window every time it was retried
+        placement = compiled.get("placement")
+        if placement is None and not committed:
+            # no SB (capped, or a compile that kept raw only): nothing to place. Going on,
+            # the stretch step averaged no vectors once a user had 8 closed stretches and
+            # failed the window every time it was retried
+            placement = {}
+            self.source.add_to_window(wid, "placement", placement)
+        if placement is None:  # the stretch layer; a journaled one is applied without a model call
+            try:
+                placement = yield from self._stretch(user_id, scope, compiled, committed, at)
+            except CompileFailed as exc:
+                if not self.config.keep_raw_on_compile_failure:
+                    raise
+                log.warning("placement failed, SBs kept unlinked: %s: %s", wid, str(exc)[:300])
+                self.compile_failed_kept_raw += 1
                 placement = {}
-                self.source.add_to_window(wid, "placement", placement)
-            if placement is None:  # step 2; a journaled one is applied without a model call
-                try:
-                    place = self._stretch if self.config.layer2 == "stretches" else self._place
-                    placement = yield from place(user_id, scope, compiled, committed, at)
-                except CompileFailed as exc:
-                    if not self.config.keep_raw_on_compile_failure:
-                        raise
-                    log.warning("placement failed, SBs kept unlinked: %s: %s", wid, str(exc)[:300])
-                    self.compile_failed_kept_raw += 1
-                    placement = {}
-                self.source.add_to_window(wid, "placement", placement)
-            self._grow_moves(scope, blocks, committed, placement, at)
-            if placement.get("threads"):
-                self.source.put_threads(
-                    user_id,
-                    wid,
-                    seqs[min(kept, len(seqs)) - 1],
-                    {
-                        m.memory_id: t
-                        for m, t in zip(committed, placement["threads"], strict=True)
-                        if t
-                    },
-                    placement.get("summaries", {}),
-                    placement.get("origins", {}),
-                )
-        else:
-            self._grow(scope, blocks, committed, compiled.get("refs", {}), at)
+            self.source.add_to_window(wid, "placement", placement)
+        self._grow_moves(scope, blocks, committed, placement, at)
+        if placement.get("threads"):
+            self.source.put_threads(
+                user_id,
+                wid,
+                seqs[min(kept, len(seqs)) - 1],
+                {
+                    m.memory_id: t
+                    for m, t in zip(committed, placement["threads"], strict=True)
+                    if t
+                },
+                placement.get("summaries", {}),
+                placement.get("origins", {}),
+            )
         if self.embedding is not None:
             # the texts a Search ranks by (each SB's first line, each stretch summary), embedded
             # here in one batch off the owner thread: left to the Search, they were embedded one
             # by one on the owner thread, and Searches queued past a 20-second gateway
             texts = [m.content.split("\n")[0] for m in committed]
-            if self.config.placement == "moves":
-                texts += [s for s in (placement.get("summaries") or {}).values() if s]
+            texts += [s for s in (placement.get("summaries") or {}).values() if s]
             missing = [t for t in dict.fromkeys(texts) if t and t not in self._vectors]
             if missing:
                 try:
@@ -1002,17 +776,13 @@ class MemoryRuntime:
         )
         committed = []
         for index, block in enumerate(blocks):
-            refs, roles = [], []
+            refs = []
             for record_id in block.source_record_ids:
                 message = self.source.message_by_record(record_id)
                 if message is None:
                     raise RetryableError(f"raw record vanished: {record_id}")
                 refs.append(message.ref)
-                roles.append((message.occurred_at, message.index, message.role))
             refs.sort(key=lambda ref: (ref.occurred_at, ref.record_id))
-            if self.config.scene == "work" and _past_feedback([r for *_, r in sorted(roles)]):
-                self.past_feedback.append(f"aml:{rid}:{index}")
-                log.warning("block aml:%s:%d runs past the person's feedback", rid, index)
             committed.append(
                 admission.admit(
                     SemanticMemoryCandidate(
@@ -1049,50 +819,6 @@ class MemoryRuntime:
             if not succeeded:
                 return
 
-    def _grow(self, scope, blocks, committed, refs: dict, at: datetime) -> int:
-        """Tree engine: compiler signals -> Threads and committed Path A steps."""
-        from mr_mem.lce.path_a import Attachment, BlockLines
-
-        result = self.tree_for(scope).apply(
-            [
-                BlockLines(
-                    memory.memory_id,
-                    tuple(
-                        Attachment(x.thread, x.after, x.committed, x.summary) for x in block.lines
-                    ),
-                    block.settles,
-                )
-                for block, memory in zip(blocks, committed, strict=True)
-            ],
-            refs,
-            at,
-            open_matters=self.config.placement == "lines",
-        )
-        if result.failures:  # a refused relation never loses a Block; counted, logged
-            self.tree_failures.extend(result.failures)
-            log.warning("Path A relation(s) refused: %s", "; ".join(result.failures)[:500])
-        return 0
-
-    def _said_by_person(self, memory) -> bool:
-        said = [self.source.message_by_record(r.record_id) for r in memory.provenance.source_refs]
-        return any(m is not None and m.role == "user" for m in said)
-
-    def _matter(
-        self, j: int, hist: list[dict], node_of: dict, j_of: dict, tree, far: datetime
-    ) -> int:
-        """The person's earlier SB that step j follows: j itself when it is the person's, else its
-        nearest ancestor that is (j when there is none)."""
-        todo, seen = [node_of[hist[j]["memory"].memory_id]], set()
-        while todo:
-            node = todo.pop(0)
-            if node in seen:
-                continue
-            seen.add(node)
-            k = j_of.get(node)
-            if k is not None and self._said_by_person(hist[k]["memory"]):
-                return k
-            todo += tree.lines.parents_at(node, far)
-        return j
 
     def _span_of(self, memory, user_id: str) -> str:
         """The time range of an SB's messages (message time, from the raw's own stamps; with no
@@ -1109,7 +835,8 @@ class MemoryRuntime:
     def _stretch(self, user_id: str, scope, compiled: dict, committed, at: datetime):
         """layer2 "stretches" (docs/LCE_FROZEN.md): one call cuts the window's SBs into
         stretches, summarizes the closed ones once, says which earlier stretch one takes up
-        again and which steps in progress the person's reports settle. A generator, as _place.
+        again and which steps in progress the person's reports settle. A generator: yields
+        its model call as (fn, *args) and gets the result back.
         The SBs of a stretch go on one after another on the Line; a stretch carrying on the
         open one, or taking up an earlier one, goes on from its last step."""
         from mr_mem_aml.line_read import STAMP
@@ -1217,339 +944,6 @@ class MemoryRuntime:
             "raw": {},
         }
 
-    def _place(self, user_id: str, scope, compiled: dict, committed, at: datetime) -> dict:
-        """Placement "moves", step 2 (a generator: reads the store on the owner thread and yields
-        its model calls - step 2, threads, summaries - as (fn, *args)).
-        Candidates of each SB: the top k earlier SBs by each of four searches - its text
-        against SB texts and against the person's words, its move against moves, the
-        person's words in it against the person's words - plus the latest earlier SBs and
-        the steps still in progress (design 4.4, 4.6)."""
-        from mr_mem_aml.moves import split_content
-
-        lang = (compiled.get("assembly") or {}).get("language") or self.language_of(user_id)
-        tree = self.tree_for(scope)
-        far = datetime(9999, 1, 1, tzinfo=UTC)
-        mine = {m.memory_id for m in committed}
-        node_of: dict[str, str] = {}
-        for _, node_id, state in tree.nodes(far):
-            if state.state_id not in mine:
-                node_of.setdefault(state.state_id, node_id)
-        earlier = sorted(
-            (m for m in (self.core.canonical.get(b) for b in node_of) if m is not None),
-            key=lambda m: (m.occurred_at, m.memory_id),
-        )
-
-        def words(memory) -> str:
-            said = [
-                self.source.message_by_record(r.record_id) for r in memory.provenance.source_refs
-            ]
-            text = "\n".join(m.content[:2000] for m in said if m is not None and m.role == "user")
-            return text[:2000] or memory.content
-
-        session_at = self.source.session_times(user_id)
-
-        place_of = self.source.places(user_id)
-
-        def when(
-            memory,
-        ) -> str:  # where it sits (the real order: with no time given, a session's steps
-            # all show one date and step 2 loses their order), then the source's time, else its
-            # session's
-            # so far; never the stored time
-            at = [
-                place_of[r.record_id]
-                for r in memory.provenance.source_refs
-                if r.record_id in place_of
-            ]
-            where = f"S{min(at)[0]} #{min(at)[1]}" if at else ""
-            given = [
-                r.occurred_at
-                for r in memory.provenance.source_refs
-                if self.source.time_given(r.record_id)
-            ]
-            got = [
-                session_at[r.record_id]
-                for r in memory.provenance.source_refs
-                if r.record_id in session_at
-            ]
-            time = (
-                min(given).strftime("%Y-%m-%d %H:%M")
-                if given
-                else f"session began {min(got).strftime('%Y-%m-%d')}"
-                if got
-                else ""
-            )
-            return ", ".join(x for x in (where, time) if x)
-
-        def item(memory) -> dict:
-            _, move = split_content(memory.content)
-            return {
-                "memory": memory,
-                "text": memory.content,
-                "move": move or memory.content,
-                "words": words(memory),
-                "time": when(memory),
-            }
-
-        hist = [item(m) for m in earlier]
-        # chat scene: an SB that builds on one of this window goes on with it; only the window's
-        # starts look for what they build on earlier. Any SB of the person may report that an
-        # earlier step came to a result, so those are asked for settles only
-        unders = [b.get("under") for b in compiled.get("blocks", [])]
-        start = [
-            self.config.scene != "chat" or i >= len(unders) or unders[i] is None
-            for i in range(len(committed))
-        ]
-        asked = [
-            i
-            for i in range(len(committed))
-            if start[i] or (self.config.scene == "chat" and self._said_by_person(committed[i]))
-        ]
-        sbs = [{**item(committed[i]), "settles_only": not start[i]} for i in asked]
-        k, latest = self.config.place_policy["k"], self.config.place_policy["latest"]
-        base = list(range(max(0, len(hist) - latest), len(hist)))
-        open_steps = [
-            j
-            for j, h in enumerate(hist)
-            if tree.side(node_of[h["memory"].memory_id], at) == "in progress"
-        ][-10:]
-        per_sb = []
-        if self.embedding is not None and hist:
-            import numpy as np
-
-            # the texts not embedded yet, embedded off the owner thread (three per new SB)
-            missing = list(
-                dict.fromkeys(
-                    x[f]
-                    for x in (*hist, *sbs)
-                    for f in ("text", "move", "words")
-                    if x[f] not in self._vectors
-                )
-            )
-            if missing:
-                got = yield (self._embed_texts, missing)
-                if len(self._vectors) + len(missing) > 50_000:
-                    self._vectors.clear()
-                self._vectors.update(zip(missing, got, strict=True))
-            vec = {
-                f: np.array([self._embed_cached(h[f]) for h in hist])
-                for f in ("text", "move", "words")
-            }
-            for sb in sbs:
-                q_text, q_move, q_words = (
-                    np.array(self._embed_cached(sb[f])) for f in ("text", "move", "words")
-                )
-                picked = []
-                for q, f in (
-                    (q_text, "text"),
-                    (q_text, "words"),
-                    (q_move, "move"),
-                    (q_words, "words"),
-                ):
-                    picked += [int(j) for j in np.argsort(-(vec[f] @ q))[:k]]
-                per_sb.append(list(dict.fromkeys(picked + base + open_steps)))
-        else:
-            per_sb = [list(dict.fromkeys(base + open_steps)) for _ in sbs]
-        chat = self.config.scene == "chat"
-        if (
-            chat
-        ):  # each step shown under the person's matter it follows (design 4.1), the matter too
-            j_of = {node_of[h["memory"].memory_id]: j for j, h in enumerate(hist)}
-            far_ = datetime(9999, 1, 1, tzinfo=UTC)
-            matter_of = {
-                j: self._matter(j, hist, node_of, j_of, tree, far_) for js in per_sb for j in js
-            }
-            per_sb = [
-                list(dict.fromkeys(x for j in js for x in (matter_of[j], j))) for js in per_sb
-            ]
-        shown = sorted(
-            {j for js in per_sb for j in js}, key=lambda j: (hist[j]["memory"].occurred_at, j)
-        )
-        pos = {j: n for n, j in enumerate(shown)}
-        cands = [
-            {
-                "text": hist[j]["text"],
-                "time": hist[j]["time"],
-                "state": tree.side(node_of[hist[j]["memory"].memory_id], at),
-            }
-            for j in shown
-        ]
-        if chat:
-            for n, j in enumerate(shown):
-                m = matter_of.get(j, j)
-                cands[n].update(
-                    matter=pos.get(m, n),
-                    who="person" if self._said_by_person(hist[j]["memory"]) else "assistant",
-                )
-        lists = [sorted(pos[j] for j in js) for js in per_sb]
-        known = self.source.threads(user_id) if chat else {}
-        thread_of = {m: t for t, x in known.items() for m in x["members"]}
-        # the threads the threads call sees: those of the matters step 2 is shown, and the latest
-        # touched
-        tids = list(
-            dict.fromkeys(
-                [t for j in shown if (t := thread_of.get(hist[j]["memory"].memory_id)) is not None]
-                + [t for t, _ in sorted(known.items(), key=lambda kv: -kv[1]["last_seq"])[:8]]
-            )
-        )[:30]
-        tids = [t for t in tids if known[t]["summary"]]
-        step2 = (
-            self.compiler.place,
-            lang,
-            [
-                {"text": s["text"], "time": s["time"], "settles_only": s["settles_only"]}
-                for s in sbs
-            ],
-            cands,
-            lists,
-        )
-        try:
-            if (
-                chat
-            ):  # its own call (inside step 2 it made the links worse), shown the same concrete
-                # earlier steps step 2 was, each marked with its thread; it needs nothing of step
-                # 2's answer, so both are asked at once
-                for j in shown:
-                    if (
-                        (t := thread_of.get(hist[j]["memory"].memory_id))
-                        and known[t]["summary"]
-                        and t not in tids
-                    ):
-                        tids.append(t)
-                steps = [
-                    {
-                        "text": hist[j]["text"],
-                        "thread": tids.index(t)
-                        if (t := thread_of.get(hist[j]["memory"].memory_id)) in tids
-                        else None,
-                    }
-                    for j in shown
-                ]
-                placed, threaded = yield [
-                    step2,
-                    (
-                        self.compiler.assign_threads,
-                        lang,
-                        [
-                            {"text": s["text"], "time": s["time"], "cands": lists[n]}
-                            for n, s in enumerate(sbs)
-                        ],
-                        [{"summary": known[t]["summary"]} for t in tids],
-                        steps,
-                    ),
-                ]
-                placed.update(threaded)
-            else:
-                placed = yield step2
-        except CompileError as exc:
-            raise CompileFailed(f"placement: {exc}") from exc
-
-        if chat:  # only what the person reports settles a step (the assistant saying so does not)
-            placed["settles"] = {
-                i: [j for j in js if cands[j]["state"] == "in progress"]
-                for i, js in placed["settles"].items()
-                if self._said_by_person(sbs[i]["memory"])
-            }
-            placed["after"] = {
-                i: rs for i, rs in placed["after"].items() if not sbs[i]["settles_only"]
-            }
-
-        def ref(kind: str, n: int) -> str:
-            return f"N{n + 1}" if kind == "N" else f"b{asked[n] + 1}"
-
-        at_of = {i: n for n, i in enumerate(asked)}  # window index -> its s number in the prompt
-        rows = [at_of.get(i) for i in range(len(committed))]
-        threads: list[str | None] = [None] * len(committed)
-
-        def tid(key: tuple, depth: int = 0) -> str:  # a new thread is named by the SB that began it
-            if key[0] == "T":
-                return tids[key[1]]
-            own = placed.get("thread", {}).get(key[1])  # "the thread s3 is in": s3's own answer
-            if own is not None and own != key and depth < 8:
-                return tid(own, depth + 1)
-            return f"t:{committed[asked[key[1]]].memory_id}"
-
-        if chat:
-            for n, key in placed.get("thread", {}).items():
-                threads[asked[n]] = tid(key)
-            for i in range(len(committed)):  # the rest go with what step 1 put them under
-                seen_, k = set(), i
-                while (
-                    threads[k] is None
-                    and k < len(unders)
-                    and unders[k] is not None
-                    and k not in seen_
-                ):
-                    seen_.add(k)
-                    k = unders[k]
-                threads[i] = threads[k]
-        touched = list(dict.fromkeys(x for x in threads if x is not None))
-        # each touched thread's summary: its own call, from its summary so far and its SBs here
-        try:
-            got = yield (
-                self.compiler.summarize,
-                lang,
-                [
-                    {
-                        "before": known[t]["summary"] if t in known else "",
-                        "new": [
-                            m.content.split("\n")[0]
-                            for m, x in zip(committed, threads, strict=True)
-                            if x == t
-                        ],
-                    }
-                    for t in touched
-                ],
-            )
-        except CompileError as exc:
-            raise CompileFailed(f"thread summaries: {exc}") from exc
-        summaries = {touched[n]: text for n, text in got.items()}
-        origins: dict[
-            str, dict
-        ] = {}  # a thread begun here: the step whose result led to it, as step 2 said
-        for n, (r, why) in placed.get("from", {}).items():
-            t = tid(("s", n))
-            if r[0] == "T":  # it came out of that thread as it stood: its latest step
-                frm = tids[r[1]]
-                step_ = known[frm]["members"][-1] if known[frm]["members"] else None
-            else:
-                step_, frm = committed[asked[r[1]]].memory_id, threads[asked[r[1]]]
-            if step_ is None:
-                continue
-            if frm and frm != t and t not in known:
-                origins[t] = {"thread": frm, "step": step_, "why": why}
-        from mr_mem_aml import line_read
-
-        for t in dict.fromkeys(
-            x for x in threads if x is not None
-        ):  # a new thread said nothing of: its first SB
-            if t not in summaries and t not in known:
-                first = next(m for m, x in zip(committed, threads, strict=True) if x == t)
-                summaries[t] = "- " + line_read.STAMP.sub("", first.content.split("\n")[0]).strip()
-        return {
-            "threads": threads,
-            "summaries": summaries,
-            "origins": origins,
-            "language": lang,
-            "refs": {
-                f"N{n + 1}": node_of[hist[j]["memory"].memory_id] for n, j in enumerate(shown)
-            },
-            "after": [
-                [ref(*r) for r in placed["after"].get(n, [])] if n is not None else [] for n in rows
-            ],
-            "why": [
-                [placed["why"].get((n, r), "") for r in placed["after"].get(n, [])]
-                if n is not None
-                else []
-                for n in rows
-            ],
-            "settles": [
-                [f"N{j + 1}" for j in placed["settles"].get(n, [])] if n is not None else []
-                for n in rows
-            ],
-            "candidates": [[f"N{j + 1}" for j in lists[n]] if n is not None else [] for n in rows],
-            "raw": placed["raw"],
-        }
 
     def _grow_moves(self, scope, blocks, committed, placement: dict, at: datetime) -> None:
         """Placement "moves": every SB becomes a step; its links are step 2's."""
@@ -1581,73 +975,16 @@ class MemoryRuntime:
             self.tree_failures.extend(result.failures)
             log.warning("Path A relation(s) refused: %s", "; ".join(result.failures)[:500])
 
-    def _derive(self, scope, user_id, blocks, committed, at: datetime) -> int:
-        # ``at`` is message time: line activity must replay the same way
-        result = apply_block_signals(
-            canonical=self.core.canonical,
-            products=self.core.products,
-            lce=self.lce_for(scope),
-            scope=scope,
-            at=at,
-            blocks=tuple(
-                BlockSignals(
-                    memory.memory_id,
-                    block.content,
-                    None
-                    if block.thread is None
-                    else ThreadSignal(
-                        block.thread.action,
-                        block.thread.question,
-                        block.thread.summary,
-                        block.thread.mature,
-                    ),
-                    None
-                    if block.commit is None
-                    else CommitSignal(
-                        block.commit.question,
-                        block.commit.summary,
-                    ),
-                )
-                for block, memory in zip(blocks, committed, strict=True)
-            ),
-        )
-        for question in result.questions:
-            self.source.remember_question(user_id, question, at)
-        if result.thread_failed:
-            self.thread_failures += 1
-        return result.promotion_failures
 
     def flush(self, user_id: str | None = None) -> dict:
-        """Rescan every user Scope (or only ``user_id``'s) and retry pending mature-Thread
-        handoffs."""
-        if self.config.compile_window is not None:  # compile what is left, tail included
-            windows = 0
-            for user in [user_id] if user_id else self.source.users_with_pending():
-                while (job := self._window_job(user, final=True)) is not None:
-                    self.finish_add(job, self.compile_job(job))
-                    windows += 1
-            return {"status": "ok", "windows": windows}
-        if self.config.path_a_engine == "tree":  # commits happen inside Add; nothing pends
-            return {"status": "ok", "scopes": 0}
-        scopes = {m.scope for m in self.core.load_all()}
-        handled = 0
-        for scope in scopes:
-            lce = self.lce_for(scope)
-            if lce is None:
-                continue
-            # An empty batch is the stateless rescan: mature Threads are handed off.
-            result = apply_block_signals(
-                canonical=self.core.canonical,
-                products=self.core.products,
-                lce=lce,
-                scope=scope,
-                blocks=(),
-                at=datetime.now(UTC),
-            )
-            if result.thread_failed:
-                self.thread_failures += 1
-            handled += 1
-        return {"status": "ok", "scopes": handled}
+        """Compile what is left of every user's history (or only ``user_id``'s), tail
+        included."""
+        windows = 0
+        for user in [user_id] if user_id else self.source.users_with_pending():
+            while (job := self._window_job(user, final=True)) is not None:
+                self.finish_add(job, self.compile_job(job))
+                windows += 1
+        return {"status": "ok", "windows": windows}
 
     # -- Search ---------------------------------------------------------
 
@@ -1716,11 +1053,7 @@ class MemoryRuntime:
         reader = PathAReader(
             canonical_path=self.canonical_path,
             retrieval=None if raw_search is not None else self._retrieval(),
-            lce=(
-                self.lce_for(scope)
-                if selected == "path_a" and self.config.path_a_engine == "flat"
-                else None
-            ),
+            lce=None,
             policy=self.config.read_policy,
             render_source=self.source.render,
             embed=None if self.embedding is None else self._embed_cached,
@@ -2088,14 +1421,6 @@ def _within(items: list[dict], limit: int) -> list[dict]:
         items.pop(far[-1] if far else len(items) - 1)
     return items
 
-
-def _past_feedback(roles: list[str]) -> bool:
-    """An assistant message after a message of the person, in one work block."""
-    return (
-        any(r == "assistant" for r in roles[roles.index("user") + 1 :])
-        if "user" in roles
-        else False
-    )
 
 
 class _FixedExpander:

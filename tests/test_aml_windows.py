@@ -1,4 +1,4 @@
-"""Tree engine compile windows (design 4.7): Add stores raw text at once; the
+"""Compile windows (design 4.7): Add stores raw text at once; the
 compiler runs on windows that close at natural breakpoints, and flush compiles
 the rest."""
 
@@ -11,45 +11,20 @@ import pytest
 from mr_mem_aml.compiler import SemanticCompiler
 from mr_mem_aml.config import RuntimeConfig
 from mr_mem_aml.runtime import MemoryRuntime
+from tests.aml_live_backend import LiveBackend
 
 pytest.importorskip("lce")
 
-
-class TreeBackend:
-    """One block per NEW message, no matters; optionally carries the tail."""
-
-    def __init__(self, carry_last: int = 0):
-        self.windows: list[list[str]] = []
-        self.carry_last = carry_last
-
-    def complete(self, prompt: str) -> str:
-        material = json.loads(prompt.split("INPUT:\n", 1)[1])
-        new = material["NEW"]
-        self.windows.append([m["text"] for m in new])
-        carry = None
-        if self.carry_last and len(new) > self.carry_last:
-            carry = new[-self.carry_last]["id"]
-        return json.dumps(
-            {
-                "matters": [],
-                "blocks": [
-                    {"content": f"{m['role']}: {m['text']}", "sources": [m["id"]], "in": []}
-                    for m in new
-                ],
-                "carry_from": carry,
-            }
-        )
 
 
 def runtime(tmp_path: Path, backend, scene: str = "chat", **window) -> MemoryRuntime:
     config = RuntimeConfig(
         data_dir=tmp_path / "data",
         compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree",
         compile_window={"soft": 3, "hard": 5, **window},
         scene=scene,
     )
-    return MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+    return MemoryRuntime(config, compiler=SemanticCompiler(backend, scene=scene))
 
 
 def add(rt, rid, *texts, start_minute=0):
@@ -65,7 +40,7 @@ def add(rt, rid, *texts, start_minute=0):
 
 
 def test_windows_close_at_the_next_turn_of_the_person_and_flush_compiles_the_rest(tmp_path):
-    backend = TreeBackend()
+    backend = LiveBackend()
     rt = runtime(tmp_path, backend)
     try:
         assert add(rt, "r1", "u1", "a1")["blocks"] == 0  # below the soft cap: waits
@@ -81,7 +56,7 @@ def test_windows_close_at_the_next_turn_of_the_person_and_flush_compiles_the_res
 
 
 def test_work_windows_close_after_the_feedback_before_the_next_report(tmp_path):
-    backend = TreeBackend()
+    backend = LiveBackend()
     rt = runtime(tmp_path, backend, scene="work")
     try:
         add(rt, "r1", "u1", "a1", "u2", "a2", "u3", "a3")
@@ -93,14 +68,14 @@ def test_work_windows_close_after_the_feedback_before_the_next_report(tmp_path):
 
 
 def test_a_carried_tail_opens_the_next_window(tmp_path):
-    backend = TreeBackend(carry_last=1)
+    backend = LiveBackend(carry_last=1)
     rt = runtime(tmp_path, backend)
     try:
         add(rt, "r1", "u1", "a1", "u2", "a2", "u3", "a3")  # closes before "u3"
         assert backend.windows == [["u1", "a1", "u2", "a2"]]
-        rt.flush()  # "a2" was carried; the final window keeps its own tail
-        assert backend.windows[1:] == [["a2", "u3", "a3"]]
-        blocks = [m.content for m in rt.core.load_all()]
+        rt.flush()  # "a2" was carried; the last window too stops where its SBs close
+        assert backend.windows[1:] == [["a2", "u3", "a3"], ["a3"]]
+        blocks = [m.content.split(" [")[0] for m in rt.core.load_all()]
         assert sorted(blocks) == sorted(
             ["user: u1", "assistant: a1", "user: u2", "assistant: a2", "user: u3", "assistant: a3"]
         )
@@ -109,53 +84,20 @@ def test_a_carried_tail_opens_the_next_window(tmp_path):
 
 
 def test_a_long_pause_is_a_breakpoint(tmp_path):
-    backend = TreeBackend()
+    backend = LiveBackend()
     rt = runtime(tmp_path, backend, gap_minutes=30)
     try:
         add(rt, "r1", "u1", "a1", "u1b")
         add(rt, "r2", "a1b", "u2", start_minute=90)  # "a1b" comes after a 90-minute pause
-        assert backend.windows == [["u1", "a1", "u1b"]]
+        # the window closed at the pause; "u1b", not answered yet, opens the next one
+        assert backend.windows == [["u1", "a1"]]
     finally:
         rt.close()
 
 
-def test_points_link_each_block_to_the_steps_it_carries_on():
-    from datetime import UTC, datetime
-
-    from mr_mem_aml.compiler import SemanticCompiler
-    from mr_mem_aml.source_store import RawMessage
-
-    msg = RawMessage(
-        "r:0",
-        "u",
-        "s",
-        "r",
-        0,
-        "user",
-        "ate bacalhau in Lisbon; egg was tasty",
-        datetime(2026, 5, 1, tzinfo=UTC),
-        "f",
-    )
-    raw = json.dumps(
-        {
-            "blocks": [
-                {"content": "meal", "sources": ["m1"], "after": ["N1", "N4"], "happened": True},
-                {"content": "egg", "sources": ["m1"], "after": [], "happened": True},
-                {"content": "more", "sources": ["m1"], "after": ["b1"], "happened": False},
-            ]
-        }
-    )
-    meal, egg, more = SemanticCompiler(None, schema="points").parse(raw, (msg,))
-    assert [(x.thread, x.after, x.committed) for x in meal.lines] == [
-        (None, "N1", True),
-        (None, "N4", True),
-    ]  # one block, two lines meet
-    assert [(x.thread, x.after) for x in egg.lines] == [(None, None)]  # a point of its own
-    assert [(x.after, x.committed) for x in more.lines] == [("b1", False)]
-
 
 def test_a_journaled_window_is_applied_without_a_model_call(tmp_path):
-    backend = TreeBackend()
+    backend = LiveBackend()
     rt = runtime(tmp_path / "a", backend)
     try:
         add(rt, "r1", "u1", "a1", "u2", "a2", "u3", "a3")
@@ -170,7 +112,7 @@ def test_a_journaled_window_is_applied_without_a_model_call(tmp_path):
         )
     finally:
         rt.close()
-    replay = TreeBackend()
+    replay = LiveBackend()
     rt = runtime(tmp_path / "b", replay)
     try:
         rt.source.put_window(row[0], row[1], row[2], row[3], json.loads(row[4]))
@@ -180,33 +122,9 @@ def test_a_journaled_window_is_applied_without_a_model_call(tmp_path):
         rt.close()
 
 
-class OneBlockBackend:
-    """One block citing every NEW message."""
-
-    def complete(self, prompt: str) -> str:
-        new = json.loads(prompt.split("INPUT:\n", 1)[1])["NEW"]
-        return json.dumps(
-            {
-                "matters": [],
-                "blocks": [{"content": "all", "sources": [m["id"] for m in new], "in": []}],
-                "carry_from": None,
-            }
-        )
-
-
-def test_a_work_block_running_past_the_feedback_is_counted_not_refused(tmp_path):
-    rt = runtime(tmp_path, OneBlockBackend(), scene="work")
-    try:
-        add(rt, "r1", "u1", "a1", "u2", "a2")
-        rt.flush()  # one window: u1 a1 u2 | a2 ... the first block has "a1" after "u1"
-        assert len(rt.past_feedback) == 1
-        assert len(rt.core.load_all()) == 2  # counted, the Block still stands
-    finally:
-        rt.close()
-
 
 def test_a_window_can_be_counted_in_characters(tmp_path):
-    backend = TreeBackend()
+    backend = LiveBackend()
     rt = runtime(tmp_path, backend, soft=10, hard=1000, measure="chars")
     try:
         add(rt, "r1", "u1", "a much longer answer")  # 22 characters: past soft already
@@ -219,7 +137,7 @@ def test_a_window_can_be_counted_in_characters(tmp_path):
 
 
 def test_a_window_compiled_twice_applies_the_first_journal_entry_not_its_own(tmp_path):
-    rt = runtime(tmp_path, TreeBackend())
+    rt = runtime(tmp_path, LiveBackend())
     try:
         add(rt, "r1", "u1", "a1", "u2", "a2", "u3", "a3")
         rt.source.put_request(
@@ -246,7 +164,7 @@ def test_a_window_compiled_twice_applies_the_first_journal_entry_not_its_own(tmp
 def test_flushing_one_users_history_leaves_another_users_alone(tmp_path):
     from mr_mem_aml.server import RuntimeHost
 
-    backend = TreeBackend()
+    backend = LiveBackend()
     host = RuntimeHost(lambda: runtime(tmp_path, backend, soft=100, hard=200))
     try:
         for user in ("a", "b"):
@@ -280,14 +198,12 @@ def test_a_compile_that_keeps_failing_keeps_the_raw_and_add_still_succeeds(tmp_p
     config = RuntimeConfig(
         data_dir=tmp_path / "data",
         compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree",
         compile_window={"soft": 3, "hard": 5},
         keep_raw_on_compile_failure=True,
-        placement="points",
         raw_base=True,
         line_read={"projection": "relay", "raw_fill": 0, "hit_anchors": True},
     )
-    rt = MemoryRuntime(config, compiler=SemanticCompiler(Down(), schema="tree"))
+    rt = MemoryRuntime(config, compiler=SemanticCompiler(Down()))
     try:
         out = add(rt, "r1", "u1", "a1", "u2", "a2", "u3", "a3")
         assert out["success"] is True and rt.compile_failed_kept_raw >= 1
@@ -302,16 +218,15 @@ def test_a_compile_that_keeps_failing_keeps_the_raw_and_add_still_succeeds(tmp_p
 def test_search_first_compiles_what_is_left_of_that_users_history(tmp_path):
     from mr_mem_aml.server import RuntimeHost
 
-    backend = TreeBackend()
+    backend = LiveBackend()
     config = RuntimeConfig(
         data_dir=tmp_path / "data",
         compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree",
         compile_window={"soft": 100, "hard": 200},
         compile_before_search=True,
     )
     host = RuntimeHost(
-        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend))
     )
     try:
         host.add(
@@ -332,7 +247,7 @@ def test_search_first_compiles_what_is_left_of_that_users_history(tmp_path):
         host.call(host.runtime.close)
 
 
-class SlowBackend(TreeBackend):
+class SlowBackend(LiveBackend):
     def __init__(self, seconds: float):
         super().__init__()
         self.seconds = seconds
@@ -353,13 +268,12 @@ def test_background_compile_add_returns_at_once_and_search_waits_at_most_search_
     config = RuntimeConfig(
         data_dir=tmp_path / "data",
         compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree",
         compile_window={"soft": 3, "hard": 5},
         compile_before_search=True,
         background_compile={"search_wait": 0.2, "idle_tail": 60},
     )
     host = RuntimeHost(
-        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend))
     )
     texts = ["a1", "a2", "a3", "a4", "a5", "a6"]
     messages = [
@@ -384,7 +298,7 @@ def test_background_compile_add_returns_at_once_and_search_waits_at_most_search_
 
 def test_a_window_of_many_short_messages_closes_at_max_messages(tmp_path):
     # by characters these never reach soft; step 1's output grows with the message count
-    backend = TreeBackend()
+    backend = LiveBackend()
     rt = runtime(tmp_path, backend, soft=10_000, hard=20_000, measure="chars", max_messages=6)
     try:
         add(rt, "r1", *[f"m{i}" for i in range(20)])
@@ -400,11 +314,10 @@ def test_after_a_restart_background_compile_picks_up_what_was_left(tmp_path):
 
     from mr_mem_aml.server import RuntimeHost
 
-    backend = TreeBackend()
+    backend = LiveBackend()
     config = RuntimeConfig(
         data_dir=tmp_path / "data",
         compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree",
         compile_window={"soft": 3, "hard": 5},
         compile_before_search=True,
         background_compile={"search_wait": 0.2, "idle_tail": 0.1},
@@ -413,7 +326,7 @@ def test_after_a_restart_background_compile_picks_up_what_was_left(tmp_path):
     messages = [
         {"role": "user" if i % 2 == 0 else "assistant", "content": t} for i, t in enumerate(texts)
     ]
-    rt = MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+    rt = MemoryRuntime(config, compiler=SemanticCompiler(backend))
     rt.source.put_request(  # stored before the restart, never compiled
         {"request_id": "r1", "user_id": "a", "session_id": "s", "messages": messages},
         received_at=datetime.now(UTC),
@@ -421,7 +334,7 @@ def test_after_a_restart_background_compile_picks_up_what_was_left(tmp_path):
     rt.close()
     assert backend.windows == []
     host = RuntimeHost(
-        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend))
     )
     try:
         deadline = time.monotonic() + 10
@@ -433,7 +346,7 @@ def test_after_a_restart_background_compile_picks_up_what_was_left(tmp_path):
 
 
 def test_a_history_past_max_chars_per_user_keeps_raw_only(tmp_path):
-    backend = TreeBackend()
+    backend = LiveBackend()
     rt = runtime(tmp_path, backend, soft=4, hard=6, max_chars_per_user=8)
     try:
         add(rt, "r1", *[f"m{i}" for i in range(12)])  # 2-3 characters each
@@ -455,7 +368,6 @@ def test_backpressure_holds_an_add_while_the_users_backlog_is_compiling(tmp_path
     config = RuntimeConfig(
         data_dir=tmp_path / "data",
         compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree",
         compile_window={"soft": 3, "hard": 5},
         compile_before_search=True,
         background_compile={
@@ -466,7 +378,7 @@ def test_backpressure_holds_an_add_while_the_users_backlog_is_compiling(tmp_path
         },
     )
     host = RuntimeHost(
-        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend))
     )
     messages = [
         {"role": "user" if i % 2 == 0 else "assistant", "content": f"a{i}"} for i in range(6)
@@ -494,10 +406,6 @@ def test_a_window_with_no_sb_skips_the_stretch_step(tmp_path):
     config = RuntimeConfig(
         data_dir=tmp_path / "data",
         compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree",
-        placement="moves",
-        step1="topic",
-        layer2="stretches",
         scene="chat",
         compile_window={"soft": 4, "hard": 6, "max_chars_per_user": 1},
     )
@@ -506,7 +414,7 @@ def test_a_window_with_no_sb_skips_the_stretch_step(tmp_path):
         def complete(self, prompt: str) -> str:
             return "[]"
 
-    rt = MemoryRuntime(config, compiler=SemanticCompiler(NoSBs(), schema="moves", step1="topic"))
+    rt = MemoryRuntime(config, compiler=SemanticCompiler(NoSBs()))
 
     def no_stretch(*args, **kwargs):
         raise AssertionError("the stretch step ran on a window with no SB")
@@ -546,7 +454,6 @@ def test_add_fetches_its_vectors_off_the_owner_thread(tmp_path):
     config = RuntimeConfig(
         data_dir=tmp_path / "data",
         compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree",
         raw_base=True,
         compile_window={"soft": 3, "hard": 5},
         compile_before_search=True,
@@ -554,7 +461,7 @@ def test_add_fetches_its_vectors_off_the_owner_thread(tmp_path):
     )
 
     def build():
-        rt = MemoryRuntime(config, compiler=SemanticCompiler(TreeBackend(), schema="tree"))
+        rt = MemoryRuntime(config, compiler=SemanticCompiler(LiveBackend()))
         rt.embedding = rt.raw.embedding = emb  # the raw arm's vectors, no dense index
         return rt
 
@@ -573,17 +480,16 @@ def test_add_fetches_its_vectors_off_the_owner_thread(tmp_path):
 def test_a_search_does_not_close_the_tail_when_told_not_to(tmp_path):
     from mr_mem_aml.server import RuntimeHost
 
-    backend = TreeBackend()
+    backend = LiveBackend()
     config = RuntimeConfig(
         data_dir=tmp_path / "data",
         compiler={"type": "command", "argv": ["x"]},
-        path_a_engine="tree",
         compile_window={"soft": 100, "hard": 200},
         compile_before_search=True,
         background_compile={"search_wait": 1, "idle_tail": 60, "search_closes_tail": False},
     )
     host = RuntimeHost(
-        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend, schema="tree"))
+        lambda: MemoryRuntime(config, compiler=SemanticCompiler(backend))
     )
     try:
         host.add(

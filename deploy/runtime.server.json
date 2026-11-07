@@ -21,7 +21,6 @@
     "cache_path": "/var/lib/mrmem/embed_cache.sqlite"
   },
   "search_mode": "path_a",
-  "lce_enabled": true,
   "raw_base": true,
   "append_options": true,
   "skip_rejected_compiles": true,
@@ -33,10 +32,6 @@
     "max_backlog": 160000,
     "add_wait": 12
   },
-  "path_a_engine": "tree",
-  "placement": "moves",
-  "step1": "topic",
-  "layer2": "stretches",
   "scene": "chat",
   "compile_input": {
     "assistant_head": 600,
