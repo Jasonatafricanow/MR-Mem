@@ -107,7 +107,7 @@ class LineReadPolicy:
     # SB, 44% reached the answer as words). Inside the item, not as raw items, so the top_k count
     # holds; ``sb_raw_chars`` caps the words carried in all, the furthest SBs' first (AML cuts the
     # answer input at 117,760 tokens from the end)
-    sb_raw: bool = False
+    sb_raw: bool = True
     sb_raw_chars: int = 300_000
     # > 0: of a carried message longer than ``sb_raw_long`` characters, only this many paragraphs,
     # those whose words are rarest among the question's (a topic SB rightly points to a whole long
@@ -120,7 +120,7 @@ class LineReadPolicy:
     # docs/LCE_FROZEN.md §5: a raw hit is given under the SB it belongs to, with its message time,
     # not in a list of its own. Same messages, same words; only where they sit. A hit with no SB
     # in the Lines (uncompiled, its SB among the standing ones) stays a raw item
-    raw_under_sb: bool = False
+    raw_under_sb: bool = True
     # > 0: a history within this estimate of tokens (and of top_k's reach in messages) is given
     # whole, what the Lines do not hold as a fill: raw_k cut a document pasted in 42 messages to
     # 30 where P1's 100 held all of it. A short history needs no selecting

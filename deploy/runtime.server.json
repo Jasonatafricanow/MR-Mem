@@ -39,7 +39,8 @@
   "layer2": "stretches",
   "scene": "chat",
   "compile_input": {
-    "assistant_head": 600
+    "assistant_head": 600,
+    "blocks": true
   },
   "compile_window": {
     "soft": 40000,
@@ -65,7 +66,10 @@
     "raw_of_sb": "hits",
     "hit_anchors": true,
     "thread_span": true,
-    "forget_scope": true
+    "forget_scope": true,
+    "sb_raw": true,
+    "raw_under_sb": true,
+    "readout_tokens": 110000
   },
   "decision": {
     "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",

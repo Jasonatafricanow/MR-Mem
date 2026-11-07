@@ -448,7 +448,9 @@ def test_what_the_assistant_said_is_shown_as_told_under_the_persons_step_it_answ
             children=lambda b: [],
             message=msgs.get,
             lang="en",
-            policy=lr.LineReadPolicy(sbs=3, projection="hits", assistant=assistant),
+            policy=lr.LineReadPolicy(
+                sbs=3, projection="hits", assistant=assistant, sb_raw=False, raw_under_sb=False
+            ),
         )
 
     told = items("told")
@@ -708,7 +710,8 @@ def test_a_raw_hit_sits_under_its_sb_with_its_time_and_the_words_do_not_change()
             message=msgs.get,
             lang="en",
             policy=lr.LineReadPolicy(
-                projection="hits", assistant="told", raw_of_sb="hits", raw_fill=0, **policy
+                projection="hits", assistant="told", raw_of_sb="hits", raw_fill=0,
+                **{"sb_raw": False, "raw_under_sb": False, **policy},
             ),
             relevance=lambda b: {"person": 2.0, "told": 3.0, "far": 1.0}[b],
             blocks_of=lambda r: [b for b, s in src.items() if r in s],
