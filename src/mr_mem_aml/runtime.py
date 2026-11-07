@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1139,22 +1139,9 @@ class MemoryRuntime:
         from mr_mem_aml import line_read
 
         policy = line_read.LineReadPolicy.of(self.config.line_read)
-        whole = (
-            self.source.history_if_within(user_id, WHOLE_HISTORY_MESSAGES)
-            if policy.whole_under_tokens
-            else None
-        )
-        if whole is not None and (
-            sum(line_read.estimate_tokens(text_) for _, text_ in whole) > policy.whole_under_tokens
-        ):
-            whole = None
-        if whole is not None:
-            policy = replace(policy, raw_fill=len(whole))
         # P1's raw list: its head finds the anchors; with raw_fill the whole list backs the Lines up
         # (LCE shares P1's evidence: what the Lines do not cover is still given, as P1 gives it)
         pool = self._raw_records(user_id, text, policy)
-        if whole is not None:  # what the search did not reach, in order: all of a short history
-            pool = list(dict.fromkeys([*pool, *(record for record, _ in whole)]))
         records = pool[: policy.raw_k]
         sb_search = None if self.index is None else self.index.retrieval()
         # HyDE: a hypothetical passage searched beside the question
@@ -1306,36 +1293,6 @@ class MemoryRuntime:
             q, v = question[0], np.array(self._embed_cached(memory.content.split("\n")[0]))
             return float(q @ v) / (np.linalg.norm(q) * np.linalg.norm(v) or 1)
 
-        up, down = parents, children
-        if (
-            policy.carry == "threads"
-        ):  # carried on by the thread's order and its branch, not by SB links
-            before: dict[str, list[str]] = {}
-            after_: dict[str, list[str]] = {}
-            for x in self.source.threads(user_id).values():
-                mine = sorted(
-                    (b for b in x["members"] if self.core.canonical.get(b) is not None),
-                    key=lambda b: (step(b).place or (0, 0), b),
-                )
-                for a, b in zip(mine, mine[1:], strict=False):
-                    after_.setdefault(a, []).append(b)
-                    before.setdefault(b, []).append(a)
-                if (o := x.get("origin")) and mine:
-                    before.setdefault(mine[0], []).append(o["step"])
-                    after_.setdefault(o["step"], []).append(mine[0])
-
-            def up(block: str, kind: str | None = None) -> list[str]:
-                return [
-                    *(parents(block, "part") if kind != "after" else []),
-                    *(before.get(block, []) if kind != "part" else []),
-                ]
-
-            def down(block: str, kind: str | None = None) -> list[str]:
-                return [
-                    *(children(block, "part") if kind != "after" else []),
-                    *(after_.get(block, []) if kind != "part" else []),
-                ]
-
         thread_hits: list[str] = []
         if (
             policy.thread_k and self.embedding is not None
@@ -1383,8 +1340,8 @@ class MemoryRuntime:
             ],
             step=step,
             sources=sources,
-            parents=up,
-            children=down,
+            parents=parents,
+            children=children,
             message=message,
             lang=self.language_of(user_id),
             policy=policy,
@@ -1392,22 +1349,11 @@ class MemoryRuntime:
             span=lambda block, record: self._spans.get(block, {}).get(record),
             relevance=relevance,
             pointers=self._pointers.get,
-            part_of=lambda b: up(b, "part"),
-            parts=lambda b: down(b, "part"),
-            carries=lambda b: [*up(b, "after"), *down(b, "after")],
-            everything=lambda: [
-                b
-                for b in self._pointers
-                if (m := self.core.canonical.get(b)) is not None and m.scope == scope
-            ],
             threads=lambda: self.source.threads(user_id),
             thread_hits=thread_hits,
             hit_blocks=hit_blocks,
             blocks_of=lambda r: self._blocks_by_record.get(r, ()),
         )
-
-
-WHOLE_HISTORY_MESSAGES = 80  # with the Line items, within AML's top_k of 100
 
 
 def _within(items: list[dict], limit: int) -> list[dict]:

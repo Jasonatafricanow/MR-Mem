@@ -7,11 +7,9 @@ the chosen SBs point to, for the details an SB leaves there.
      compiled from it (route 1), and the question against SB texts gives a second list (route 2);
      an SB is scored by reciprocal rank over both: two routes agreeing only raise its rank, they are
      not two pieces of evidence;
-  2. the top SBs are walked on the Line graph: up a few steps (where it came from) and down to the
-     latest step (what it turned into), in time order, each step marked as happened or not confirmed
-     (time passing confirms nothing);
-     or (projection "hits", design 5.3) only the steps the question hits, and the steps on the Line
-     between two of them by their first line: bounded by the hits, however long the Line;
+  2. the top SBs are the anchors (relay): with them the steps along the Line nearest the question
+     (``reach``, ``extend``), and the steps on the Line between two of them by their first line
+     (design 5.3), in time order: bounded by the anchors, however long the Line;
   3. by the downward index, the raw the chosen SBs were compiled from: the paragraphs each points
      to, or the whole message when it points to all of it, in message order. Nothing is cut to a
      character budget: the cutting was done when the SBs were cut and pointed, so what is given is
@@ -27,7 +25,6 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher, unified_diff
 
-from mr_mem.memory.providers.bm25 import lexical_tokens
 from mr_mem_aml.moves import code_lines, is_code, paragraphs, span_key
 
 SIDE = {
@@ -37,18 +34,10 @@ SIDE = {
 WHO = {"zh": {"user": "用户", "assistant": "助手"}, "en": {"user": "Person", "assistant": "Agent"}}
 HEAD = {"zh": ("【一段】", "【原文片段】"), "en": ("[A line]", "[Raw excerpts]")}
 CARRIED = {"zh": "【这些步骤的原话】", "en": "[The words of these steps]"}
-OUTLINE = {
-    "zh": "【整段历史的提纲：人推进的每件事，现在走到哪，按开始先后】",
-    "en": (
-        "[Outline of the whole history: each thing the person pursued and where it has got to,"
-        " in the order begun]"
-    ),
-}
 THREAD = {
     "zh": "【问题所在的一段：总结，以及其中和问题最相关的步骤】",
     "en": "[The stretch the question is on: its summary, and its steps nearest the question]",
 }
-BRANCH = {"zh": "从 {} 那一步分出", "en": "branched off the step at {}"}
 FILL = {
     "zh": "【检索到、上面没有覆盖的其他原文】",
     "en": "[Other raw messages the search found, not covered above]",
@@ -76,9 +65,7 @@ LATER = {"zh": "（后来有了结果，见 {}）", "en": "(later settled, see {
 class LineReadPolicy:
     raw_k: int = 30  # raw hits taken from the raw search
     sb_k: int = 30  # SBs taken from the question against SB texts
-    sbs: int = 4  # SBs walked on the Line
-    up: int = 2  # steps up from each
-    down: int = 6  # at most this many steps down to the latest
+    sbs: int = 4  # anchor SBs: the SBs the fused ranking puts first
     rrf_k: int = 60
     tz_minutes: int = (
         0  # times are shown at this offset from UTC (480 = Beijing): the person's dates
@@ -109,63 +96,31 @@ class LineReadPolicy:
     # answer input at 117,760 tokens from the end)
     sb_raw: bool = True
     sb_raw_chars: int = 300_000
-    # > 0: of a carried message longer than ``sb_raw_long`` characters, only this many paragraphs,
-    # those whose words are rarest among the question's (a topic SB rightly points to a whole long
-    # answer; the block numbers cannot narrow that, the question can). No model, no vectors
-    sb_raw_paras: int = 0
     # with assistant "told" the assistant's words stay behind the index, carried here too unless
     # asked for: they doubled the readout and buried the person's (BEAM holdout, 11-05)
     sb_raw_assistant: bool = False
-    sb_raw_long: int = 1200
     # docs/LCE_FROZEN.md §5: a raw hit is given under the SB it belongs to, with its message time,
     # not in a list of its own. Same messages, same words; only where they sit. A hit with no SB
     # in the Lines (uncompiled, its SB among the standing ones) stays a raw item
     raw_under_sb: bool = True
-    # > 0: a history within this estimate of tokens (and of top_k's reach in messages) is given
-    # whole, what the Lines do not hold as a fill: raw_k cut a document pasted in 42 messages to
-    # 30 where P1's 100 held all of it. A short history needs no selecting
-    whole_under_tokens: int = 0
-    # a session's date on the first entry of that session the readout writes, not on each of its
-    # untimed messages: said on every one it was read as that message's own date
-    session_once: bool = False
-    # > 0: the words ``sb_raw`` carries also stop within this estimate of tokens (compose_within)
+    # set by compose_within from ``readout_tokens``: the words ``sb_raw`` carries stop within this
+    # estimate of tokens
     sb_raw_tokens: int = 0
     # > 0: the whole readout within this estimate of tokens: what ``sb_raw`` carries gets what the
     # rest leaves (AML cuts the answer input from the tail; a fixed cap on the words alone cannot
     # know how long the rest is, nor Chinese from English)
     readout_tokens: int = 0
-    raw_full: int = (
-        0  # > 0: after the Lines, this many raw hits whole in raw-search order (no snippets,
-    )
-    # no budget for them): the Lines on top of exactly what P1 would give
-    # "relay" (the default): anchors from the hits, then the steps along the Line nearest the
-    # question; "hits" (design 5.3): only the steps the question hits, and the steps on the Line
-    # between two of them; "walk": up and down from each, whatever is there
-    projection: str = "relay"
-    gap: int = 3  # "hits", "relay": the longest run of steps shown between two hit steps
-    reach: int = 3  # "relay": how far along the Line (either way) from an anchor a step may be
-    extend: int = 16  # "relay": how many such steps join the anchors, the most relevant first
-    # "relay", "event", "all": "person": only the person's steps join (the person defines the
-    # matter)
-    extend_from: str = "all"
-    near_events: int = (
-        0  # "event": also the events this many carry-on edges away from an anchor's event
-    )
-    carry: str = (
-        "edges"  # what carries a step on: "edges", step 2's links; "threads", the next step of its
-    )
-    # thread in order, and a thread's first step goes on from the step it branched off
+    # the projection (relay): the anchors, then the steps along the Line nearest the question, and
+    # the steps between two of them
+    gap: int = 3  # the longest run of steps shown between two anchors
+    reach: int = 3  # how far along the Line (either way) from an anchor a step may be
+    extend: int = 16  # how many such steps join the anchors, the most relevant first
     thread_k: int = (
         0  # the threads whose summaries are nearest the question: each by its summary and
     )
     thread_sbs: int = (
         12  # its SBs nearest the question (this many), in order - the stretch the question is on
     )
-    # the stretches nearest the question (this many of the thread hits) go down the index (frozen
-    # readout: a stretch summary helps find, then leads to its SBs and their words): each with its
-    # ``drill_sbs`` SBs nearest the question, and the words those SBs point to
-    drill: int = 0
-    drill_sbs: int = 4
     # each stretch summary given with where it sits, its first and last step (session, position,
     # message time): a stretch carries the time range of its messages, so that the course can be
     # put on the time line (docs/LCE_FROZEN.md 4); without it an old value in one summary and the
@@ -174,11 +129,6 @@ class LineReadPolicy:
     # the person's requests to forget, given apart from the other standing instructions under a
     # line saying each covers only what it names
     forget_scope: bool = False
-    outline: bool = (
-        False  # also the whole history's outline: each thread (a stretch of a Line) by its
-    )
-    # summary as it stands, from its first step to its last, so a question on the whole has the
-    # whole
     assistant: str = (
         "step"  # the assistant's SBs: "step" as steps like the person's; "told": by their first
     )
@@ -193,18 +143,8 @@ class LineReadPolicy:
         policy = cls(**(value or {}))
         if min(policy.raw_k, policy.sb_k, policy.sbs) < 1:
             raise ValueError("line_read needs positive raw_k, sb_k, sbs")
-        if policy.raw_under_sb and (policy.raw_full or policy.projection not in ("hits", "relay")):
-            raise ValueError("line_read raw_under_sb needs projection hits or relay, no raw_full")
-        if policy.extend_from not in ("all", "person"):
-            raise ValueError("line_read extend_from must be 'all' or 'person'")
-        if policy.carry not in ("edges", "threads"):
-            raise ValueError("line_read carry must be 'edges' or 'threads'")
         if policy.assistant not in ("step", "told", "told_raw"):
             raise ValueError("line_read assistant must be 'step', 'told' or 'told_raw'")
-        if policy.projection not in ("walk", "hits", "relay", "event", "all"):
-            raise ValueError(
-                "line_read projection must be 'walk', 'hits', 'relay', 'event' or 'all'"
-            )
         return policy
 
 
@@ -254,27 +194,6 @@ def rank_blocks(
     return sorted(score, key=lambda b: (-score[b], first[b]))
 
 
-def walk(
-    block: str,
-    parents: Callable[[str], Sequence[str]],
-    children: Callable[[str], Sequence[str]],
-    up: int,
-    down: int,
-) -> set[str]:
-    """The block, ``up`` levels of where it came from, and at most ``down`` steps of what it
-    became."""
-    out, frontier = {block}, [block]
-    for _ in range(up):
-        frontier = [p for f in frontier for p in parents(f)]
-        out.update(frontier)
-    below: list[str] = []
-    frontier = [block]
-    while frontier and len(below) < down:
-        frontier = [c for f in frontier for c in children(f)]
-        below += frontier
-    return out | set(below[:down])
-
-
 def between(hits: set[str], parents: Callable[[str], Sequence[str]], gap: int) -> set[str]:
     """The steps on the Line between two hit steps: going up from a hit, those passed on the way to
     another hit at most ``gap`` steps up. The projection is bounded by the hits, not by the Line."""
@@ -307,40 +226,6 @@ def near(
     return seen - set(anchors)
 
 
-def events(
-    anchors: Sequence[str],
-    part_of: Callable[[str], Sequence[str]],
-    parts: Callable[[str], Sequence[str]],
-    carries: Callable[[str], Sequence[str]],
-    near_events: int = 0,
-) -> list[set[str]]:
-    """The events the anchors are in, each the SB the matter is (up the part edges) with all its
-    parts, in the order of the anchors; then the events ``near_events`` carry-on edges away."""
-
-    def head(b: str) -> str:
-        seen = {b}
-        while ups := [x for x in part_of(b) if x not in seen]:
-            b = ups[0]
-            seen.add(b)
-        return b
-
-    def whole(h: str) -> set[str]:
-        out, todo = {h}, [h]
-        while todo:
-            for x in parts(todo.pop()):
-                if x not in out:
-                    out.add(x)
-                    todo.append(x)
-        return out
-
-    heads = list(dict.fromkeys(head(a) for a in anchors))
-    frontier = heads
-    for _ in range(near_events):
-        frontier = [h for f in frontier for x in carries(f) if (h := head(x)) not in heads]
-        heads += list(dict.fromkeys(frontier))
-    return [whole(h) for h in heads]
-
-
 def pieces(steps: set[str], parents: Callable[[str], Sequence[str]]) -> list[set[str]]:
     """The steps grouped by the Line edges among them."""
     group = {s: {s} for s in steps}
@@ -351,30 +236,6 @@ def pieces(steps: set[str], parents: Callable[[str], Sequence[str]]) -> list[set
                 for x in merged:
                     group[x] = merged
     return list({id(g): g for g in group.values()}.values())
-
-
-def _nearest_paragraphs(text: str, question: str, k: int) -> str:
-    """The ``k`` paragraphs of a message that hold the question's rarest words, in their order; "…"
-    where some are left out. A message with none of the question's words gives its first."""
-    paras = paragraphs(text)
-    if len(paras) <= k:
-        return text
-    words = [set(lexical_tokens(p)) for p in paras]
-    asked = set(lexical_tokens(question))
-    weight = {t: 1.0 / sum(t in w for w in words) for t in asked if any(t in w for w in words)}
-    score = [sum(weight.get(t, 0.0) for t in w) for w in words]
-    chosen = sorted(sorted(range(len(paras)), key=lambda i: (-score[i], i))[:k])
-    if not any(score[i] for i in chosen):
-        chosen = [0]
-    out, last = [], -1
-    for i in chosen:
-        if i != last + 1:
-            out.append("…")
-        out.append(paras[i])
-        last = i
-    if last != len(paras) - 1:
-        out.append("…")
-    return "\n\n".join(out)
 
 
 def cut_chars(text: str, spans) -> str:
@@ -472,10 +333,6 @@ def compose(
     span: Callable[[str, str], Sequence[int] | None] = lambda block, record: None,
     relevance: Callable[[str], float] = lambda block: 0.0,
     pointers: Callable[[str], dict | None] = lambda block: None,
-    part_of: Callable[[str], Sequence[str]] = lambda block: (),
-    parts: Callable[[str], Sequence[str]] = lambda block: (),
-    carries: Callable[[str], Sequence[str]] = lambda block: (),
-    everything: Callable[[], Sequence[str]] = lambda: (),
     threads: Callable[[], dict[str, dict]] = dict,
     thread_hits: Sequence[str] = (),
     hit_blocks: Sequence[str] = (),
@@ -485,35 +342,21 @@ def compose(
     question (they apply to what is asked, not to what it is about), then Line pieces ("line"),
     then the raw the chosen SBs point to ("source"). ``span(block, record)``: the paragraphs of
     that source message the block points to, None for the whole message. ``relevance(block)``:
-    how close a step is to the question ("relay" only). ``pointers(block)``: the fragments of the
-    words it comes from ({"own": {record: spans | None}, "parts": [...]}), None for the old spans.
-    "event": ``part_of``/``parts`` walk the part edges (step 1 put it under), ``carries`` the
-    carry-on edges either way (step 2); "all": ``everything`` is every SB (a baseline: no
-    selection at all)."""
+    how close a step is to the question. ``pointers(block)``: the fragments of the words it comes
+    from ({"own": {record: spans | None}, "parts": [...]}), None for the old spans."""
     side, who, (line_head, raw_head) = SIDE[lang], WHO[lang], HEAD[lang]
-
-    dated: set[int] = set()  # policy.session_once: the sessions whose date has been written
-
-    def once(place: tuple[int, int] | None, session: datetime | None) -> datetime | None:
-        if not policy.session_once or place is None or session is None:
-            return session
-        if place[0] in dated:
-            return None
-        dated.add(place[0])
-        return session
 
     def at_b(b: str) -> str:  # where and when a step sits
         s = step(b)
-        return _when(s.time, policy.tz_minutes, s.place, once(s.place, s.session), lang)
+        return _when(s.time, policy.tz_minutes, s.place, s.session, lang)
 
     def at_m(m: RawMessage) -> str:  # where and when a message sits
-        return _when(m.time, policy.tz_minutes, m.place, once(m.place, m.session), lang)
+        return _when(m.time, policy.tz_minutes, m.place, m.session, lang)
 
     top = list(ranked[: policy.sbs])
     if policy.hit_anchors:  # ``hit_blocks``: the SB of each raw hit, in raw-search order
         top = list(dict.fromkeys([*top, *hit_blocks]))
     items, seen = [], set()
-    drilled: list[str] = []  # SBs reached from a stretch summary (policy.drill)
 
     def unmarked(text: str) -> str:  # the terminator is the memory side's own (docs/LCE_FROZEN.md)
         first = text.split("\n")[0]
@@ -606,32 +449,21 @@ def compose(
                 out.append(told(b, ""))
         return "\n".join(out)
 
-    if (
-        policy.projection == "relay"
-    ):  # the fused search finds anchors; the Line around them finds the rest
-        around = sorted(
-            near(top, parents, children, policy.reach) - seen, key=lambda b: (-relevance(b), b)
-        )
-        if policy.extend_from == "person":
-            around = [
-                b
-                for b in around
-                if any((m := message(r)) is not None and m.role == "user" for r in sources(b))
-            ]
-        top = [*top, *around[: policy.extend]]
+    # the fused search finds anchors; the Line around them finds the rest
+    around = sorted(
+        near(top, parents, children, policy.reach) - seen, key=lambda b: (-relevance(b), b)
+    )
+    top = [*top, *around[: policy.extend]]
     if (
         thread_hits
     ):  # the question hit these threads by their summaries: each with its nearest steps
         known = threads()
         for n, t in enumerate(x for x in thread_hits if x in known):
             mine = [b for b in known[t]["members"] if step(b).text and b not in seen]
-            k = policy.drill_sbs if n < policy.drill else policy.thread_sbs
             near_ = sorted(
-                sorted(mine, key=lambda b: (-relevance(b), b))[:k],
+                sorted(mine, key=lambda b: (-relevance(b), b))[: policy.thread_sbs],
                 key=lambda b: (*_order(step(b)), b),
             )
-            if n < policy.drill:  # the stretch found by its summary leads down to its SBs' words
-                drilled.extend(near_)
             seen |= set(near_)
             span = ""
             if policy.thread_span:  # where the stretch sits: its first and its last step
@@ -655,57 +487,6 @@ def compose(
                     + ("\n" + show(near_) if near_ else ""),
                 }
             )
-    if policy.outline:
-
-        def at(b: str) -> str:
-            return at_b(b)
-
-        known, span = threads(), {}
-        for t, x in known.items():
-            here = sorted(
-                (b for b in x["members"] if step(b).text), key=lambda b: (*_order(step(b)), b)
-            )
-            if here and x.get("summary"):
-                span[t] = (here[0], here[-1])
-        kids: dict[str | None, list[str]] = {}
-        for t in sorted(span, key=lambda t: (*_order(step(span[t][0])), t)):
-            o = known[t].get("origin")
-            kids.setdefault(o["thread"] if o and o["thread"] in span else None, []).append(t)
-        out, done = [], set()
-
-        def tell(
-            t: str, depth: int
-        ) -> None:  # a branch under the thread it came off, from which step and why
-            if t in done:
-                return
-            done.add(t)
-            pad, (a, b), o = "  " * depth, span[t], known[t].get("origin")
-            origin = (at(o["step"]) if step(o["step"]).text else o["step"]) if o else ""
-            came = (
-                (f"{pad}({BRANCH[lang].format(origin)}{': ' + o['why'] if o.get('why') else ''})\n")
-                if depth and o
-                else ""
-            )
-            body = "\n".join(
-                pad + line for line in known[t]["summary"].splitlines() if line.strip()
-            )
-            out.append(f"{came}{pad}[{at(a)}{' - ' + at(b) if b != a else ''}]\n{body}")
-            for k in kids.get(t, []):
-                tell(k, depth + 1)
-
-        for t in kids.get(None, []):
-            tell(t, 0)
-        if out:
-            items.append(
-                {
-                    "id": "outline",
-                    "kind": "line",
-                    "score": float(len(top)) + 0.5,
-                    "occurred_at": step(span[kids[None][0]][0]).time,
-                    "content": OUTLINE[lang] + "\n" + "\n".join(out),
-                }
-            )
-
     def downward() -> list[tuple[str, RawMessage, str]]:
         """The raw given: (record, message, its line), in message order."""
         # downward index: what the chosen SBs point to, whether or not the raw search hit it; a
@@ -723,16 +504,12 @@ def compose(
 
         # "hits": of an SB's words only the messages the raw search hit (an SB over a whole talk
         # would pour all its messages out and crowd the hits out of the budget; 2026-10-31, LoCoMo)
-        hits_only = set(raw_records) if policy.raw_of_sb == "hits" else None
-        deep = set(drilled)
-        for block in dict.fromkeys([*top, *drilled]):
+        hit = set(raw_records) if policy.raw_of_sb == "hits" else None
+        for block in top:
             if policy.assistant == "told" and not said(
                 block
             ):  # what the person was told: by its index only
                 continue
-            # "hits": an SB brings only the messages the raw search hit, except an SB reached from a
-            # stretch summary, which brings what it points to (no raw hit found those words)
-            hit = None if block in deep else hits_only
             # a message the raw search hit is given whole: the search matched the message, not the
             # part of it this SB points to, and a message cut into several SBs would otherwise show
             # only the part of the SB chosen for it
@@ -873,8 +650,6 @@ def compose(
                         for x in p
                     },
                 )
-            if policy.sb_raw_paras and len(given) > policy.sb_raw_long:
-                given = _nearest_paragraphs(given, question, policy.sb_raw_paras)
             line = f"[{at_m(m)} {who.get(m.role, m.role)}] {given}".replace("[ ", "[", 1)
             cost = estimate_tokens(line)
             if len(line) > carried_budget[0] or (policy.sb_raw_tokens and cost > carried_tokens[0]):
@@ -888,94 +663,35 @@ def compose(
                 out.append(line)
         return ("\n" + CARRIED[lang] + "\n" + "\n".join(out)) if out else ""
 
-    if policy.projection in ("event", "all"):
-        groups = (
-            events(top, part_of, parts, carries, policy.near_events)
-            if policy.projection == "event"
-            else [set(everything())]
+    hits = [b for b in top if b not in seen]
+    rank = {b: n for n, b in enumerate(hits)}
+    shown = (set(hits) | between(set(hits), parents, policy.gap)) - seen
+    if policy.raw_under_sb:
+        given = downward()
+        for record, m, text in given:
+            if hang([b for b in blocks_of(record) if b in shown], m, text):
+                under_sb.add(record)
+    for group in sorted(
+        pieces(shown, parents), key=lambda g: min(rank.get(b, len(hits)) for b in g)
+    ):
+        chain = sorted(group, key=lambda b: (*_order(step(b)), b))
+        best = min(rank.get(b, len(hits)) for b in group)
+        head = (
+            hits[best] if best < len(hits) else chain[0]
+        )  # only steps between hits given elsewhere
+        listed = words(chain) if policy.sb_raw else ""  # before show: it may hang them
+        items.append(
+            {
+                "id": f"line:{head}",
+                "kind": "line",
+                "content": line_head
+                + "\n"
+                + show(chain, lambda b: b in rank, hung_under)
+                + listed,
+                "score": float(len(top) - best),
+                "occurred_at": step(head).time,
+            }
         )
-        anchors, kept = set(top), []
-        for g in groups:
-            g = {b for b in g if b in anchors or policy.extend_from == "all" or said(b)} - seen
-            seen |= g
-            if g:
-                kept.append(g)
-        for n, group in enumerate(kept):
-            chain = sorted(group, key=lambda b: (*_order(step(b)), b))
-            items.append(
-                {
-                    "id": f"line:{chain[0]}",
-                    "kind": "line",
-                    "content": line_head + "\n" + show(chain),
-                    "score": float(len(kept) - n),
-                    "occurred_at": step(chain[0]).time,
-                }
-            )
-        top = [b for g in kept for b in sorted(g, key=lambda b: (*_order(step(b)), b))]
-    elif policy.projection in ("hits", "relay"):
-        hits = [b for b in top if b not in seen]
-        rank = {b: n for n, b in enumerate(hits)}
-        shown = (set(hits) | between(set(hits), parents, policy.gap)) - seen
-        if policy.raw_under_sb:
-            given = downward()
-            for record, m, text in given:
-                if hang([b for b in blocks_of(record) if b in shown], m, text):
-                    under_sb.add(record)
-        for group in sorted(
-            pieces(shown, parents), key=lambda g: min(rank.get(b, len(hits)) for b in g)
-        ):
-            chain = sorted(group, key=lambda b: (*_order(step(b)), b))
-            best = min(rank.get(b, len(hits)) for b in group)
-            head = (
-                hits[best] if best < len(hits) else chain[0]
-            )  # only steps between hits given elsewhere
-            listed = words(chain) if policy.sb_raw else ""  # before show: it may hang them
-            items.append(
-                {
-                    "id": f"line:{head}",
-                    "kind": "line",
-                    "content": line_head
-                    + "\n"
-                    + show(chain, lambda b: b in rank, hung_under)
-                    + listed,
-                    "score": float(len(top) - best),
-                    "occurred_at": step(head).time,
-                }
-            )
-    else:
-        for n, block in enumerate(top):
-            chain = sorted(
-                walk(block, parents, children, policy.up, policy.down) - seen,
-                key=lambda b: (*_order(step(b)), b),
-            )
-            seen.update(chain)
-            if not chain:
-                continue
-            items.append(
-                {
-                    "id": f"line:{block}",
-                    "kind": "line",
-                    "content": line_head + "\n" + show(chain),
-                    "score": float(len(top) - n),
-                    "occurred_at": step(block).time,
-                }
-            )
-    if policy.raw_full:  # the raw hits as the raw search ranks them, whole: Lines on top of P1
-        for n, record in enumerate(raw_records[: policy.raw_full]):
-            m = message(record)
-            if m is not None:
-                items.append(
-                    {
-                        "id": f"raw:{record}",
-                        "kind": "source",
-                        "score": -float(n),
-                        "occurred_at": m.time,
-                        "content": f"[{at_m(m)} {who.get(m.role, m.role)}] {m.text}".replace(
-                            "[ ", "[", 1
-                        ),
-                    }
-                )
-        return items
     if given is None:
         given = downward()
     rest = [g for g in given if g[0] not in under_sb]

@@ -50,7 +50,6 @@
     "sb_k": 30,
     "sbs": 16,
     "code_diff": true,
-    "projection": "relay",
     "reach": 3,
     "extend": 32,
     "assistant": "told",

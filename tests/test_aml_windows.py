@@ -201,7 +201,7 @@ def test_a_compile_that_keeps_failing_keeps_the_raw_and_add_still_succeeds(tmp_p
         compile_window={"soft": 3, "hard": 5},
         keep_raw_on_compile_failure=True,
         raw_base=True,
-        line_read={"projection": "relay", "raw_fill": 0, "hit_anchors": True},
+        line_read={"raw_fill": 0, "hit_anchors": True},
     )
     rt = MemoryRuntime(config, compiler=SemanticCompiler(Down()))
     try:

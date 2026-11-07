@@ -23,54 +23,6 @@ def test_a_hit_message_cut_into_many_sbs_lifts_only_the_closest_one():
     assert ranked == ["a3", "b"]  # the second hit is second, not fifth
 
 
-def test_walk_goes_up_and_down_to_the_latest_within_limits():
-    parents = {"b": ["a"], "c": ["b"], "d": ["c"], "e": ["d"]}
-    children = {"a": ["b"], "b": ["c"], "c": ["d"], "d": ["e"]}
-    got = lr.walk("c", lambda x: parents.get(x, []), lambda x: children.get(x, []), up=1, down=1)
-    assert got == {"b", "c", "d"}
-    assert lr.walk("a", lambda x: [], lambda x: children.get(x, []), up=2, down=6) == {
-        "a",
-        "b",
-        "c",
-        "d",
-        "e",
-    }
-
-
-def _compose():
-    t = datetime(2026, 10, 13, 10, 0)
-    steps = {
-        "a": lr.Step("定了去重键：内容加时间戳", t, True),
-        "b": lr.Step("开始清洗", None, False),
-    }
-    msgs = {
-        "r1": lr.RawMessage("过程话\n去重键改为内容加时间戳", "assistant", t),
-        "r2": lr.RawMessage("别的消息", "user", None),
-    }
-    return lr.compose(
-        "去重键",
-        ["a"],
-        ["r2", "r1"],
-        step=steps.__getitem__,
-        sources=lambda b: ["r1"] if b == "a" else [],
-        parents=lambda b: [],
-        children=lambda b: ["b"] if b == "a" else [],
-        message=msgs.get,
-        lang="zh",
-        policy=lr.LineReadPolicy(projection="walk"),
-    )
-
-
-def test_lines_first_then_the_raw_the_chosen_sbs_cite_whole():
-    items = _compose()
-    assert [i["kind"] for i in items] == ["line", "source"]  # r2: a raw hit no chosen SB points to
-    assert "[2026-10-13 10:00 已发生] 定了去重键" in items[0]["content"]
-    assert "[未确认] 开始清洗" in items[0]["content"]  # no message time: order only
-    assert items[1]["id"] == "raw:r1"  # cited by the chosen SB, before r2
-    assert (
-        items[1]["content"]
-        == "【原文片段】\n[2026-10-13 10:00 助手] 过程话\n去重键改为内容加时间戳"
-    )
 
 
 def test_cited_raw_comes_by_the_index_even_when_the_raw_search_missed_it():
@@ -171,27 +123,6 @@ def test_steps_without_times_follow_the_message_order_and_show_where_they_sit():
     ]
 
 
-def test_raw_full_puts_the_raw_hits_whole_after_the_lines_in_search_order():
-    t = datetime(2026, 10, 13, 10, 0)
-    msgs = {
-        "r1": lr.RawMessage("long " * 200, "assistant", t),
-        "r2": lr.RawMessage("second", "user", t),
-    }
-    items = lr.compose(
-        "q",
-        ["a"],
-        ["r2", "r1"],
-        step=lambda b: lr.Step("s", t, True),
-        sources=lambda b: ["r1"],
-        parents=lambda b: [],
-        children=lambda b: [],
-        message=msgs.get,
-        lang="en",
-        policy=lr.LineReadPolicy(raw_full=2),
-    )
-    assert [i["id"] for i in items] == ["line:a", "raw:r2", "raw:r1"]  # P1 order, not cited-first
-    assert items[2]["content"].endswith("long ")  # whole, no snippet cut
-
 
 def test_standing_instructions_come_first_whatever_the_question():
     steps = {
@@ -240,7 +171,7 @@ def test_hits_projection_gives_the_hit_steps_and_only_the_line_between_them():
         children=lambda x: [],
         message=lambda r: None,
         lang="en",
-        policy=lr.LineReadPolicy(projection="hits", gap=3),
+        policy=lr.LineReadPolicy(extend=0, gap=3),
     )
     assert [i["kind"] for i in items] == ["line"]
     assert items[0]["content"].split("\n")[1:] == [
@@ -261,7 +192,7 @@ def test_hits_projection_gives_the_hit_steps_and_only_the_line_between_them():
         children=lambda x: [],
         message=lambda r: None,
         lang="en",
-        policy=lr.LineReadPolicy(projection="hits", gap=1),
+        policy=lr.LineReadPolicy(extend=0, gap=1),
     )
     assert len(far) == 2  # too far apart: two pieces, nothing between
 
@@ -282,7 +213,7 @@ def test_relay_adds_the_most_relevant_steps_near_the_anchors():
         message=lambda r: None,
         lang="en",
         relevance=score.get,
-        policy=lr.LineReadPolicy(sbs=1, projection="relay", reach=2, extend=2),
+        policy=lr.LineReadPolicy(sbs=1, reach=2, extend=2),
     )
     shown = [line.split("] ")[1] for i in items for line in i["content"].split("\n")[1:]]
     assert sorted(shown) == [
@@ -307,7 +238,7 @@ def test_code_seen_before_is_given_as_its_changes():
         children=lambda b: [],
         message=msgs.get,
         lang="en",
-        policy=lr.LineReadPolicy(projection="hits", code_diff=True),
+        policy=lr.LineReadPolicy(extend=0, code_diff=True),
     )
     assert items[-2]["content"].endswith(v1)
     assert items[-1]["content"].endswith(
@@ -333,7 +264,7 @@ def test_the_readout_gives_the_fragments_and_nothing_around_them():
         children=lambda b: [],
         message=msgs.get,
         lang="en",
-        policy=lr.LineReadPolicy(projection="hits"),
+        policy=lr.LineReadPolicy(extend=0),
         pointers=lambda b: {"chars": True, "own": {"u": [[13, 39]]}, "parts": []},
     )
     assert items[-1]["content"].endswith("Person] Second thing that matters.")
@@ -358,7 +289,7 @@ def test_a_step_with_its_own_status_is_not_labelled_twice():
         children=lambda x: [],
         message=lambda r: None,
         lang="en",
-        policy=lr.LineReadPolicy(projection="hits"),
+        policy=lr.LineReadPolicy(extend=0),
     )
     shown = [line for i in items for line in i["content"].split("\n")[1:]]
     assert (
@@ -367,54 +298,6 @@ def test_a_step_with_its_own_status_is_not_labelled_twice():
     assert "[S1 #5] The person moved the deadline [confirmed; before]" in shown
     assert "[S1 #7] The person plans to deploy [likely; after]" in shown
 
-
-def test_event_projection_gives_the_anchors_matter_with_its_parts_and_the_persons_steps():
-    # "ask" has parts "list" (the person's) and "reply" (the assistant's); "next" carries "ask" on,
-    # and is a matter of its own with part "detail"; "other" is unrelated
-    part_of = {"list": ["ask"], "reply": ["ask"], "detail": ["next"]}
-    parts = {"ask": ["list", "reply"], "next": ["detail"]}
-    carries = {"ask": ["next"], "next": ["ask"]}
-    steps = {
-        x: lr.Step(f"{x} said", None, True, (1, i))
-        for i, x in enumerate(["ask", "list", "reply", "next", "detail", "other"])
-    }
-    who = {x: "user" for x in steps} | {"reply": "assistant"}
-
-    def shown(**policy):
-        items = lr.compose(
-            "q",
-            ["list"],
-            [],
-            step=steps.__getitem__,
-            sources=lambda x: [x],
-            parents=lambda x: [],
-            children=lambda x: [],
-            message=lambda r: lr.RawMessage(r, who[r], None),
-            lang="en",
-            policy=lr.LineReadPolicy(sbs=1, **policy),
-            part_of=lambda x: part_of.get(x, []),
-            parts=lambda x: parts.get(x, []),
-            carries=lambda x: carries.get(x, []),
-            everything=lambda: list(steps),
-        )
-        return [
-            line.split("] ")[1]
-            for i in items
-            if i["kind"] == "line"
-            for line in i["content"].split("\n")[1:]
-        ]
-
-    assert shown(projection="event") == ["ask said", "list said", "reply said"]
-    assert shown(projection="event", extend_from="person") == ["ask said", "list said"]
-    assert shown(projection="event", extend_from="person", near_events=1) == [
-        "ask said",
-        "list said",
-        "next said",
-        "detail said",
-    ]
-    assert (
-        len(shown(projection="all", extend_from="person")) == 5
-    )  # the baseline: every SB of the person
 
 
 def test_what_the_assistant_said_is_shown_as_told_under_the_persons_step_it_answers():
@@ -449,7 +332,7 @@ def test_what_the_assistant_said_is_shown_as_told_under_the_persons_step_it_answ
             message=msgs.get,
             lang="en",
             policy=lr.LineReadPolicy(
-                sbs=3, projection="hits", assistant=assistant, sb_raw=False, raw_under_sb=False
+                sbs=3, extend=0, assistant=assistant, sb_raw=False, raw_under_sb=False
             ),
         )
 
@@ -493,7 +376,7 @@ def test_a_question_on_a_threads_summary_gets_that_stretch_with_its_nearest_step
         children=lambda b: [],
         message=lambda r: None,
         lang="en",
-        policy=lr.LineReadPolicy(sbs=1, projection="hits", thread_k=1, thread_sbs=2),
+        policy=lr.LineReadPolicy(sbs=1, extend=0, thread_k=1, thread_sbs=2),
         relevance=lambda b: {"cache": 0.9, "tracker": 0.5, "queue": 0.1}.get(b, 0.0),
         threads=lambda: known,
         thread_hits=["t:limits"],
@@ -522,7 +405,7 @@ def test_fusion_fills_in_only_the_raw_hits_no_given_sb_comes_from():
         children=lambda b: [],
         message=msgs.get,
         lang="en",
-        policy=lr.LineReadPolicy(sbs=1, projection="hits", raw_fill=1),
+        policy=lr.LineReadPolicy(sbs=1, extend=0, raw_fill=1),
     )
     filled = [i["id"] for i in items if i["kind"] == "source" and "Other raw" in i["content"]]
     assert filled == ["raw:m2"]  # m1 is covered by the SB; one fill only
@@ -543,7 +426,7 @@ def test_p1s_whole_list_backs_the_lines_up_not_only_the_anchor_hits():
         children=lambda b: [],
         message=msgs.get,
         lang="en",
-        policy=lr.LineReadPolicy(sbs=1, projection="hits", raw_fill=100),
+        policy=lr.LineReadPolicy(sbs=1, extend=0, raw_fill=100),
     )
     filled = [i["id"] for i in items if i["kind"] == "source" and i["id"] != "raw:m1"]
     assert filled == ["raw:m2", "raw:m3", "raw:m4"]  # beyond the one anchor hit, in P1's order
@@ -565,7 +448,7 @@ def test_uncompiled_raw_hit_survives_without_fill():
         children=lambda b: [],
         message=msgs.get,
         lang="en",
-        policy=lr.LineReadPolicy(projection="hits", raw_fill=0),
+        policy=lr.LineReadPolicy(extend=0, raw_fill=0),
     )
     assert [i["id"] for i in items if i["kind"] == "source"] == ["raw:compiled", "raw:uncompiled"]
     empty = lr.compose(
@@ -670,17 +553,6 @@ def test_embeddings_are_batched_in_order_and_cached(tmp_path):
         server.shutdown()
 
 
-def test_nearest_paragraphs_keep_the_ones_with_the_questions_rare_words_in_order():
-    from mr_mem_aml.line_read import _nearest_paragraphs
-
-    paras = [f"common filler paragraph number {n}" for n in range(6)]
-    paras[1] = "common filler about the deadline"
-    paras[4] = "common filler with the budget of forty units"
-    got = _nearest_paragraphs("\n\n".join(paras), "What budget and deadline did we set?", 2)
-    assert got.split("\n\n") == ["…", paras[1], "…", paras[4], "…"]
-    # nothing of the question in it: the message's opening, not an arbitrary paragraph
-    assert _nearest_paragraphs("\n\n".join(paras), "zebra?", 2).split("\n\n")[0] == paras[0]
-
 
 def test_a_raw_hit_sits_under_its_sb_with_its_time_and_the_words_do_not_change():
     t = datetime(2026, 10, 13, 10, 0)
@@ -710,7 +582,7 @@ def test_a_raw_hit_sits_under_its_sb_with_its_time_and_the_words_do_not_change()
             message=msgs.get,
             lang="en",
             policy=lr.LineReadPolicy(
-                projection="hits", assistant="told", raw_of_sb="hits", raw_fill=0,
+                extend=0, assistant="told", raw_of_sb="hits", raw_fill=0,
                 **{"sb_raw": False, "raw_under_sb": False, **policy},
             ),
             relevance=lambda b: {"person": 2.0, "told": 3.0, "far": 1.0}[b],
@@ -738,10 +610,6 @@ def test_a_raw_hit_sits_under_its_sb_with_its_time_and_the_words_do_not_change()
         assert sum(words in i["content"] for i in under) == 1
 
 
-def test_raw_under_sb_needs_a_projection_that_shows_steps():
-    with pytest.raises(ValueError):
-        lr.LineReadPolicy.of({"raw_under_sb": True, "projection": "event"})
-
 
 def test_carried_words_sit_under_their_step_and_the_whole_readout_keeps_its_budget():
     t = datetime(2026, 10, 13, 10, 0)
@@ -768,7 +636,7 @@ def test_carried_words_sit_under_their_step_and_the_whole_readout_keeps_its_budg
             message=msgs.get,
             lang="en",
             policy=lr.LineReadPolicy(
-                projection="hits",
+                extend=0,
                 assistant="told",
                 raw_of_sb="hits",
                 raw_fill=0,
@@ -791,43 +659,3 @@ def test_carried_words_sit_under_their_step_and_the_whole_readout_keeps_its_budg
     assert "Words of the far step" not in joined  # the rest of the readout is measured first
 
 
-def test_a_session_date_is_written_once_in_a_readout():
-    day = datetime(2024, 4, 5)
-    msgs = {r: lr.RawMessage(r, "user", None, (3, n), day) for n, r in enumerate(["r1", "r2"], 1)}
-    steps = {"a": lr.Step("The person does a", None, True, (3, 1), session=day)}
-
-    def read(**policy):
-        return lr.compose(
-            "q",
-            ["a"],
-            ["r1", "r2"],
-            step=steps.__getitem__,
-            sources=lambda b: ["r1", "r2"],
-            parents=lambda b: [],
-            children=lambda b: [],
-            message=msgs.get,
-            lang="en",
-            policy=lr.LineReadPolicy(projection="hits", raw_of_sb="hits", raw_fill=0, **policy),
-        )
-
-    count = lambda items: sum(i["content"].count("session began") for i in items)  # noqa: E731
-    assert count(read()) == 3
-    assert count(read(session_once=True)) == 1
-
-
-def test_a_fill_gives_every_message_the_lines_do_not_hold_when_the_pool_is_the_whole_history():
-    msgs = {f"r{n}": lr.RawMessage(f"message {n}", "assistant", None, (1, n)) for n in range(40)}
-    items = lr.compose(
-        "q",
-        ["sb"],
-        list(msgs)[:30],
-        fill_records=list(msgs),
-        step=lambda b: lr.Step("The person pastes a document", None, True, (1, 0)),
-        sources=lambda b: ["r0"],
-        parents=lambda b: [],
-        children=lambda b: [],
-        message=msgs.get,
-        lang="en",
-        policy=lr.LineReadPolicy(projection="hits", assistant="told", raw_fill=2000),
-    )
-    assert sum(any(f"message {n}" in i["content"] for i in items) for n in range(40)) == 40
