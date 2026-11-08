@@ -66,6 +66,11 @@ class LineReadPolicy:
     raw_k: int = 30  # raw hits taken from the raw search
     raw_near: float = 0.0  # >0: the raw hits are every message whose vector score is at least
     # this share of the best one, however many (no raw_k); 0: the raw_k best
+    # >0: the anchors are the SBs whose two routes together score at least this share of the best
+    # one: the best vector score of its messages and of its first line against the question, each
+    # over the question's best, averaged (design 5.5: hits on both routes rank first); raw hits
+    # only under them (their parts hit at this share too); no raw_k, sbs or hit_anchors
+    fuse_near: float = 0.0
     anchors: str = "ranked"  # "hits": only the raw hits' SBs anchor, no sbs from the fused ranking
     sb_k: int = 30  # SBs taken from the question against SB texts
     sbs: int = 4  # anchor SBs: the SBs the fused ranking puts first
@@ -154,8 +159,8 @@ class LineReadPolicy:
             raise ValueError("line_read assistant must be 'step', 'told' or 'told_raw'")
         if policy.anchors not in ("ranked", "hits"):
             raise ValueError("line_read anchors must be 'ranked' or 'hits'")
-        if not (0 <= policy.raw_near < 1 and 0 <= policy.judge < 1):
-            raise ValueError("line_read raw_near and judge must be in [0, 1)")
+        if not (0 <= policy.raw_near < 1 and 0 <= policy.judge < 1 and 0 <= policy.fuse_near < 1):
+            raise ValueError("line_read raw_near, judge and fuse_near must be in [0, 1)")
         return policy
 
 
@@ -560,7 +565,24 @@ def compose(
         # A raw hit without a usable SB must survive even when optional fill is off.
         for record in uncompiled_records:
             merge(record, hit_keep(record))
-        found = [(r, m) for r in dict.fromkeys([*keep, *chars]) if (m := message(r)) is not None]
+        # by the structure (fuse_near) under "told": an SB brings the person's words it points
+        # to; of the assistant's only the parts the question hit inside the chosen SBs (the
+        # person's own text can sit only there, e.g. their email repeated before it is polished;
+        # 11-09: whole replies were 3/4 of the readout)
+        no_told_raw = (
+            policy.fuse_near and policy.assistant == "told" and not policy.sb_raw_assistant
+        )
+        hits_here = set(raw_records) | set(uncompiled_records)
+        found = [
+            (r, m)
+            for r in dict.fromkeys([*keep, *chars])
+            if (m := message(r)) is not None
+            and not (no_told_raw and m.role != "user" and r not in hits_here)
+        ]
+        if no_told_raw:
+            for r, m in found:
+                if m.role != "user" and r in keep:
+                    keep[r] = hit_keep(r)
         found.sort(
             key=lambda x: (
                 x[1].place is None,

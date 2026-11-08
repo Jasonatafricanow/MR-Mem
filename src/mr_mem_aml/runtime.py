@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1122,6 +1122,59 @@ class MemoryRuntime:
             log.warning("HyDE failed, searching with the question alone: %s", str(exc)[:200])
             return ""
 
+    def _fuse(self, user_id: str, text: str, share: float):
+        """The two routes on the SBs (design 5.5): each SB by the best vector score of its
+        messages and by its first line's, each over the question's best, averaged; the SBs at
+        least ``share`` of the best, best first. The raw hits: messages at that share of the best
+        on the raw route that are under them or not compiled, with the parts hit."""
+        import numpy as np
+
+        units = self.raw.near(user_id, text, 0.0)
+        if not units:
+            return [], [], {}
+        top = units[0][1] or 1.0
+        best: dict[str, float] = {}
+        parts: dict[str, set[int] | None] = {}
+        for u, s in units:
+            rel = s / top
+            best[u.record_id] = max(best.get(u.record_id, 0.0), rel)
+            if rel >= share:
+                have = parts.get(u.record_id, set())
+                parts[u.record_id] = None if have is None or not u.paras else have | set(u.paras)
+        q = np.array(self._embed_cached(text))
+        q /= np.linalg.norm(q) or 1.0
+        blocks = {
+            b
+            for r in best
+            for b in self._blocks_by_record.get(r, ())
+            if self.core.canonical.get(b) is not None
+        }
+
+        def refs(b: str) -> list[str]:
+            return [x.record_id for x in self.core.canonical.get(b).provenance.source_refs]
+
+        line_of: dict[str, float] = {}
+        for b in blocks:
+            first = self.core.canonical.get(b).content.split(chr(10))[0]
+            v = np.array(self._embed_cached(first))
+            line_of[b] = float(q @ v) / (float(np.linalg.norm(v)) or 1.0)
+        if not line_of:
+            return [], [r for r in best if best[r] >= share], parts
+        top_line = max(line_of.values()) or 1.0
+        score = {
+            b: (max((best.get(r, 0.0) for r in refs(b)), default=0.0) + line_of[b] / top_line) / 2
+            for b in blocks
+        }
+        top_f = max(score.values()) or 1.0
+        chosen = sorted((b for b in blocks if score[b] >= share * top_f), key=lambda b: -score[b])
+        under = {r for b in chosen for r in refs(b)}
+        records = [
+            r
+            for r in sorted(best, key=lambda r: -best[r])
+            if best[r] >= share and (r in under or not self._blocks_by_record.get(r))
+        ]
+        return chosen, records, {r: parts.get(r) for r in records}
+
     def _line_read(self, scope, user_id: str, text: str) -> list[dict]:
         """Readout by the upward index (line_read.py): raw hits -> SBs -> the Line around them,
         plus raw snippets. Owner thread: reads the source, canonical and Line stores."""
@@ -1146,6 +1199,9 @@ class MemoryRuntime:
                     )
         else:
             records = pool[: policy.raw_k]
+        fused_blocks: list[str] | None = None
+        if policy.fuse_near and self.embedding is not None:
+            fused_blocks, records, hit_parts = self._fuse(user_id, text, policy.fuse_near)
         if policy.judge and self.decision is not None and records:
             # the decision model judges each raw hit alone (with its time and its SB); a hit it
             # drops brings no SB as an anchor (experimental, 11-08: calls on the owner thread)
@@ -1331,15 +1387,21 @@ class MemoryRuntime:
             )
             if self.core.canonical.get(b) is not None
         ]
-        hit_blocks = [
-            max(blocks, key=relevance)
-            for r in (records if policy.hit_anchors else ())
-            if (
-                blocks := [
-                    b for b in self._blocks_by_record.get(r, ()) if self.core.canonical.get(b)
-                ]
-            )
-        ]
+        if fused_blocks is not None:  # the fused SBs are the anchors, best first
+            policy = replace(policy, anchors="hits")
+        hit_blocks = (
+            fused_blocks
+            if fused_blocks is not None
+            else [
+                max(blocks, key=relevance)
+                for r in (records if policy.hit_anchors else ())
+                if (
+                    blocks := [
+                        b for b in self._blocks_by_record.get(r, ()) if self.core.canonical.get(b)
+                    ]
+                )
+            ]
+        )
         return line_read.compose_within(
             text,
             ranked,
