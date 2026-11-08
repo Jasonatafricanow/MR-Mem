@@ -2,24 +2,41 @@
 
 [中文说明](README.zh-CN.md)
 
-> **This branch: the AML 2026 Round 2 submission.** `feat/aml-20261013` is the code and
-> configuration that ran the official evaluation (config `preview-1029`, finished 2026-11-02,
-> average **54.37**; per-category results and the post-mortem in the
-> [technical report](docs/TECHNICAL_REPORT.md)). The last commit only adds that post-mortem and
-> one switch that is off by default (`sb_raw`); the branch is otherwise left as submitted.
->
-> | Branch | What it holds |
-> |---|---|
-> | `main` | The submission plus the changes measured as gains since, and the [research log](https://github.com/Jasonatafricanow/MR-Mem/blob/main/docs/DEVLOG.md) |
-> | `feat/aml-20261013` | This submission, frozen |
-> | `dev` | Ongoing work; experimental switches default off |
->
-> What the submission is: every message is kept as raw evidence (BM25 + dense vectors, RRF —
-> the **P1** baseline); a compiler turns the conversation into semantic blocks (**SB**s, one
-> thing talked about), links them into **Lines** and cuts Lines into **stretches** with a
-> cause → who → when → what → outcome summary. Search reads raw hits up to their SBs, the
-> Line around them and their stretches (**LCE**). Scores are development measurements on
-> public data and one official run, not independent validation.
+**A memory system that keeps what was said as the authority and what it understood as a
+traceable projection.** MR-Mem stores every message as raw evidence, compiles the
+conversation into semantic blocks (**SB**s — one thing being talked about), links the blocks
+into **Lines** (how a matter moved on) and cuts Lines into **stretches**, each summarized
+once as cause → who → when → what → outcome. A question is answered from that structure:
+raw hits lead to their SBs, the SBs to their stretches, and each SB brings back the exact
+words it was compiled from. Nothing the compiler wrote replaces the source; every projection
+can be followed back to it.
+
+```text
+raw messages ──BM25 + vectors (RRF)──▶ raw evidence      (P1 baseline)
+   │ compile in windows, closing at natural breakpoints
+   ▼
+SB: one matter talked about ── carries pointers to its words
+   │ links: "this step carries that one on"
+   ▼
+Line ──▶ stretches with cause → who → when → what → outcome   (LCE)
+```
+
+| | |
+|---|---|
+| **Where it was tested** | AML 2026 Round 2 (official run 2026-11-02, average **54.37**), then public BEAM, PersonaMem-v2 and CLBench sets locally |
+| **What is on `main`** | The submitted version plus the post-competition changes measured as gains: SBs carried with their linked steps, message times written into the readout, and precise readout (only the SBs the search found carry their words; dev set 37.1 → 43.1, stable over two answer passes) |
+| **How it got here** | [Research log](docs/DEVLOG.md) — what was built, what was dropped and why |
+| **Design** | [Frozen definitions](docs/LCE_FROZEN.md) · [LCE design](docs/LCE_DESIGN.md) · [technical report](docs/TECHNICAL_REPORT.md) · [configuration guide](docs/CONFIG_GUIDE.md) |
+
+| Branch | What it holds |
+|---|---|
+| `main` | The version above |
+| `feat/aml-20261013` | The AML submission, frozen |
+| `dev` | Ongoing work; experimental switches default off |
+
+Scores are development measurements on public data and one official run, not independent
+validation.
+
 
 ## Start here
 
@@ -209,7 +226,7 @@ routes compiled Block signals in one place, and provides one unified read path
 (accepted cognition with its evidence, then active Threads, then canonical
 Memory). It is host-neutral: the host keeps raw text (ADR-0001) and supplies the
 semantic compiler and retrieval stack. See [docs/PATH_A.md](docs/PATH_A.md).
-The AML evaluation adapter (`mr_mem_aml`, this branch only) is described in
+The AML evaluation adapter (`mr_mem_aml`) is described in
 [docs/AML.md](docs/AML.md).
 
 For a server deployment, use [Docker Compose deployment](docs/DEPLOYMENT.md).
