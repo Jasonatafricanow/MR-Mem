@@ -2,6 +2,25 @@
 
 [中文说明](README.zh-CN.md)
 
+> **This branch: the AML 2026 Round 2 submission.** `feat/aml-20261013` is the code and
+> configuration that ran the official evaluation (config `preview-1029`, finished 2026-11-02,
+> average **54.37**; per-category results and the post-mortem in the
+> [technical report](docs/TECHNICAL_REPORT.md)). The last commit only adds that post-mortem and
+> one switch that is off by default (`sb_raw`); the branch is otherwise left as submitted.
+>
+> | Branch | What it holds |
+> |---|---|
+> | `main` | The submission plus the changes measured as gains since, and the [research log](https://github.com/Jasonatafricanow/MR-Mem/blob/main/docs/DEVLOG.md) |
+> | `feat/aml-20261013` | This submission, frozen |
+> | `dev` | Ongoing work; experimental switches default off |
+>
+> What the submission is: every message is kept as raw evidence (BM25 + dense vectors, RRF —
+> the **P1** baseline); a compiler turns the conversation into semantic blocks (**SB**s, one
+> thing talked about), links them into **Lines** and cuts Lines into **stretches** with a
+> cause → who → when → what → outcome summary. Search reads raw hits up to their SBs, the
+> Line around them and their stretches (**LCE**). Scores are development measurements on
+> public data and one official run, not independent validation.
+
 ## Start here
 
 Python 3.12+ and Git are required. From the repository root:
