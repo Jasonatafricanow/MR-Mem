@@ -1134,13 +1134,14 @@ class MemoryRuntime:
             return [], [], {}
         top = units[0][1] or 1.0
         best: dict[str, float] = {}
+        # the part of a message the question hit is its own best part (units come best first):
+        # on a one-topic history every part clears the share, so the share cannot pick it (11-09)
         parts: dict[str, set[int] | None] = {}
         for u, s in units:
             rel = s / top
-            best[u.record_id] = max(best.get(u.record_id, 0.0), rel)
-            if rel >= share:
-                have = parts.get(u.record_id, set())
-                parts[u.record_id] = None if have is None or not u.paras else have | set(u.paras)
+            if u.record_id not in best:
+                best[u.record_id] = rel
+                parts[u.record_id] = set(u.paras) if u.paras else None
         q = np.array(self._embed_cached(text))
         q /= np.linalg.norm(q) or 1.0
         blocks = {

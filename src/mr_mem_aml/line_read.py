@@ -579,9 +579,10 @@ def compose(
             if (m := message(r)) is not None
             and not (no_told_raw and m.role != "user" and r not in hits_here)
         ]
-        if no_told_raw:
+        if no_told_raw:  # by paragraphs or by character spans, the assistant's give the hit
             for r, m in found:
-                if m.role != "user" and r in keep:
+                if m.role != "user":
+                    chars.pop(r, None)
                     keep[r] = hit_keep(r)
         found.sort(
             key=lambda x: (
