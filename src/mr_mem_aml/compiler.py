@@ -25,7 +25,7 @@ from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
 # work scene, two steps: write the SBs, then place them (moves.py, 2026-10-24)
-MOVES_PROMPT_VERSION = "mr-mem-aml-move-compiler-v3"
+MOVES_PROMPT_VERSION = "mr-mem-aml-move-compiler-v5"
 CONTENT_BYTES = 16000  # an assembled block stays under the canonical 16384-byte limit
 
 
