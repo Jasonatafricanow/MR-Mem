@@ -28,6 +28,9 @@ class RuntimeConfig:
     # Search reads on top of raw-message retrieval (the P1 baseline protocol,
     # raw_arm.py); off = the older Block-retrieval base list.
     raw_base: bool = False
+    # >0: a message longer than this many characters is indexed by its paragraphs (consecutive
+    # ones joined up to RAW_PART_CHARS), so a hit is the part that matched, not the whole message
+    raw_split: int = 0
     append_options: bool = True  # multiple-choice options appended to the query (P1)
     # A request the compiler endpoint permanently rejects (HTTP 4xx, e.g. content
     # moderation) keeps its raw evidence but yields no Blocks instead of failing Add.

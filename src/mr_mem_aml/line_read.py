@@ -64,6 +64,9 @@ LATER = {"zh": "（后来有了结果，见 {}）", "en": "(later settled, see {
 @dataclass(frozen=True, slots=True)
 class LineReadPolicy:
     raw_k: int = 30  # raw hits taken from the raw search
+    raw_near: float = 0.0  # >0: the raw hits are every message whose vector score is at least
+    # this share of the best one, however many (no raw_k); 0: the raw_k best
+    anchors: str = "ranked"  # "hits": only the raw hits' SBs anchor, no sbs from the fused ranking
     sb_k: int = 30  # SBs taken from the question against SB texts
     sbs: int = 4  # anchor SBs: the SBs the fused ranking puts first
     rrf_k: int = 60
@@ -129,6 +132,10 @@ class LineReadPolicy:
     # the person's requests to forget, given apart from the other standing instructions under a
     # line saying each covers only what it names
     forget_scope: bool = False
+    # > 0 with a decision model configured: it keeps the raw hits it is at least this sure hold
+    # something for the question, however many (none kept: the search's best). For the low end
+    # only: its scores sit in 0.1-0.88, and above 0.2 it drops evidence (11-08, LCE_OPEN_ITEMS 5.38)
+    judge: float = 0.0
     assistant: str = (
         "step"  # the assistant's SBs: "step" as steps like the person's; "told": by their first
     )
@@ -145,6 +152,10 @@ class LineReadPolicy:
             raise ValueError("line_read needs positive raw_k, sb_k, sbs")
         if policy.assistant not in ("step", "told", "told_raw"):
             raise ValueError("line_read assistant must be 'step', 'told' or 'told_raw'")
+        if policy.anchors not in ("ranked", "hits"):
+            raise ValueError("line_read anchors must be 'ranked' or 'hits'")
+        if not (0 <= policy.raw_near < 1 and 0 <= policy.judge < 1):
+            raise ValueError("line_read raw_near and judge must be in [0, 1)")
         return policy
 
 
@@ -336,6 +347,7 @@ def compose(
     threads: Callable[[], dict[str, dict]] = dict,
     hit_blocks: Sequence[str] = (),
     blocks_of: Callable[[str], Sequence[str]] = lambda record: (),
+    hit_parts: dict[str, set[int] | None] | None = None,
 ) -> list[dict]:
     """Evidence items: the person's standing instructions and preferences first, whatever the
     question (they apply to what is asked, not to what it is about), then Line pieces ("line"),
@@ -352,8 +364,9 @@ def compose(
     def at_m(m: RawMessage) -> str:  # where and when a message sits
         return _when(m.time, policy.tz_minutes, m.place, m.session, lang)
 
-    top = list(ranked[: policy.sbs])
-    if policy.hit_anchors:  # ``hit_blocks``: the SB of each raw hit, in raw-search order
+    top = list(ranked[: policy.sbs]) if policy.anchors == "ranked" or not hit_blocks else []
+    # ``hit_blocks``: the SB of each raw hit, in raw-search order
+    if policy.hit_anchors or policy.anchors == "hits":
         top = list(dict.fromkeys([*top, *hit_blocks]))
     items, seen = [], set()
 
@@ -509,6 +522,10 @@ def compose(
         # "hits": of an SB's words only the messages the raw search hit (an SB over a whole talk
         # would pour all its messages out and crowd the hits out of the budget; 2026-10-31, LoCoMo)
         hit = set(raw_records) if policy.raw_of_sb == "hits" else None
+
+        def hit_keep(record: str) -> set[int] | None:  # what of a hit the search hit (raw_split)
+            return (hit_parts or {}).get(record)
+
         for block in top:
             if policy.assistant == "told" and not said(
                 block
@@ -520,7 +537,7 @@ def compose(
             if (ptr := pointers(block)) is None:
                 for record in sources(block):
                     if hit is None or record in hit:
-                        merge(record, None if hit is not None else span(block, record))
+                        merge(record, hit_keep(record) if hit is not None else span(block, record))
                 continue
             own = {
                 r: p for r, p in ptr["own"].items() if not any(r in d for d in ptr["parts"])
@@ -530,7 +547,7 @@ def compose(
                     if hit is not None and record not in hit:
                         continue
                     if hit is not None:
-                        merge(record, None)
+                        merge(record, hit_keep(record))
                     elif ptr.get("chars"):
                         merge_chars(record, p)
                     else:
@@ -542,7 +559,7 @@ def compose(
                         )
         # A raw hit without a usable SB must survive even when optional fill is off.
         for record in uncompiled_records:
-            merge(record, None)
+            merge(record, hit_keep(record))
         found = [(r, m) for r in dict.fromkeys([*keep, *chars]) if (m := message(r)) is not None]
         found.sort(
             key=lambda x: (

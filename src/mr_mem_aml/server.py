@@ -296,7 +296,11 @@ class RuntimeHost:
                 self.flush(payload["user_id"])  # nothing to do once the history is compiled
         self._warm(payload)
         found = self.call(runtime.search, payload, mode=mode)
-        if runtime.decision is not None and (mode or runtime.config.search_mode) == "path_a":
+        if (
+            runtime.decision is not None
+            and runtime.decision.notes
+            and (mode or runtime.config.search_mode) == "path_a"
+        ):
             # the decision model's calls off the owner thread; the hits read on it
             question, hits, lang = self.call(runtime.decision_hits, payload)
             note = runtime.decision.note(question, hits, lang)

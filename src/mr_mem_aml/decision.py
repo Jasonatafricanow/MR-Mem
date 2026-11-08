@@ -54,6 +54,15 @@ WHERE = {
     "人没有说过自己用了、做了或定了",
     "absent": "这些消息里根本没有问题要的那个具体信息（话题可能聊过，但没有这个信息）",
 }
+USEFUL = {
+    "useful": {
+        "type": "noul",
+        "instructions": "候选消息附带：消息时间；所属 SB（这条消息所在的那件事，编译时写下的"
+        "理解）。回答这个问题时，这条消息里有没有用得上的信息：问题所问的那件事本身（包括它某个时候的状态、"
+        "后来的更新或更正、发生的时间和先后），或者关于这个人自己的情况、经历、偏好、计划（哪怕夹在"
+        "请人帮忙写东西、改东西的消息里）？只是同一话题的泛泛内容，不算。",
+    }
+}
 CONTRA = {
     "en": (
         "[Note from the memory search: on what the question asks, the person's own messages"
@@ -125,6 +134,8 @@ class DecisionBypass:
         # an answer Search may not give (AML: Search must not generate final answers), and on
         # PersonaMem it was put on 42 of 62 questions; off unless asked for
         self.absence = bool(config.get("absence", False))
+        # the note in front of the readout (``note``); off when the model only judges the hits
+        self.notes = bool(config.get("note", True))
 
     def _ask(self, state: dict, questions: dict) -> dict:
         body = json.dumps({"model": self.model, "state": state, "questions": questions}).encode()
@@ -212,6 +223,22 @@ class DecisionBypass:
             self._stats["failures"] += int(outcome == "failure")
             self._stats["timeouts"] += int(outcome == "timeout")
         return note
+
+    def rank(self, question: str, cards: list[str], total: float = 120.0) -> list[float]:
+        """How sure the model is that each raw hit holds something for the question (System One
+        ``noul``, 0..1), each judged with its message time and the SB it belongs to. For dropping
+        the hits it is least sure of (``line_read.judge``), not for ordering the rest: ordering by
+        its scores lost to the search (2026-11-08, LCE_OPEN_ITEMS 5.28, 5.38)."""
+        deadline = time.monotonic() + total
+
+        def judge(card: str) -> float:
+            self._local.deadline = deadline
+            return float(
+                self._ask({"question": question, "candidate": card}, USEFUL)["useful"]["noul"]
+            )
+
+        with ThreadPoolExecutor(self.workers) as pool:
+            return list(pool.map(judge, cards))
 
     def _note(self, question: str, hits: list[Message], lang: str = "en") -> str | None:
         """The note for this question over its raw hits (search order), or None."""

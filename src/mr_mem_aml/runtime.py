@@ -273,7 +273,7 @@ class MemoryRuntime:
 
             self.raw = RawArm(self.embedding)
             for rid, messages in self.source.all_request_messages().items():
-                self.raw.add(units_for(rid, messages))
+                self.raw.add(units_for(rid, messages, config.raw_split))
 
     def raw_record(self, unit_id: str) -> str | None:
         """Source record (message) of a raw hit, for evaluation mapping."""
@@ -598,7 +598,7 @@ class MemoryRuntime:
         if self.raw is not None:  # raw evidence is searchable before any compile
             from mr_mem_aml.raw_arm import units_for
 
-            self.raw.add(units_for(rid, messages))
+            self.raw.add(units_for(rid, messages, self.config.raw_split))
         self.source.set_done(rid)  # stored and searchable; windows compile later
         job = self._window_job(request["user_id"], final=False, request=request)
         return job if job is not None else {**_echo(request), "blocks": 0}
@@ -1132,7 +1132,44 @@ class MemoryRuntime:
         # P1's raw list: its head finds the anchors; with raw_fill the whole list backs the Lines up
         # (LCE shares P1's evidence: what the Lines do not cover is still given, as P1 gives it)
         pool = self._raw_records(user_id, text, policy)
-        records = pool[: policy.raw_k]
+        # the parts of a message its hits are (raw_split): record -> paragraphs, None = whole
+        hit_parts: dict[str, set[int] | None] = {}
+        if policy.raw_near:
+            records = []
+            for u, _ in self.raw.near(user_id, text, policy.raw_near):
+                if u.record_id not in hit_parts:
+                    records.append(u.record_id)
+                    hit_parts[u.record_id] = set(u.paras) if u.paras else None
+                elif hit_parts[u.record_id] is not None:
+                    hit_parts[u.record_id] = (
+                        hit_parts[u.record_id] | set(u.paras) if u.paras else None
+                    )
+        else:
+            records = pool[: policy.raw_k]
+        if policy.judge and self.decision is not None and records:
+            # the decision model judges each raw hit alone (with its time and its SB); a hit it
+            # drops brings no SB as an anchor (experimental, 11-08: calls on the owner thread)
+            cards = []
+            for r in records:
+                m = self.source.message_by_record(r)
+                blocks = self._blocks_by_record.get(r, ())
+                sb = next((c.content for b in blocks if (c := self.core.canonical.get(b))), "")
+                at = m.occurred_at.strftime("%Y-%m-%d") if self.source.time_given(r) else "unknown"
+                who = "User" if m.role == "user" else "Assistant"
+                cards.append(
+                    f"时间: {at}"
+                    + chr(10)
+                    + f"所属 SB: {sb[:1200] or '(无)'}"
+                    + chr(10)
+                    + f"{who}: {line_read.cut(m.content, hit_parts.get(r))[:3000]}"
+                )
+            try:
+                score = dict(
+                    zip(records, self.decision.rank(text, cards, total=900.0), strict=True)
+                )
+                records = [r for r in records if score[r] >= policy.judge] or records[:1]
+            except Exception as exc:  # degrade to the search's own hits
+                log.warning("decision judge skipped (%s)", type(exc).__name__)
         sb_search = None if self.index is None else self.index.retrieval()
         # HyDE: a hypothetical passage searched beside the question
         if self.config.hyde == "augmented":
@@ -1308,6 +1345,7 @@ class MemoryRuntime:
             ranked,
             records,
             fill_records=pool,
+            hit_parts=hit_parts,
             uncompiled_records=[
                 r
                 for r in records

@@ -655,3 +655,69 @@ def test_carried_words_sit_under_their_step_and_the_whole_readout_keeps_its_budg
     joined = "\n".join(i["content"] for i in read(readout_tokens=60))
     assert "Words of the near step" in joined and "The hit" in joined
     assert "Words of the far step" not in joined  # the rest of the readout is measured first
+
+
+def test_a_long_message_is_searched_by_its_parts_and_a_hit_gives_only_the_part_hit():
+    from types import SimpleNamespace
+
+    from mr_mem_aml.raw_arm import RawArm, units_for
+
+    at = datetime(2026, 1, 1)
+    body = "\n\n".join(
+        [
+            "Intro " + "x" * 300,
+            "The ellipse foci sit at plus minus four " + "y" * 300,
+            "Bye " + "z" * 300,
+        ]
+    )
+    msgs = [
+        SimpleNamespace(role="assistant", content=body, user_id="a", record_id="r1", occurred_at=at)
+    ]
+    parts = units_for("q1", msgs, split=500)
+    assert [u.paras for u in parts] == [(1,), (2,), (3,)] and {u.record_id for u in parts} == {"r1"}
+    assert [u.paras for u in units_for("q1", msgs)] == [None]  # off: the message whole
+
+    class Vec:  # a part's vector: whether it is about the foci
+        def embed(self, text):
+            return [1.0, 0.0] if "foci" in text else [0.0, 1.0]
+
+        def embed_many(self, texts):
+            return [self.embed(t) for t in texts]
+
+    arm = RawArm(Vec())
+    arm.add(parts)
+    hits = arm.near("a", "foci", 0.7)  # every part at least 0.7 of the best one, however many
+    assert [u.paras for u, _ in hits] == [(2,)]
+    items = lr.compose(
+        "foci",
+        ["sb"],
+        ["r1"],
+        step=lambda b: lr.Step("The person asks about an ellipse", at, True),
+        sources=lambda b: ["r1"],
+        parents=lambda b: [],
+        children=lambda b: [],
+        message=lambda r: lr.RawMessage(body, "assistant", at),
+        lang="en",
+        policy=lr.LineReadPolicy(raw_of_sb="hits", extend=0),
+        hit_parts={"r1": {2}},
+    )
+    shown = "\n".join(i["content"] for i in items)
+    assert "foci sit at" in shown and "Intro" not in shown and "Bye" not in shown
+
+
+def test_anchors_from_hits_only_take_no_sb_from_the_fused_ranking():
+    t = datetime(2026, 1, 1)
+    items = lr.compose(
+        "q",
+        ["ranked", "hit"],
+        [],
+        step=lambda b: lr.Step(b, t, True),
+        sources=lambda b: [],
+        parents=lambda b: [],
+        children=lambda b: [],
+        message=lambda r: None,
+        lang="en",
+        policy=lr.LineReadPolicy(anchors="hits", extend=0),
+        hit_blocks=["hit"],
+    )
+    assert "ranked" not in "\n".join(i["content"] for i in items)

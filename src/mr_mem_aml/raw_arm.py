@@ -60,6 +60,11 @@ class RawUnit:
     text: str
     record_id: str
     occurred_at: datetime
+    paras: tuple[int, ...] | None = None  # the paragraphs (1-based) a part of a message holds
+
+
+RAW_PART_CHARS = 300  # a part of a long message: its paragraphs joined until this long
+GAP = chr(10) * 2  # between paragraphs
 
 
 def _pieces(pairs):
@@ -73,20 +78,62 @@ def _pieces(pairs):
                 yield n, piece
 
 
-def units_for(request_id: str, messages) -> list[RawUnit]:
-    """P1 unit construction for one Add request (messages in request order)."""
-    out: list[RawUnit] = []
-    for n, piece in _pieces((m.role, m.content) for m in messages):
-        message = messages[n]
-        out.append(
-            RawUnit(
-                f"raw:{request_id}:{len(out)}",
-                message.user_id,
-                piece,
-                message.record_id,
-                message.occurred_at,
+def _parts(content: str, split: int) -> list[tuple[str, tuple[int, ...] | None]]:
+    """A message as indexed: whole, or when longer than ``split`` its paragraphs (as step 1 and
+    the readout number them) joined in order until each part reaches RAW_PART_CHARS."""
+    from mr_mem_aml.moves import paragraphs
+
+    paras = paragraphs(content) if split and len(content) > split else []
+    if len(paras) < 2:
+        return [(content, None)]
+    out, cur, nums = [], [], []
+    for k, p in enumerate(paras, 1):
+        cur.append(p)
+        nums.append(k)
+        if sum(len(x) for x in cur) >= RAW_PART_CHARS:
+            out.append((GAP.join(cur), tuple(nums)))
+            cur, nums = [], []
+    if cur:  # a short tail joins the part before it
+        if out:
+            text, before = out.pop()
+            out.append((text + GAP + GAP.join(cur), before + tuple(nums)))
+        else:
+            out.append((GAP.join(cur), tuple(nums)))
+    return out
+
+
+def units_for(request_id: str, messages, split: int = 0) -> list[RawUnit]:
+    """P1 unit construction for one Add request (messages in request order); with ``split``, a
+    long message as its parts (_parts)."""
+    if not split:
+        out: list[RawUnit] = []
+        for n, piece in _pieces((m.role, m.content) for m in messages):
+            message = messages[n]
+            out.append(
+                RawUnit(
+                    f"raw:{request_id}:{len(out)}",
+                    message.user_id,
+                    piece,
+                    message.record_id,
+                    message.occurred_at,
+                )
             )
-        )
+        return out
+    out = []
+    for message in messages:
+        label = "User" if message.role == "user" else "Assistant"
+        for text, paras in _parts(message.content, split):
+            for piece in split_content(f"{label}: {text}"):
+                out.append(
+                    RawUnit(
+                        f"raw:{request_id}:{len(out)}",
+                        message.user_id,
+                        piece,
+                        message.record_id,
+                        message.occurred_at,
+                        paras,
+                    )
+                )
     return out
 
 
@@ -197,6 +244,19 @@ class RawArm:
         scores = index.vectors @ q
         order = np.argsort(-scores, kind="stable")[:limit]
         return [(index.ids[int(i)], float(scores[int(i)])) for i in order]
+
+    def near(self, user_id: str, text: str, share: float) -> list[tuple[RawUnit, float]]:
+        """Every unit whose vector score is at least ``share`` of the best one, best first, as
+        many as there are (BM25's best when there are no vectors)."""
+        with self._lock:
+            index = self._users[user_id]
+            if index.vectors is None or not index.ids:
+                return [(index.units[u], s) for u, s in self._bm25(user_id, text, 1)]
+            hits = self._dense(user_id, text, len(index.ids))
+            if not hits:
+                return []
+            floor = share * hits[0][1]
+            return [(index.units[u], s) for u, s in hits if s >= floor]
 
     def search(self, user_id: str, text: str, limit: int) -> list[tuple[RawUnit, float]]:
         with self._lock:
