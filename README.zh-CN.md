@@ -2,6 +2,9 @@
 
 [English](README.md)
 
+[![quality](https://github.com/Jasonatafricanow/MR-Mem/actions/workflows/quality.yml/badge.svg?branch=main)](https://github.com/Jasonatafricanow/MR-Mem/actions/workflows/quality.yml)
+[![privacy](https://github.com/Jasonatafricanow/MR-Mem/actions/workflows/privacy.yml/badge.svg?branch=main)](https://github.com/Jasonatafricanow/MR-Mem/actions/workflows/privacy.yml)
+
 **一个以原话为权威、把理解当作可追溯投影的记忆系统。** MR-Mem 把每条消息都作为原文证据保存，
 把对话编译成语义块（**SB**，一件正在聊的事），用承接把 SB 连成 **Line**（一件事怎样往前推进），
 再把 Line 切成**段**，每段只写一次"前因 → 谁 → 何时 → 做了什么 → 后果"的摘要。回答问题时按这套结构取：
@@ -80,14 +83,26 @@ python -m pytest tests
 python scripts/smoke_offline.py
 ```
 
-## 文档与边界
+## 仓库地图
 
-- [HTTP 协议与配置](docs/AML.md)
-- [部署说明](docs/AML_SUBMIT_LCE.md)
-- [冻结语义定义](docs/LCE_FROZEN.md)
-- [技术报告](docs/TECHNICAL_REPORT.md)：开发评测，不能当独立泛化验证
-- [隐私与发布规则](SECURITY.md)
+| 路径 | 内容 |
+|---|---|
+| `src/mr_mem/memory` | MemoryCore：canonical 语义记忆、经 SourceRef 写入、BM25 / 向量 / RRF 检索、Thread |
+| `src/mr_mem/integrations`、`src/mr_mem/lce` | Path A：成熟的 Thread 和完整的认知交给 LCE 的 Line；统一的读出路径 |
+| `src/mr_mem_aml` | AML 服务：原文存储、编译器（SB、段）、Line 树、读出（`line_read.py`）、HTTP 服务 |
+| `tests/` | 上面各部分的契约测试 |
+| `docs/` | 设计、决策、报告，从[文档地图](docs/README.md)开始读 |
+
+## 架构与边界
+
+MR-Mem 是 sidecar：宿主已经保存会话时，原文的权威留在宿主，MR-Mem 只保存它编译出的东西，并带着指回原文的引用；
+像 AML 这样单独运行时，原文由它自己保存。MR-Mem 管什么、来源怎样写入、Thread 和 LCE 怎样共用同一层语义，
+见[架构与边界](docs/ARCHITECTURE.md)（英文）。Path A 见 [PATH_A.md](docs/PATH_A.md)，AML 适配层见 [AML.md](docs/AML.md)，
+服务器部署见 [DEPLOYMENT.md](docs/DEPLOYMENT.md)，隐私与发布规则见 [SECURITY.md](SECURITY.md)。
 
 仓库不包含会话数据库、评测原始数据、供应商密钥或模型缓存。外部服务配置和本地评测成绩不能保证其他账号或数据集上的效果。
 
-服务器拉取部署见 [Docker Compose 部署说明](docs/DEPLOYMENT.md)。
+## 项目状态
+
+个人研究项目，公开开发。`main` 是测过的版本；`dev` 是进行中的工作，新功能都在默认关闭的开关后面。
+做过什么、留下什么、放弃了什么，见[研究开发日志](docs/DEVLOG.md)。许可证尚未选定。

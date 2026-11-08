@@ -1,5 +1,7 @@
 # LCE 移植进 MR-Mem：方案与旧实现审核（草案）
 
+> **状态：历史文档（2026-10-14）。** 记录当时把 LCE 移植进 MR-Mem 的方案和对旧实现的审核；移植已经完成，现行设计见 [LCE_DESIGN.md](LCE_DESIGN.md) 和 [LCE_FROZEN.md](LCE_FROZEN.md)。
+
 - 日期：2026-10-14
 - 状态：方案已确认（第 4 节），按第 5 节实施。
 - 依据：`MEMORY_GOVERNANCE_DESIGN_DRAFT_2026-10-13.md` v6（下称"设计稿"），尤其 4.0、4.4、4.5、5.x。
