@@ -23,8 +23,6 @@ def test_a_hit_message_cut_into_many_sbs_lifts_only_the_closest_one():
     assert ranked == ["a3", "b"]  # the second hit is second, not fifth
 
 
-
-
 def test_cited_raw_comes_by_the_index_even_when_the_raw_search_missed_it():
     t = datetime(2026, 10, 13, 10, 0)
     msgs = {"r1": lr.RawMessage("week 1: backend\nweek 2: frontend", "assistant", t)}
@@ -121,7 +119,6 @@ def test_steps_without_times_follow_the_message_order_and_show_where_they_sit():
         "[S1 #29 not confirmed] earlier",
         "[S2 #61 happened] later",
     ]
-
 
 
 def test_standing_instructions_come_first_whatever_the_question():
@@ -299,7 +296,6 @@ def test_a_step_with_its_own_status_is_not_labelled_twice():
     assert "[S1 #7] The person plans to deploy [likely; after]" in shown
 
 
-
 def test_what_the_assistant_said_is_shown_as_told_under_the_persons_step_it_answers():
     # "ask" (the person) -> "advice" (the assistant, two lines, a status of its own) -> "chose" (the
     # person)
@@ -354,7 +350,7 @@ def test_what_the_assistant_said_is_shown_as_told_under_the_persons_step_it_answ
     )
 
 
-def test_a_question_on_a_threads_summary_gets_that_stretch_with_its_nearest_steps():
+def test_an_anchor_brings_its_stretch_with_the_steps_nearest_the_question():
     steps = {
         b: lr.Step(f"The person {b}", None, True, (1, n))
         for n, b in enumerate(["tracker", "queue", "cache", "deploy"], 1)
@@ -364,11 +360,12 @@ def test_a_question_on_a_threads_summary_gets_that_stretch_with_its_nearest_step
             "summary": "Keeping the API calls under the limits: a tracker, then a cache.",
             "members": ["tracker", "queue", "cache"],
             "last_seq": 3,
-        }
+        },
+        "t:ship": {"summary": "Shipping it.", "members": ["deploy"], "last_seq": 4},
     }
     items = lr.compose(
         "which cache?",
-        ["deploy"],
+        ["queue"],
         [],
         step=steps.__getitem__,
         sources=lambda b: [],
@@ -379,8 +376,8 @@ def test_a_question_on_a_threads_summary_gets_that_stretch_with_its_nearest_step
         policy=lr.LineReadPolicy(sbs=1, extend=0, thread_k=1, thread_sbs=2),
         relevance=lambda b: {"cache": 0.9, "tracker": 0.5, "queue": 0.1}.get(b, 0.0),
         threads=lambda: known,
-        thread_hits=["t:limits"],
     )
+    assert "thread:t:ship" not in [i["id"] for i in items]  # no anchor in it
     stretch = next(i for i in items if i["id"] == "thread:t:limits")["content"].split("\n")
     assert stretch[1] == "Keeping the API calls under the limits: a tracker, then a cache."
     assert [line.split("] ")[1] for line in stretch[2:]] == [
@@ -553,7 +550,6 @@ def test_embeddings_are_batched_in_order_and_cached(tmp_path):
         server.shutdown()
 
 
-
 def test_a_raw_hit_sits_under_its_sb_with_its_time_and_the_words_do_not_change():
     t = datetime(2026, 10, 13, 10, 0)
     msgs = {
@@ -582,7 +578,10 @@ def test_a_raw_hit_sits_under_its_sb_with_its_time_and_the_words_do_not_change()
             message=msgs.get,
             lang="en",
             policy=lr.LineReadPolicy(
-                extend=0, assistant="told", raw_of_sb="hits", raw_fill=0,
+                extend=0,
+                assistant="told",
+                raw_of_sb="hits",
+                raw_fill=0,
                 **{"sb_raw": False, "raw_under_sb": False, **policy},
             ),
             relevance=lambda b: {"person": 2.0, "told": 3.0, "far": 1.0}[b],
@@ -608,7 +607,6 @@ def test_a_raw_hit_sits_under_its_sb_with_its_time_and_the_words_do_not_change()
     for words in ("May 3 it is", "launch to May 3", "Unrelated words", "Not compiled yet"):
         assert sum(words in i["content"] for i in apart) == 1
         assert sum(words in i["content"] for i in under) == 1
-
 
 
 def test_carried_words_sit_under_their_step_and_the_whole_readout_keeps_its_budget():
@@ -657,5 +655,3 @@ def test_carried_words_sit_under_their_step_and_the_whole_readout_keeps_its_budg
     joined = "\n".join(i["content"] for i in read(readout_tokens=60))
     assert "Words of the near step" in joined and "The hit" in joined
     assert "Words of the far step" not in joined  # the rest of the readout is measured first
-
-

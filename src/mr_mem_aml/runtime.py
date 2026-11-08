@@ -280,7 +280,6 @@ class MemoryRuntime:
         unit = None if self.raw is None else self.raw.unit(unit_id)
         return None if unit is None else unit.record_id
 
-
     def tree_report(self) -> list[dict]:
         """Tree engine: every user's Lines (nested, each step with its side of the
         terminator at the user's latest message time), matters and lone Blocks."""
@@ -420,7 +419,6 @@ class MemoryRuntime:
         self.core.close()
 
     # -- composition ----------------------------------------------------
-
 
     def _retrieval(self) -> MemoryRetrievalService:
         if self._bm25 is None or self._bm25[0] != self._generation:
@@ -670,7 +668,6 @@ class MemoryRuntime:
             data["assembly"] = trace
         return data
 
-
     def finish_add(self, job: AddJob, compiled: str) -> dict:
         """Owner thread: journal, admit, project, derive Path A; the model calls of placement made
         here, in turn. RuntimeHost drives finish_steps instead, with those calls off the owner
@@ -746,11 +743,7 @@ class MemoryRuntime:
                 user_id,
                 wid,
                 seqs[min(kept, len(seqs)) - 1],
-                {
-                    m.memory_id: t
-                    for m, t in zip(committed, placement["threads"], strict=True)
-                    if t
-                },
+                {m.memory_id: t for m, t in zip(committed, placement["threads"], strict=True) if t},
                 placement.get("summaries", {}),
                 placement.get("origins", {}),
             )
@@ -818,7 +811,6 @@ class MemoryRuntime:
                 raise RetryableError("dense projection failed; request not yet searchable")
             if not succeeded:
                 return
-
 
     def _span_of(self, memory, user_id: str) -> str:
         """The time range of an SB's messages (message time, from the raw's own stamps; with no
@@ -944,7 +936,6 @@ class MemoryRuntime:
             "raw": {},
         }
 
-
     def _grow_moves(self, scope, blocks, committed, placement: dict, at: datetime) -> None:
         """Placement "moves": every SB becomes a step; its links are step 2's."""
         from mr_mem.lce.path_a import Attachment, BlockLines
@@ -974,7 +965,6 @@ class MemoryRuntime:
         if result.failures:  # a refused relation never loses a Block; counted, logged
             self.tree_failures.extend(result.failures)
             log.warning("Path A relation(s) refused: %s", "; ".join(result.failures)[:500])
-
 
     def flush(self, user_id: str | None = None) -> dict:
         """Compile what is left of every user's history (or only ``user_id``'s), tail
@@ -1293,21 +1283,6 @@ class MemoryRuntime:
             q, v = question[0], np.array(self._embed_cached(memory.content.split("\n")[0]))
             return float(q @ v) / (np.linalg.norm(q) * np.linalg.norm(v) or 1)
 
-        thread_hits: list[str] = []
-        if (
-            policy.thread_k and self.embedding is not None
-        ):  # the question against each thread's summary
-            import numpy as np
-
-            known = self.source.threads(user_id)
-            tids = [t for t, x in known.items() if x["summary"]]
-            if tids:
-                if not question:
-                    question.append(np.array(self._embed_cached(text)))
-                q = question[0]
-                vecs = np.array([self._embed_cached(known[t]["summary"]) for t in tids])
-                score = vecs @ q / (np.linalg.norm(vecs, axis=1) * np.linalg.norm(q) + 1e-9)
-                thread_hits = [tids[i] for i in np.argsort(-score)[: policy.thread_k]]
         ranked = [
             b
             for b in line_read.rank_blocks(
@@ -1350,7 +1325,6 @@ class MemoryRuntime:
             relevance=relevance,
             pointers=self._pointers.get,
             threads=lambda: self.source.threads(user_id),
-            thread_hits=thread_hits,
             hit_blocks=hit_blocks,
             blocks_of=lambda r: self._blocks_by_record.get(r, ()),
         )
@@ -1366,7 +1340,6 @@ def _within(items: list[dict], limit: int) -> list[dict]:
         far = [n for n, i in enumerate(items) if str(i["id"]).startswith("thread:")]
         items.pop(far[-1] if far else len(items) - 1)
     return items
-
 
 
 class _FixedExpander:

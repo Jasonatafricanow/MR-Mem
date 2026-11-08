@@ -115,12 +115,12 @@ class LineReadPolicy:
     gap: int = 3  # the longest run of steps shown between two anchors
     reach: int = 3  # how far along the Line (either way) from an anchor a step may be
     extend: int = 16  # how many such steps join the anchors, the most relevant first
-    thread_k: int = (
-        0  # the threads whose summaries are nearest the question: each by its summary and
-    )
-    thread_sbs: int = (
-        12  # its SBs nearest the question (this many), in order - the stretch the question is on
-    )
+    # the stretches the anchors are in (the course the found SBs sit in), at most this many, in
+    # the anchors' order: each by its summary and its ``thread_sbs`` SBs nearest the question. Not
+    # a search of its own: the 60 summaries nearest the question by likeness alone were most of
+    # what misled the answer model (2026-11-08, dev set 37.1 -> 43.1 with sb_raw below)
+    thread_k: int = 0
+    thread_sbs: int = 12
     # each stretch summary given with where it sits, its first and last step (session, position,
     # message time): a stretch carries the time range of its messages, so that the course can be
     # put on the time line (docs/LCE_FROZEN.md 4); without it an old value in one summary and the
@@ -334,7 +334,6 @@ def compose(
     relevance: Callable[[str], float] = lambda block: 0.0,
     pointers: Callable[[str], dict | None] = lambda block: None,
     threads: Callable[[], dict[str, dict]] = dict,
-    thread_hits: Sequence[str] = (),
     hit_blocks: Sequence[str] = (),
     blocks_of: Callable[[str], Sequence[str]] = lambda record: (),
 ) -> list[dict]:
@@ -453,11 +452,15 @@ def compose(
     around = sorted(
         near(top, parents, children, policy.reach) - seen, key=lambda b: (-relevance(b), b)
     )
+    found = set(top)  # what the search found; the Line adds the rest
     top = [*top, *around[: policy.extend]]
     if (
-        thread_hits
-    ):  # the question hit these threads by their summaries: each with its nearest steps
+        policy.thread_k
+    ):  # the stretches the anchors are in: each with its steps nearest the question
         known = threads()
+        of_block = {b: t for t, x in known.items() for b in x["members"]}
+        thread_hits = list(dict.fromkeys(of_block[b] for b in top if b in found and b in of_block))
+        thread_hits = thread_hits[: policy.thread_k]
         for n, t in enumerate(x for x in thread_hits if x in known):
             mine = [b for b in known[t]["members"] if step(b).text and b not in seen]
             near_ = sorted(
@@ -487,6 +490,7 @@ def compose(
                     + ("\n" + show(near_) if near_ else ""),
                 }
             )
+
     def downward() -> list[tuple[str, RawMessage, str]]:
         """The raw given: (record, message, its line), in message order."""
         # downward index: what the chosen SBs point to, whether or not the raw search hit it; a
@@ -679,15 +683,14 @@ def compose(
         head = (
             hits[best] if best < len(hits) else chain[0]
         )  # only steps between hits given elsewhere
-        listed = words(chain) if policy.sb_raw else ""  # before show: it may hang them
+        # only the SBs the search found carry their words; the steps the Line adds around them give
+        # their own line (11-08: 50-70 SBs a question carried all their words, 80% of the readout)
+        listed = words([b for b in chain if b in found]) if policy.sb_raw else ""
         items.append(
             {
                 "id": f"line:{head}",
                 "kind": "line",
-                "content": line_head
-                + "\n"
-                + show(chain, lambda b: b in rank, hung_under)
-                + listed,
+                "content": line_head + "\n" + show(chain, lambda b: b in rank, hung_under) + listed,
                 "score": float(len(top) - best),
                 "occurred_at": step(head).time,
             }
