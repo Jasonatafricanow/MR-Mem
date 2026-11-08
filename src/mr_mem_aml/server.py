@@ -135,7 +135,8 @@ class RuntimeHost:
         """background_compile.max_backlog: while more than this many characters of the user's
         history wait for a compile window, the Add (already stored) waits until add_wait seconds
         after it arrived and then answers 503 (counted from the arrival: counted from the store,
-        an Add whose store took 10 seconds ran past the gateway's 20); AML retries it (Add: up to 32 attempts), the retry replays as done.
+        an Add whose store took 10 seconds ran past the gateway's 20); AML retries it (Add: up to
+        32 attempts), the retry replays as done.
         Ingestion so keeps the pace of compiling, as when Add compiled itself: otherwise a long
         history was all written in minutes, and its Searches came while most of it was still
         uncompiled (a window takes ~20 s; a 1M-token history has ~60)."""

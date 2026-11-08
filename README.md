@@ -5,8 +5,9 @@
 > **This branch: the AML 2026 Round 2 submission.** `feat/aml-20261013` is the code and
 > configuration that ran the official evaluation (config `preview-1029`, finished 2026-11-02,
 > average **54.37**; per-category results and the post-mortem in the
-> [technical report](docs/TECHNICAL_REPORT.md)). The last commit only adds that post-mortem and
-> one switch that is off by default (`sb_raw`); the branch is otherwise left as submitted.
+> [technical report](docs/TECHNICAL_REPORT.md)). After the run the branch only gained that
+> post-mortem, one switch that is off by default (`sb_raw`), this note and a line-length fix
+> for CI; the code is otherwise as submitted (tag `v0.1-aml2026`).
 >
 > | Branch | What it holds |
 > |---|---|
