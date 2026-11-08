@@ -24,7 +24,9 @@ def test_scoped_search_matches_qdrant_and_follows_upserts():
         def embed(self, text):
             return vectors.setdefault(text, tuple(float(v) for v in rng.standard_normal(8)))
 
-    index = QdrantIndex(QdrantClient(":memory:"), models, Fixed(), "ns", __import__("pathlib").Path("."))
+    index = QdrantIndex(
+        QdrantClient(":memory:"), models, Fixed(), "ns", __import__("pathlib").Path(".")
+    )
     index._create()
 
     def put(user, memory_id):

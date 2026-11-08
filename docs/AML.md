@@ -1,6 +1,6 @@
 # AML 评测适配层（`mr_mem_aml`）
 
-> **分支说明**：本文件只存在于 AML 专属分支 **`feat/aml-20261013`**。该分支基于核心分支 `feat/path-a-core-20261013`（Path A 核心，计划并入 `main`），只增加 AML 相关内容：`src/mr_mem_aml/`、`examples/`、`tests/test_aml_runtime.py`、`mr-mem-aml` 命令入口和本文档。Path A 的编译与读取逻辑全部来自核心，本分支不修改。
+> **分支说明**：AML 适配层最初只在 AML 专属分支 `feat/aml-20261013` 上开发（基于 Path A 核心 `feat/path-a-core-20261013`），只增加 AML 相关内容：`src/mr_mem_aml/`、`examples/`、相关测试、`mr-mem-aml` 命令入口和本文档。2026-11-09 起随 AML 参赛版和赛后确认的改动一起进入 `main`；参赛时的原样保留在 `feat/aml-20261013`。
 
 `mr_mem_aml` 提供 AML 式的 Add/Search HTTP 服务，用于在开放数据集和 AML 平台上做基线与 Path A 的配对评测：原文存储、语义编译器（agy / grok 命令行或 OpenAI 兼容端点）、可选向量召回与 HyDE、AML 官方接口契约。
 

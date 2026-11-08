@@ -1,5 +1,7 @@
 # Issue #3 acceptance
 
+> **Status: historical (2026-10-02).** Acceptance notes for issue #3 (native SourceRef admission), delivered by PR #7–#11.
+
 Base: ADR-0001 at `fbf96dd`. The implementation keeps CommittedMemory naming.
 
 - Native host raw bodies remain exclusively in the host. Admission accepts

@@ -1,5 +1,7 @@
 # Extraction boundary
 
+> **Status: historical (2026-10-01).** The boundary drawn when MR-Mem was extracted from Mind Runtime; the current boundary is [ARCHITECTURE.md](ARCHITECTURE.md) and [ADR-0001](ADR-0001-SIDECAR-MEMORY-BOUNDARY.md).
+
 MR-Mem is the reusable **semantic-memory sidecar** boundary for Mind Runtime and
 other Agents.
 
