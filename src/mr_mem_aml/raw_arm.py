@@ -188,6 +188,10 @@ class RawArm:
             else:
                 matrix = np.asarray([self.embedding.embed(t) for t in texts], dtype=np.float32)
             matrix /= np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12)
+        self.add_vectors(fresh, matrix)
+
+    def add_vectors(self, fresh: list[RawUnit], matrix: np.ndarray | None) -> None:
+        """Index units whose unit vectors are already known (``matrix`` row per unit)."""
         with self._lock:
             rows: dict[str, list] = defaultdict(list)
             for n, unit in enumerate(fresh):

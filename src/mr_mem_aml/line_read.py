@@ -486,7 +486,7 @@ def compose(
                 key=lambda b: (*_order(step(b)), b),
             )
             seen |= set(near_)
-            span = ""
+            at_span = ""
             if policy.thread_span:  # where the stretch sits: its first and its last step
                 here = sorted(
                     (b for b in known[t]["members"] if step(b).text),
@@ -494,7 +494,7 @@ def compose(
                 )
                 if here:
                     a, z = at_b(here[0]), at_b(here[-1])
-                    span = f"[{a}{' - ' + z if z != a else ''}] "
+                    at_span = f"[{a}{' - ' + z if z != a else ''}] "
             items.append(
                 {
                     "id": f"thread:{t}",
@@ -503,7 +503,7 @@ def compose(
                     "occurred_at": step(near_[0]).time if near_ else None,
                     "content": THREAD[lang]
                     + "\n"
-                    + span
+                    + at_span
                     + known[t]["summary"]
                     + ("\n" + show(near_) if near_ else ""),
                 }

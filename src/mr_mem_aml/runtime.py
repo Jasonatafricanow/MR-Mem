@@ -1176,82 +1176,12 @@ class MemoryRuntime:
         ]
         return chosen, records, {r: parts.get(r) for r in records}
 
-    def _line_read(self, scope, user_id: str, text: str) -> list[dict]:
-        """Readout by the upward index (line_read.py): raw hits -> SBs -> the Line around them,
-        plus raw snippets. Owner thread: reads the source, canonical and Line stores."""
-        from mr_mem.memory.retrieval import MemoryRetrievalQuery
+    def _read_fns(self, scope, user_id: str, text: str) -> dict:
+        """What line_read.compose asks of this history: the Line, the SBs and the words, by id.
+        Owner thread. Apart from _line_read so that a reader over several compiled histories
+        can answer each id from the history that holds it."""
         from mr_mem_aml import line_read
 
-        policy = line_read.LineReadPolicy.of(self.config.line_read)
-        # P1's raw list: its head finds the anchors; with raw_fill the whole list backs the Lines up
-        # (LCE shares P1's evidence: what the Lines do not cover is still given, as P1 gives it)
-        pool = self._raw_records(user_id, text, policy)
-        # the parts of a message its hits are (raw_split): record -> paragraphs, None = whole
-        hit_parts: dict[str, set[int] | None] = {}
-        if policy.raw_near:
-            records = []
-            for u, _ in self.raw.near(user_id, text, policy.raw_near):
-                if u.record_id not in hit_parts:
-                    records.append(u.record_id)
-                    hit_parts[u.record_id] = set(u.paras) if u.paras else None
-                elif hit_parts[u.record_id] is not None:
-                    hit_parts[u.record_id] = (
-                        hit_parts[u.record_id] | set(u.paras) if u.paras else None
-                    )
-        else:
-            records = pool[: policy.raw_k]
-        fused_blocks: list[str] | None = None
-        if policy.fuse_near and self.embedding is not None:
-            fused_blocks, records, hit_parts = self._fuse(user_id, text, policy.fuse_near)
-        if policy.judge and self.decision is not None and records:
-            # the decision model judges each raw hit alone (with its time and its SB); a hit it
-            # drops brings no SB as an anchor (experimental, 11-08: calls on the owner thread)
-            cards = []
-            for r in records:
-                m = self.source.message_by_record(r)
-                blocks = self._blocks_by_record.get(r, ())
-                sb = next((c.content for b in blocks if (c := self.core.canonical.get(b))), "")
-                at = m.occurred_at.strftime("%Y-%m-%d") if self.source.time_given(r) else "unknown"
-                who = "User" if m.role == "user" else "Assistant"
-                cards.append(
-                    f"时间: {at}"
-                    + chr(10)
-                    + f"所属 SB: {sb[:1200] or '(无)'}"
-                    + chr(10)
-                    + f"{who}: {line_read.cut(m.content, hit_parts.get(r))[:3000]}"
-                )
-            try:
-                score = dict(
-                    zip(records, self.decision.rank(text, cards, total=900.0), strict=True)
-                )
-                records = [r for r in records if score[r] >= policy.judge] or records[:1]
-            except Exception as exc:  # degrade to the search's own hits
-                log.warning("decision judge skipped (%s)", type(exc).__name__)
-        sb_search = None if self.index is None else self.index.retrieval()
-        # HyDE: a hypothetical passage searched beside the question
-        if self.config.hyde == "augmented":
-            hypo = self._hyde_passage(text)
-            if hypo:
-                from mr_mem.memory.providers.hybrid import HyDEAugmentedProvider
-
-                extra = [u.record_id for u, _ in self.raw.search(user_id, hypo, policy.raw_k)]
-                score: dict[str, float] = {}
-                for ranked_ in (records, extra):
-                    for n, r in enumerate(dict.fromkeys(ranked_)):
-                        score[r] = score.get(r, 0.0) + 1.0 / (60 + n + 1)
-                records = sorted(score, key=lambda r: -score[r])[: policy.raw_k]
-                if sb_search is not None:
-                    sb_search = HyDEAugmentedProvider(sb_search, _FixedExpander(hypo))
-        sb_hits = (
-            []
-            if sb_search is None
-            else [
-                c.memory_id
-                for c in sb_search.search(
-                    MemoryRetrievalQuery(scope=scope, text=text, limit=min(policy.sb_k, 100))
-                )
-            ]
-        )
         tree = self.tree_for(scope)
         # now: the person's latest message, so a replayed or offline history reads as it stood then
         lines, far, now = (
@@ -1376,6 +1306,93 @@ class MemoryRuntime:
                 question.append(np.array(self._embed_cached(text)))
             q, v = question[0], np.array(self._embed_cached(memory.content.split("\n")[0]))
             return float(q @ v) / (np.linalg.norm(q) * np.linalg.norm(v) or 1)
+        return {
+            "step": step, "sources": sources, "parents": parents, "children": children,
+            "message": message, "standing": standing, "relevance": relevance,
+            "span": lambda block, record: self._spans.get(block, {}).get(record),
+            "pointers": self._pointers.get,
+            "threads": lambda: self.source.threads(user_id),
+            "blocks_of": lambda r: self._blocks_by_record.get(r, ()),
+        }
+
+    def _line_read(self, scope, user_id: str, text: str) -> list[dict]:
+        """Readout by the upward index (line_read.py): raw hits -> SBs -> the Line around them,
+        plus raw snippets. Owner thread: reads the source, canonical and Line stores."""
+        from mr_mem.memory.retrieval import MemoryRetrievalQuery
+        from mr_mem_aml import line_read
+
+        policy = line_read.LineReadPolicy.of(self.config.line_read)
+        # P1's raw list: its head finds the anchors; with raw_fill the whole list backs the Lines up
+        # (LCE shares P1's evidence: what the Lines do not cover is still given, as P1 gives it)
+        pool = self._raw_records(user_id, text, policy)
+        # the parts of a message its hits are (raw_split): record -> paragraphs, None = whole
+        hit_parts: dict[str, set[int] | None] = {}
+        if policy.raw_near:
+            records = []
+            for u, _ in self.raw.near(user_id, text, policy.raw_near):
+                if u.record_id not in hit_parts:
+                    records.append(u.record_id)
+                    hit_parts[u.record_id] = set(u.paras) if u.paras else None
+                elif hit_parts[u.record_id] is not None:
+                    hit_parts[u.record_id] = (
+                        hit_parts[u.record_id] | set(u.paras) if u.paras else None
+                    )
+        else:
+            records = pool[: policy.raw_k]
+        fused_blocks: list[str] | None = None
+        if policy.fuse_near and self.embedding is not None:
+            fused_blocks, records, hit_parts = self._fuse(user_id, text, policy.fuse_near)
+        if policy.judge and self.decision is not None and records:
+            # the decision model judges each raw hit alone (with its time and its SB); a hit it
+            # drops brings no SB as an anchor (experimental, 11-08: calls on the owner thread)
+            cards = []
+            for r in records:
+                m = self.source.message_by_record(r)
+                blocks = self._blocks_by_record.get(r, ())
+                sb = next((c.content for b in blocks if (c := self.core.canonical.get(b))), "")
+                at = m.occurred_at.strftime("%Y-%m-%d") if self.source.time_given(r) else "unknown"
+                who = "User" if m.role == "user" else "Assistant"
+                cards.append(
+                    f"时间: {at}"
+                    + chr(10)
+                    + f"所属 SB: {sb[:1200] or '(无)'}"
+                    + chr(10)
+                    + f"{who}: {line_read.cut(m.content, hit_parts.get(r))[:3000]}"
+                )
+            try:
+                score = dict(
+                    zip(records, self.decision.rank(text, cards, total=900.0), strict=True)
+                )
+                records = [r for r in records if score[r] >= policy.judge] or records[:1]
+            except Exception as exc:  # degrade to the search's own hits
+                log.warning("decision judge skipped (%s)", type(exc).__name__)
+        sb_search = None if self.index is None else self.index.retrieval()
+        # HyDE: a hypothetical passage searched beside the question
+        if self.config.hyde == "augmented":
+            hypo = self._hyde_passage(text)
+            if hypo:
+                from mr_mem.memory.providers.hybrid import HyDEAugmentedProvider
+
+                extra = [u.record_id for u, _ in self.raw.search(user_id, hypo, policy.raw_k)]
+                score: dict[str, float] = {}
+                for ranked_ in (records, extra):
+                    for n, r in enumerate(dict.fromkeys(ranked_)):
+                        score[r] = score.get(r, 0.0) + 1.0 / (60 + n + 1)
+                records = sorted(score, key=lambda r: -score[r])[: policy.raw_k]
+                if sb_search is not None:
+                    sb_search = HyDEAugmentedProvider(sb_search, _FixedExpander(hypo))
+        sb_hits = (
+            []
+            if sb_search is None
+            else [
+                c.memory_id
+                for c in sb_search.search(
+                    MemoryRetrievalQuery(scope=scope, text=text, limit=min(policy.sb_k, 100))
+                )
+            ]
+        )
+        fns = self._read_fns(scope, user_id, text)
+        relevance = fns["relevance"]
 
         ranked = [
             b
@@ -1414,20 +1431,10 @@ class MemoryRuntime:
                 for r in records
                 if not any(self.core.canonical.get(b) for b in self._blocks_by_record.get(r, ()))
             ],
-            step=step,
-            sources=sources,
-            parents=parents,
-            children=children,
-            message=message,
             lang=self.language_of(user_id),
             policy=policy,
-            standing=standing,
-            span=lambda block, record: self._spans.get(block, {}).get(record),
-            relevance=relevance,
-            pointers=self._pointers.get,
-            threads=lambda: self.source.threads(user_id),
             hit_blocks=hit_blocks,
-            blocks_of=lambda r: self._blocks_by_record.get(r, ()),
+            **fns,
         )
 
 
