@@ -425,6 +425,8 @@ def test_an_answer_that_stops_keeps_only_what_it_compiled_and_says_where():
 
 
 def test_what_the_assistant_says_is_not_confirmed_by_saying_it():
+    # 11-09: the assistant reporting what it has done (before) stays confirmed; anything else it
+    # marks confirmed (future, plans) is only its word and becomes unknown
     from mr_mem_aml import moves as mv
 
     sbs = mv.parse_step1_chat(
@@ -437,18 +439,25 @@ def test_what_the_assistant_says_is_not_confirmed_by_saying_it():
                 "next": [
                     {
                         "turns": "M2",
-                        "text": "The assistant says the cache made it faster",
+                        "text": "The assistant reports it rolled the change back",
                         "when": "before",
                         "status": "confirmed",
-                    }
+                    },
+                    {
+                        "turns": "M3",
+                        "text": "The assistant says the deploy goes out on Friday",
+                        "when": "after",
+                        "status": "confirmed",
+                    },
                 ],
             }
         ],
-        ["user", "assistant"],
+        ["user", "assistant", "assistant"],
     )
     assert [(b["situation"].rsplit(" [", 1)[1], b["happened"]) for b in sbs] == [
         ("confirmed; before]", True),
-        ("unknown; before]", False),
+        ("confirmed; before]", True),
+        ("unknown; after]", False),
     ]
 
 

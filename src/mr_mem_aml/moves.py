@@ -777,9 +777,13 @@ def parse_step1_chat(
         else:
             mine = {i: sorted(own[i], key=span_key) if i in own else None for i in sources}
         status = str(b.get("status") or "").strip().lower()
-        if status == "confirmed" and all(roles[i] == "assistant" for i in sources):
+        when = str(b.get("when") or "").strip().lower()
+        if status == "confirmed" and not when.startswith("before") and all(
+            roles[i] == "assistant" for i in sources
+        ):
             # what the person is told does not hold by being said (design 1.2): only the person's
-            # later words settle it
+            # later words settle it. The assistant reporting what it has already done or found
+            # (before) stays confirmed (user 11-09); readout still marks it as the agent's word
             b, status = {**b, "status": "unknown"}, "unknown"
         out.append(
             {
