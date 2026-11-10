@@ -876,7 +876,10 @@ class MemoryRuntime:
         day = [
             b
             for b in sorted(dated, key=lambda b: (dated[b].occurred_at, b))
-            if tree.side(node_of[b], at) == "in progress"
+            # ahead when said and nothing said since on how it came out: a date that has passed
+            # is no evidence that it happened (design 1.3), and the report of how it went is
+            # what settles it
+            if tree.confirmed(node_of[b], at) is False
         ]
         progress = day[-10:]
         if self.embedding is not None and len(day) > 10:
@@ -1090,7 +1093,6 @@ class MemoryRuntime:
     def decision_hits(self, payload: dict) -> tuple[str, list, str]:
         """For the decision bypass: the question, its raw hits as messages (search order), and the
         person's language. Owner thread: reads the raw index and the source store."""
-        from mr_mem_aml import line_read
         from mr_mem_aml.decision import Message
 
         # the same raw hits the readout gave (its search text, options included, and its raw_k),

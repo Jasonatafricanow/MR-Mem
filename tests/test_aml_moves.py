@@ -635,3 +635,24 @@ def test_the_side_of_the_terminator_follows_when_not_how_sure():
     )
     # asked, and did not happen: past; a plan, however sure: ahead; called off: decided
     assert [b["happened"] for b in sbs] == [True, True, False, True]
+
+
+def test_a_stretch_may_skip_what_is_not_on_its_course():
+    from mr_mem_aml.moves import parse_stretches
+
+    got = parse_stretches(
+        {
+            "stretches": [
+                {"sbs": "s1-s2,s4", "closed": True, "summary": "the work"},
+                {"sbs": "s5", "closed": False},
+            ]
+        },
+        5, 0, 0,
+    )  # s3, a remark on something else, is in no stretch and does not cut the work in two
+    assert [s["sbs"] for s in got["stretches"]] == [[0, 1, 3], [4]]
+    two_open = {"stretches": [{"sbs": "s1", "closed": False}, {"sbs": "s2", "closed": False}]}
+    try:
+        parse_stretches(two_open, 2, 0, 0)  # only the one the talk is still on stays open
+        raise AssertionError("the earlier one needs its summary")
+    except ValueError:
+        pass

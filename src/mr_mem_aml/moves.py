@@ -434,8 +434,10 @@ STEP1_TOPIC = {
         "数据库就用 PostgreSQL 了。你接着把登录页做完」是三件事：报表暂缓、选定数据库、"
         "继续做登录页。\n"
         "2. SB 写的是理解，用句子主干写：主语（谁）+ 谓语（做了什么：询问、讲述、解释、建议、决"
-        "定、给出……）+ 宾语（哪件事，写出具体名称，让问到这件事的问题能找到它）。具体内容不写："
-        "吃了什么、谁喜欢什么、数字、步骤、代码、原文里写着的日期，都留在原文里，靠索引取。\n"
+        "定、给出……）+ 宾语（哪件事）。宾语写到能认出是哪一件事为止：「吃了拉面」「改用 "
+        "PostgreSQL」「去京都」，不写成「吃了东西」「改了方案」「出行」，让问到这件事的问题能"
+        "找到它。这件事里面再展开的内容不写：拉面什么口味、为什么选它、数字、步骤、代码、原文"
+        "里写着的日期，都留在原文里，靠索引取。\n"
         "3. 人给出的、从此以后都要遵守的指令或长期偏好（以后都……、每次……、我更喜欢……），单独"
         "成一个 SB，standing 填 true。一次性的决定（这次用哪个、先不做什么、接着做什么）不是长期"
         "指令，standing 填 false；做出的决定本身已经成立，填 before、confirmed。\n"
@@ -451,7 +453,8 @@ STEP1_TOPIC = {
         '5. text：一到两句话，按第 2 条的主干写。主语：人和助手的对话写"人""助手"，不用人设或'
         "系统提示里的名字；几个人之间写他们的名字（没有名字写说话者 A／B）。原文说了的写清，没说"
         "的不补，不写后来才发生的事。人在一件事里说的每一点（决定、纠正、要求、提问、理由、判断、"
-        "对自己情况的讲述）都要写到；人的话和助手随后做的事在同一个 SB 里时，先写人的每一点，再写"
+        "对自己情况的讲述）都要写到，每一点写它的主干（定了什么、否定了什么、要什么、问什么），"
+        "里面展开的内容留在原文；人的话和助手随后做的事在同一个 SB 里时，先写人的每一点，再写"
         "助手做了什么，不要让助手的汇报挤掉人的话；写不下就拆成几个 SB。人对助手或对事情的评价"
         "（批评、不满、肯定、「又走弯路了」「这个没用」）照原意写出来，不要改写成中性的说法。"
         "人在问的写成询问，不写成确认。助手一连几条汇报讲的是几件不同的事（出分、排查、修复、"
@@ -465,7 +468,10 @@ STEP1_TOPIC = {
         "没发生 before、negated；安排好了的 after、likely（有日期写上，如 after 2024-03-31）；只"
         "是提议或推荐、没被接受的 after、unknown；取消或不做的 after、negated。助手说了不等于那件"
         "事发生了。助手汇报它已经做完的事、查到的结果，是 before、confirmed；汇报里附带的建议不改"
-        "变这个状态，在 text 里写「建议……」即可。\n"
+        "变这个状态，在 text 里写「建议……」即可。when 说的是那件事，不是"
+        "「决定」这个动作：约定、改期、重新安排定下的是一件还没发生的事（「约好周日见面」「改到"
+        "下周交」），按那件事写 after、likely 和它的日期，不因为决定已经做出就写成 before，也"
+        "不为「尚未发生」另立一个 SB。\n"
         '8. turns 写这件事所在的消息范围（"M3-M20"，只有一条写 "M3"）。只有这件事从某条消息中'
         "途开始或在中途结束时，才写 from（照原文抄下它开头的几个词）或 to（结尾的几个词），"
         "否则不写。\n"
@@ -513,8 +519,10 @@ STEP1_TOPIC = {
         "off, the database chosen, the login page continued.\n"
         "2. An SB holds understanding, written as the core of a sentence: subject (who) + verb "
         "(what they did: asks, tells, explains, suggests, decides, gives ...) + object (which m"
-        "atter, named concretely so that a question about it finds it). The contents are left "
-        "out: what was eaten, who likes what, numbers, steps, code, dates written in the words "
+        "atter). The object goes as far as telling which matter it is: 'had ramen', 'moved to "
+        "PostgreSQL', 'a trip to Kyoto', never 'ate something', 'changed the plan', 'a trip', "
+        "so that a question about it finds it. What the matter holds inside is left out: which "
+        "kind of ramen, why it was chosen, numbers, steps, code, dates written in the words "
         "stay in the raw text, which the index reaches.\n"
         "3. An instruction or lasting preference the person gives that is meant to hold from n"
         'ow on ("always ...", "whenever ..., do ...", "I prefer ...") is an SB of its own, '
@@ -540,7 +548,9 @@ STEP1_TOPIC = {
         "m prompt; between people use their names (speaker A / B when the words give none). Wr"
         "ite what the raw text says, add nothing it does not, nothing that happened later. Every "
         "point the person makes on a matter (a decision, correction, request, question, reason, "
-        "judgement, something about themselves) is written; when the person's words and what the "
+        "judgement, something about themselves) is written, each by its core (what was decided, "
+        "refused, asked for, asked), what it holds inside staying in the raw text; when the "
+        "person's words and what the "
         "assistant then does share an SB, write the person's points first and then what the "
         "assistant did, never letting the assistant's report crowd out the person's words; if it "
         "does not fit, split it into several SBs. The person's judgement of the assistant or of "
@@ -563,7 +573,10 @@ STEP1_TOPIC = {
         "ter and unknown; called off, after and negated. The assistant saying it does not make "
         "it happen. The assistant reporting what it has done or found is before and confirmed; a "
         "suggestion that comes with the report does not change that, the text says 'suggests "
-        "...'.\n"
+        "...'. when is about the thing, not about the act of deciding: an appointment, a new "
+        "date, a rearrangement sets something still to come ('agreed to meet on Sunday', 'moved "
+        "to next week'), so it is after and likely with its date, not before because the "
+        "decision has been made; and no SB of its own for 'has not happened yet'.\n"
         '8. turns: the run of messages the thing is in ("M3-M20", or "M3" for one). Only when '
         "it starts or ends midway through a message, from copies exactly the first few words of "
         "it, to the last few; otherwise leave them out.\n"
@@ -972,17 +985,20 @@ def extract_json_array(text: str) -> list:
 STRETCH = {
     "zh": (
         "下面是一段对话按顺序编出的 SB，每个带着它所在消息的时间范围：开头的 o1、o2……是上次还没"
-        "收口的那一段，后面的 s1、s2……是这次新编的。把它们按顺序划成段，给已经收口的段写摘要。\n"
+        "收口的那一段，后面的 s1、s2……是这次新编的。把讲同一个话题的划成段，给已经收口的段写摘"
+        "要。\n"
         "\n"
         "## 段是什么\n"
-        "1. 段是连续的几个 SB：话题在一条路上往前走，一件事引出下一件（聊早饭 → 饮食习惯 → 偏"
-        "好 → 想吃蛋挞）。话题转到另一条路上（聊的领域变了，或做的事变了：从排进度到写代码），"
-        "或者开了新的会话、隔了很久，段就到此为止，下一段开始。\n"
-        "2. 段按顺序覆盖所有 SB，不跳过、不重叠。\n"
-        "3. o1、o2……已经是同一段的开头，不拆开，第一段从 o1 开始；照第 1 条看这一段到哪里为止，"
-        "话题接着往下走就延伸到后面的 s。没有 o 时，第一段从 s1 开始。\n"
-        "4. closed：话题已经离开这一段（后面接着别的段，或会话结束了），填 true。最后一段话题还没"
-        "走完的填 false，等它收口时再写摘要。\n"
+        "1. 段是讲同一个话题的几个 SB：话题在一条路上往前走，一件事引出下一件（聊早饭 → 饮食习惯"
+        " → 偏好 → 想吃蛋挞）。话题转到另一条路上（聊的领域变了，或做的事变了：从排进度到写代"
+        "码），或者开了新的会话、隔了很久，这一段就到此为止。\n"
+        "2. 段里的 SB 不必挨着：中间插进别的事，之后又回到原来的话题，前后是同一段（sbs 写 "
+        "s1-s3,s5-s6）。和前后哪个话题都没有关系的 SB（谈着工作随口说一句别的）不放进任何段，"
+        "不要为了凑齐硬塞。一个 SB 最多在一段里。\n"
+        "3. o1、o2……已经是同一段的开头，不拆开，都写在同一段里；照第 1 条看这一段到哪里为止，"
+        "话题接着往下走就把后面的 s 也写进这一段。\n"
+        "4. closed：话题已经离开这一段，填 true。只有到最后还在聊的那一段可以填 false，等它收口"
+        "时再写摘要；其余的段都填 true 并写摘要。\n"
         "5. summary 只给 closed 的段写（含 o 的段，摘要连 o 一起写），一到三句"
         "话，按顺序写：前因（因为什么聊起来的；对话是突然开始的就写无）、谁、何时（这一段消息的"
         "时间范围）、做了什么、后果（结果怎样，话题因此转到了哪里）。这是比 SB 高一层的结构性总"
@@ -1014,22 +1030,25 @@ STRETCH = {
     "en": (
         "Below are the SBs compiled from a conversation, in order, each with the time range of "
         "its messages: the first ones, o1, o2 ..., are the stretch left open last time; s1, "
-        "s2 ... are the new ones. Cut them, in order, into stretches, and summarize the closed "
-        "ones.\n"
+        "s2 ... are the new ones. Put those on the same course into stretches, and summarize the "
+        "closed ones.\n"
         "\n"
         "## What a stretch is\n"
-        "1. A stretch is a run of consecutive SBs where the talk goes on along one course, one "
-        "thing leading to the next (breakfast -> eating habits -> preferences -> wanting egg "
-        "tarts). Where the talk turns to another course (another field, or another thing being "
-        "done: from planning to writing code), or a new session starts, or after a long pause, "
-        "the stretch ends and the next one begins.\n"
-        "2. Stretches cover every SB, in order, with no gap and no overlap.\n"
-        "3. o1, o2 ... are already the start of one stretch, not split: the first stretch begins "
-        "at o1; by rule 1, see where that stretch ends: when the talk goes on along its course "
-        "it runs on into the s's. With no o's, the first stretch begins at s1.\n"
-        "4. closed: true when the talk has left the stretch (another stretch follows, or the "
-        "session ended); false for a last stretch whose course is not run yet: it is summarized "
-        "when it closes.\n"
+        "1. A stretch is the SBs where the talk goes on along one course, one thing leading to "
+        "the next (breakfast -> eating habits -> preferences -> wanting egg tarts). Where the "
+        "talk turns to another course (another field, or another thing being done: from planning "
+        "to writing code), or a new session starts, or after a long pause, the stretch ends.\n"
+        "2. The SBs of a stretch need not be next to each other: when something else comes in "
+        "between and the talk then returns to its course, both parts are one stretch (sbs "
+        "\"s1-s3,s5-s6\"). An SB that has nothing to do with the courses around it (a passing "
+        "remark on something else in the middle of work) goes into no stretch: do not force it "
+        "in to make the list complete. An SB is in one stretch at most.\n"
+        "3. o1, o2 ... are already the start of one stretch, not split: all of them in the same "
+        "stretch; by rule 1, see where that stretch ends: when the talk goes on along its course "
+        "the s's that follow are written into it.\n"
+        "4. closed: true when the talk has left the stretch. Only the one stretch the talk is "
+        "still on at the end may be false: it is summarized when it closes; every other one is "
+        "true and has a summary.\n"
         "5. summary, only for a closed stretch (one with o's covers the o's too): one "
         "to three sentences, in this order: cause (what started it; none when the talk just "
         "began), who, when (the time range of its messages), what they did, consequence (what "
@@ -1095,64 +1114,75 @@ def parse_stretches(
     data: object, n_sbs: int, n_earlier: int, n_progress: int, n_open: int = 0
 ) -> dict:
     """{"stretches": [{"sbs": [i ...], "joins_open", "from": k | None, "closed", "summary"}],
-    "open_summary": str, "settles": {i: [k ...]}} (0-based over the window's SBs). The open
-    stretch's o1..ok and the window's s1..sn are cut as one sequence: covered in order, no gap,
-    no overlap, the o's together in the first stretch. The first stretch running on into the s's
-    carries the open stretch on (joins_open); ending at ok, the open stretch has closed there,
-    and its summary is "open_summary" (2026-10-31: with the open stretch outside the sequence and
-    only "carry it on or not" asked, one left behind was never summarized). A closed stretch
-    needs a summary."""
+    "open_summary": str, "settles": {i: [k ...]}} (0-based over the window's SBs). A stretch is
+    the SBs on one course: they need not be next to each other, and an SB on no course is in no
+    stretch (user 11-10: a remark on something else is not forced in, nor does it cut the course
+    in two); an SB is in one stretch at most. The open stretch's o1..ok stay together: with s's
+    in their stretch it is carried on (joins_open); alone, it has closed, and its summary is
+    "open_summary". Only the stretch the talk is still on at the end stays open (of those said
+    to be open, the one reaching furthest): every other one needs its summary, or it would never
+    be summarized."""
     if not isinstance(data, dict) or not isinstance(data.get("stretches"), list):
         raise ValueError("'stretches' must be a list")
+    total = n_open + n_sbs
 
     def at(prefix: str, n: str) -> int:
         k = int(n) - 1
-        if prefix == "o":
-            if not 0 <= k < n_open:
-                raise ValueError(f"o{n} is not one of o1-o{n_open}")
-            return k
-        return n_open + k
+        i = k if prefix == "o" else n_open + k
+        if k < 0 or (prefix == "o" and k >= n_open) or i >= total:
+            raise ValueError(f"{prefix}{n} is not one of the SBs given")
+        return i
 
     def name(i: int) -> str:
         return f"o{i + 1}" if i < n_open else f"s{i - n_open + 1}"
 
-    total, out, nxt, open_summary = n_open + n_sbs, [], 0, ""
+    rows, taken = [], set()
     for x in data["stretches"]:
         if not isinstance(x, dict):
             raise ValueError("a stretch must be an object")
-        m = _SRANGE.fullmatch(str(x.get("sbs", "")).strip())
-        if not m:
-            raise ValueError(f"stretch sbs not a range: {x.get('sbs')!r}")
-        a = at(m.group(1), m.group(2))
-        b = at(m.group(3) or m.group(1), m.group(4) or m.group(2))
-        if a != nxt or b < a or b >= total:
-            raise ValueError(
-                f"stretches must cover {name(0)}-{name(total - 1)} in order;"
-                f" got {name(a)}-{name(b)}"
-            )
-        if a == 0 and n_open and b < n_open - 1:
-            raise ValueError(f"o1-o{n_open} are one stretch, not to be split")
-        nxt = b + 1
+        idx: set[int] = set()
+        for part in re.split(r"[,，、;；\s]+", str(x.get("sbs", "")).strip()):
+            m = _SRANGE.fullmatch(part) if part else None
+            if part and not m:
+                raise ValueError(f"stretch sbs not SBs or ranges of them: {x.get('sbs')!r}")
+            if m:
+                lo = at(m.group(1), m.group(2))
+                hi = at(m.group(3) or m.group(1), m.group(4) or m.group(2))
+                if hi < lo:
+                    raise ValueError(f"stretch sbs range backwards: {part}")
+                idx.update(range(lo, hi + 1))
+        if not idx:
+            raise ValueError(f"a stretch without SBs: {x.get('sbs')!r}")
+        if taken & idx:
+            raise ValueError(f"{name(min(taken & idx))} is in two stretches")
+        taken |= idx
+        rows.append((sorted(idx), x))
+    if n_open:
+        holders = [idx for idx, _ in rows if idx[0] < n_open]
+        if len(holders) != 1 or sum(i < n_open for i in holders[0]) != n_open:
+            raise ValueError(f"o1-o{n_open} are one stretch: all of them in the same stretch")
+    said_open = [idx for idx, x in rows if not x.get("closed") and idx[-1] >= n_open]
+    stays = max(said_open, key=lambda idx: idx[-1]) if said_open else None
+    out, open_summary = [], ""
+    for idx, x in sorted(rows, key=lambda r: r[0][-1]):
         frm = str(x.get("from") or "").strip()
         k = int(frm[1:]) - 1 if frm[:1] == "T" and frm[1:].isdigit() else None
-        closed = bool(x.get("closed")) or b < n_open  # followed by the s's: it has closed
+        closed = idx is not stays
         summary = str(x.get("summary") or "").strip()[:2000]
         if closed and not summary:
-            raise ValueError(f"closed stretch {name(a)}-{name(b)} has no summary")
-        if b < n_open:  # the open stretch alone: it closed before the window's SBs
+            raise ValueError(f"closed stretch {name(idx[0])}-{name(idx[-1])} has no summary")
+        if idx[-1] < n_open:  # the open stretch alone: it closed before the window's SBs
             open_summary = summary
             continue
         out.append(
             {
-                "sbs": [i - n_open for i in range(max(a, n_open), b + 1)],
-                "joins_open": bool(n_open) and a == 0,
+                "sbs": [i - n_open for i in idx if i >= n_open],
+                "joins_open": idx[0] < n_open,
                 "from": k if k is not None and 0 <= k < n_earlier else None,
                 "closed": closed,
                 "summary": summary if closed else "",
             }
         )
-    if nxt != total:
-        raise ValueError(f"stretches cover {name(0)}-{name(nxt - 1)}, not to {name(total - 1)}")
     settles: dict[int, list[int]] = {}
     for key, refs in (data.get("settles") or {}).items():
         k = str(key).strip()
