@@ -505,3 +505,17 @@ def test_a_search_does_not_close_the_tail_when_told_not_to(tmp_path):
         assert isinstance(found["data"], list)
     finally:
         host.close()
+
+
+def test_a_stated_time_passes_on_the_persons_clock(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from mr_mem.lce.path_a import TenseStore
+
+    tense = TenseStore(tmp_path / "tense.sqlite")
+    tense.record("a", happened=False, known_at=datetime(2026, 11, 3, tzinfo=UTC))
+    plan = "dinner [likely; after 2026-11-05 19:00]"
+    now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)  # 20:00 in Beijing: the dinner hour has passed
+    assert tense.side("a", now, plan) == "in progress"  # read as UTC it has not
+    assert tense.side("a", now, plan, timedelta(minutes=480)) == "happened"
+    tense.close()

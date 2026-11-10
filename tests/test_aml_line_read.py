@@ -721,3 +721,23 @@ def test_anchors_from_hits_only_take_no_sb_from_the_fused_ranking():
         hit_blocks=["hit"],
     )
     assert "ranked" not in "\n".join(i["content"] for i in items)
+
+
+def test_an_earlier_version_found_brings_the_step_that_replaced_it():
+    t = datetime(2026, 11, 10, 10, 0)
+    text = {"old": "date on Thursday", "new": "date moved to Sunday", "x": "other"}
+    items = lr.compose(
+        "which day is the date",
+        ["old"],
+        [],
+        step=lambda b: lr.Step(text[b], t, True),
+        sources=lambda b: [],
+        parents=lambda b: [],
+        children=lambda b: [],
+        message=lambda r: None,
+        lang="en",
+        policy=lr.LineReadPolicy(),
+        successors=lambda b: ["new"] if b == "old" else [],
+    )
+    shown = "\n".join(i["content"] for i in items)
+    assert "date on Thursday" in shown and "date moved to Sunday" in shown

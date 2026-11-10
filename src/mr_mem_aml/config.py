@@ -16,6 +16,11 @@ class RuntimeConfig:
     compiler: dict[str, Any]
     search_mode: str = "path_a"  # path_a | baseline
     context_messages: int = 20
+    # the person's offset from UTC in minutes (480: Beijing). The message times the compiler
+    # reads, the stretch layer's time ranges and the dates the terminator compares are the
+    # person's clock, and the readout shows the same unless line_read sets its own: "this
+    # evening" said at 20:02 Beijing was read at 12:02 UTC and written as the day before
+    tz_minutes: int = 0
     embedding: dict[str, Any] | None = None
     hyde: str = "off"  # off | fallback | augmented
     # the completion backend HyDE writes its hypothetical passage with; None: the compiler's
@@ -83,6 +88,8 @@ class RuntimeConfig:
     decision: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        if type(self.tz_minutes) is not int or not -840 <= self.tz_minutes <= 840:
+            raise ValueError("tz_minutes must be an integer in [-840, 840]")
         if self.scene not in ("chat", "work"):
             raise ValueError("scene must be 'chat' or 'work'")
         if self.line_read is not None:

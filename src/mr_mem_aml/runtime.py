@@ -20,7 +20,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from mr_mem import MemoryCore, MemoryLifecycle, SemanticMemoryCandidate
@@ -221,6 +221,7 @@ class MemoryRuntime:
             assistant_head=(config.compile_input or {}).get("assistant_head", 0),
             # on by default in the chat scene, whose step 1 writes them
             blocks=bool((config.compile_input or {}).get("blocks", config.scene == "chat")),
+            tz_minutes=config.tz_minutes,
         )
         self._trees: dict[str, object] = {}
         self.tree_failures: list[str] = []
@@ -407,6 +408,7 @@ class MemoryRuntime:
                 products=self.core.products,
                 fingerprint=self.compiler.version,
                 evidence_time=self._evidence_time,
+                tz_minutes=self.config.tz_minutes,
             )
         return self._trees[key]
 
@@ -816,13 +818,14 @@ class MemoryRuntime:
         """The time range of an SB's messages (message time, from the raw's own stamps; with no
         time given, the session's date), "" when there is none."""
         refs = memory.provenance.source_refs
-        given = sorted(r.occurred_at for r in refs if self.source.time_given(r.record_id))
+        tz = timedelta(minutes=self.config.tz_minutes)  # the person's clock
+        given = sorted(r.occurred_at + tz for r in refs if self.source.time_given(r.record_id))
         if given:
             a, b = given[0].strftime("%Y-%m-%d %H:%M"), given[-1].strftime("%Y-%m-%d %H:%M")
             return a if a == b else f"{a} - {b}"
         session_at = self.source.session_times(user_id)
         got = [session_at[r.record_id] for r in refs if r.record_id in session_at]
-        return f"session began {min(got).strftime('%Y-%m-%d')}" if got else ""
+        return f"session began {(min(got) + tz).strftime('%Y-%m-%d')}" if got else ""
 
     def _stretch(self, user_id: str, scope, compiled: dict, committed, at: datetime):
         """layer2 "stretches" (docs/LCE_FROZEN.md): one call cuts the window's SBs into
@@ -870,11 +873,30 @@ class MemoryRuntime:
             near = vecs @ q / (np.linalg.norm(vecs, axis=1) * np.linalg.norm(q) + 1e-9)
             earlier = list(dict.fromkeys(earlier[:3] + [closed[i] for i in np.argsort(-near)]))[:8]
         dated = {b: m for b in node_of if (m := self.core.canonical.get(b)) is not None}
-        progress = [
+        day = [
             b
             for b in sorted(dated, key=lambda b: (dated[b].occurred_at, b))
             if tree.side(node_of[b], at) == "in progress"
-        ][-10:]
+        ]
+        progress = day[-10:]
+        if self.embedding is not None and len(day) > 10:
+            # an intention with no time sleeps until the talk comes back to it (design 4.6): the
+            # latest ones, and of the older ones those nearest what this window is about
+            import numpy as np
+
+            new, old = [text(m) for m in committed], {b: text(dated[b]) for b in day[:-6]}
+            missing = [x for x in dict.fromkeys([*new, *old.values()]) if x not in self._vectors]
+            if missing:
+                got = yield (self._embed_texts, missing)
+                self._vectors.update(zip(missing, got, strict=True))
+            q = np.mean([np.array(self._vectors[x]) for x in new], axis=0)
+
+            def close(b: str) -> float:
+                v = np.array(self._vectors[old[b]])
+                return float(v @ q) / (float(np.linalg.norm(v) * np.linalg.norm(q)) or 1.0)
+
+            woken = set(sorted(old, key=lambda b: -close(b))[:4])
+            progress = [b for b in day if b in woken or b in day[-6:]]
         sbs = [{"text": text(m), "time": self._span_of(m, user_id)} for m in committed]
         try:
             got = yield (
@@ -1078,7 +1100,7 @@ class MemoryRuntime:
         options = payload.get("options")
         if self.config.append_options and options:
             text = text + "\n" + "\n".join(str(o) for o in options)
-        policy = line_read.LineReadPolicy.of(self.config.line_read)
+        policy = self._read_policy()
         records = self._raw_records(user_id, text[:4096], policy)[: self.decision.hits]
         hits = [
             Message(
@@ -1091,6 +1113,14 @@ class MemoryRuntime:
             if (m := self.source.message_by_record(r)) is not None
         ]
         return question, hits, self.language_of(user_id)
+
+    def _read_policy(self):
+        """line_read's policy; times on the person's clock (tz_minutes) unless it sets its own."""
+        from mr_mem_aml.line_read import LineReadPolicy
+
+        return LineReadPolicy.of(
+            {"tz_minutes": self.config.tz_minutes, **(self.config.line_read or {})}
+        )
 
     def _raw_records(self, user_id: str, text: str, policy) -> list[str]:
         """The raw search's messages in order (a message split into units counts once), as many
@@ -1313,6 +1343,7 @@ class MemoryRuntime:
             "pointers": self._pointers.get,
             "threads": lambda: self.source.threads(user_id),
             "blocks_of": lambda r: self._blocks_by_record.get(r, ()),
+            "successors": lambda block: tree.tense.settled_by(block, now),
         }
 
     def _line_read(self, scope, user_id: str, text: str) -> list[dict]:
@@ -1321,7 +1352,7 @@ class MemoryRuntime:
         from mr_mem.memory.retrieval import MemoryRetrievalQuery
         from mr_mem_aml import line_read
 
-        policy = line_read.LineReadPolicy.of(self.config.line_read)
+        policy = self._read_policy()
         # P1's raw list: its head finds the anchors; with raw_fill the whole list backs the Lines up
         # (LCE shares P1's evidence: what the Lines do not cover is still given, as P1 gives it)
         pool = self._raw_records(user_id, text, policy)
@@ -1350,7 +1381,11 @@ class MemoryRuntime:
                 m = self.source.message_by_record(r)
                 blocks = self._blocks_by_record.get(r, ())
                 sb = next((c.content for b in blocks if (c := self.core.canonical.get(b))), "")
-                at = m.occurred_at.strftime("%Y-%m-%d") if self.source.time_given(r) else "unknown"
+                at = (
+                    (m.occurred_at + timedelta(minutes=policy.tz_minutes)).strftime("%Y-%m-%d")
+                    if self.source.time_given(r)
+                    else "unknown"
+                )
                 who = "User" if m.role == "user" else "Assistant"
                 cards.append(
                     f"时间: {at}"

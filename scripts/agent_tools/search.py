@@ -313,6 +313,7 @@ class History:
             threads=lambda: self.threads,
             hit_blocks=hit_blocks,
             blocks_of=blocks_of,
+            successors=lambda b: self.fn(self.owner[b]).get("successors", lambda _: ())(b),
         )
         text = "\n\n".join(i["content"] for i in fit(items, tokens))
         files = {}

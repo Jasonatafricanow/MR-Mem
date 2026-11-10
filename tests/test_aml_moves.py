@@ -615,3 +615,23 @@ def test_block_numbers_cut_the_raw_text_with_compression_on():
     assert second not in seen["prompt"]  # compression still holds
     [(start, end)] = _json.loads(blocks[1].pointers)["own"]["r2"]
     assert raw[start:end] == second
+
+
+def test_the_side_of_the_terminator_follows_when_not_how_sure():
+    from mr_mem_aml import moves as mv
+
+    sbs = mv.parse_step1_chat(
+        [
+            {"turns": "M1", "text": "The person asks which day", "when": "before",
+             "status": "unknown"},
+            {"turns": "M2", "text": "The person did not go", "when": "before",
+             "status": "negated"},
+            {"turns": "M3", "text": "The person plans a date", "when": "after 2026-11-12",
+             "status": "confirmed"},
+            {"turns": "M4", "text": "The person calls the trip off", "when": "after",
+             "status": "negated"},
+        ],
+        ["user"] * 4,
+    )
+    # asked, and did not happen: past; a plan, however sure: ahead; called off: decided
+    assert [b["happened"] for b in sbs] == [True, True, False, True]

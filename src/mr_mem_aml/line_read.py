@@ -353,6 +353,7 @@ def compose(
     hit_blocks: Sequence[str] = (),
     blocks_of: Callable[[str], Sequence[str]] = lambda record: (),
     hit_parts: dict[str, set[int] | None] | None = None,
+    successors: Callable[[str], Sequence[str]] = lambda block: (),
 ) -> list[dict]:
     """Evidence items: the person's standing instructions and preferences first, whatever the
     question (they apply to what is asked, not to what it is about), then Line pieces ("line"),
@@ -373,6 +374,11 @@ def compose(
     # ``hit_blocks``: the SB of each raw hit, in raw-search order
     if policy.hit_anchors or policy.anchors == "hits":
         top = list(dict.fromkeys([*top, *hit_blocks]))
+    # an earlier version stays findable but is not to be applied (user 11-10): a step later
+    # settled (done, called off, replaced by a new arrangement) brings the step that settled it,
+    # as one the search found, so the two are read together in the order they were said
+    later = {s: b for b in top for s in successors(b) if s not in top and step(s).text}
+    top = [x for b in top for x in (b, *(s for s in later if later[s] == b))]
     items, seen = [], set()
 
     def unmarked(text: str) -> str:  # the terminator is the memory side's own (docs/LCE_FROZEN.md)

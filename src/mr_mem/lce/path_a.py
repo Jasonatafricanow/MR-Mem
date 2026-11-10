@@ -33,7 +33,7 @@ import re
 import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from mr_mem.contracts import Scope
@@ -145,14 +145,17 @@ class TenseStore:
                 "INSERT OR IGNORE INTO settled VALUES (?, ?, ?)", (memory_id, at.isoformat(), by)
             )
 
-    def side(self, memory_id: str, now: datetime, content: str) -> str | None:
-        """Which side of the terminator at message time ``now``; None when not on a line."""
+    def side(
+        self, memory_id: str, now: datetime, content: str, tz: timedelta = timedelta(0)
+    ) -> str | None:
+        """Which side of the terminator at message time ``now``; None when not on a line.
+        ``tz``: the offset from UTC of the clock the content states its times on."""
         row = self.conn.execute(
             "SELECT happened FROM said WHERE memory_id = ?", (memory_id,)
         ).fetchone()
         if row is None:
             return None
-        if row[0] or ((end := stated_end(content)) is not None and end <= now):
+        if row[0] or ((end := stated_end(content)) is not None and end - tz <= now):
             return PAST
         settled = self.conn.execute(
             "SELECT 1 FROM settled WHERE memory_id = ? AND settled_at <= ? LIMIT 1",
@@ -202,8 +205,11 @@ class PathATree:
         products: MemoryProductStore,
         fingerprint: str,
         evidence_time: EvidenceTime | None = None,
+        tz_minutes: int = 0,
     ) -> None:
         self.scope = scope
+        # the times stated in the content are on the person's clock: this offset from UTC
+        self.tz = timedelta(minutes=tz_minutes)
         self.canonical = canonical
         self.products = products
         base = scope_root(root, scope)
@@ -249,7 +255,7 @@ class PathATree:
     def side(self, node_id: str, now: datetime) -> str | None:
         block_id = self.lines.get_node(node_id).block_id
         memory = self.canonical.get(block_id)
-        return self.tense.side(block_id, now, "" if memory is None else memory.content)
+        return self.tense.side(block_id, now, "" if memory is None else memory.content, self.tz)
 
     def confirmed(self, node_id: str, now: datetime) -> bool | None:
         return self.tense.confirmed(self.lines.get_node(node_id).block_id, now)

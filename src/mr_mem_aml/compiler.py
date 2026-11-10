@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -25,7 +26,7 @@ from mr_mem_aml.source_store import RawMessage
 
 PROMPT_VERSION = "mr-mem-aml-block-compiler-v3"
 # work scene, two steps: write the SBs, then place them (moves.py, 2026-10-24)
-MOVES_PROMPT_VERSION = "mr-mem-aml-move-compiler-v5"
+MOVES_PROMPT_VERSION = "mr-mem-aml-move-compiler-v6"
 CONTENT_BYTES = 16000  # an assembled block stays under the canonical 16384-byte limit
 
 
@@ -321,6 +322,7 @@ class SemanticCompiler:
         scene: str = "chat",
         assistant_head: int = 0,
         blocks: bool = False,
+        tz_minutes: int = 0,
     ) -> None:
         if scene not in ("chat", "work"):
             raise ValueError("scene must be 'chat' or 'work'")
@@ -335,6 +337,8 @@ class SemanticCompiler:
         self.assistant_head = max(0, int(assistant_head))
         # step 1 says which paragraphs of a message an SB comes from (docs/LCE_DESIGN.md 5.5)
         self.blocks = bool(blocks)
+        # message times are shown on the person's clock (config tz_minutes)
+        self.tz = timedelta(minutes=tz_minutes)
         self.version = MOVES_PROMPT_VERSION + ("-topic" if scene == "chat" else "")
         if self.assistant_head:
             self.version += f"-ah{self.assistant_head}"
@@ -432,7 +436,7 @@ class SemanticCompiler:
                 "text": self._read(new[i].role, new[i].content),
                 "session": new[i].session_id,
                 **(
-                    {"time": new[i].occurred_at.strftime("%Y-%m-%d %H:%M")}
+                    {"time": (new[i].occurred_at + self.tz).strftime("%Y-%m-%d %H:%M")}
                     if getattr(new[i], "time_given", True)
                     else {}
                 ),

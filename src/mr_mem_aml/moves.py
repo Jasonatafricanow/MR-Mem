@@ -719,6 +719,21 @@ def extract_after_json(text: str) -> list:
     return extract_json_array(text)
 
 
+def past_as_said(when: str, status: str) -> bool:
+    """Which side of the terminator a thing is on as said (docs/LCE_FROZEN.md 3): what ``when``
+    says, not how sure it is. Said of the past (before) it is on the past side whatever the
+    status: unknown is neutral (not settled by the words), not "still to come"; asking has been
+    done, "it did not happen" is a fact too. Said of what is ahead (after) it is still open,
+    unless it was called off: calling it off is a decision already made. With no ``when``
+    (older answers), as before: only what is confirmed."""
+    when, status = when.strip().lower(), status.strip().lower()
+    if when.startswith("before"):
+        return True
+    if when.startswith("after"):
+        return status == "negated"
+    return status == "confirmed"
+
+
 def _stamp(x: dict) -> str:
     status = str(x.get("status") or "unknown").strip().lower()
     when = str(x.get("when") or "").strip()
@@ -796,7 +811,7 @@ def parse_step1_chat(
                     "parts": [],
                     **({"chars": True, "missed": missed} if texts else {}),
                 },
-                "happened": status == "confirmed",
+                "happened": past_as_said(when, status),
                 "standing": b.get("standing") is True or str(b.get("standing")).lower() == "true",
                 "unresolved": None,
             }
@@ -974,10 +989,12 @@ STRETCH = {
         "结，讲这一段怎么变过来的：不写具体内容和单纯的数据（吃了什么、起点、目标、参数、测量值、"
         "版本、步骤、代码、清单）。只有一种数值要写：它就是结果本身（分数提升了 30%、覆盖率提到 "
         "78%），写最后的结果，不写起点和目标。时间照 SB 里的写法，不往下推算。\n"
-        "6. from：某一段重新聊起 EARLIER 里以前某一段的事，写出那一段的编号（T2），前因里写明接"
-        "着它。\n"
-        "7. settles：本次某个 SB 是人报告 IN PROGRESS 里某件还在进行的事有了结果（做完了、定了、"
-        '取消了），写 {{"s5": ["N2"]}}。只有人的报告算，助手这么说不算。\n'
+        "6. from：某一段重新聊起 EARLIER 里以前某一段的事，from 填那一段的编号（T2）；前因里用话"
+        "写明接着哪件事，摘要里不写 T、N、s、o 这些编号（读的人看不到它们）。\n"
+        "7. settles：本次某个 SB 是人交代 IN PROGRESS 里某件还没发生的事有了下文：做完了、定了、"
+        "取消了，或者改了（改期、改地方、换了做法：旧的安排被新的取代），写 "
+        '{{"s5": ["N2"]}}。同一件事才算，只是话题相近不算；只有人的话算，助手这么说不算，'
+        "人只是再问一次也不算。\n"
         "\n"
         "只输出 JSON：\n"
         '{{"stretches":[{{"sbs":"s1-s4","from":null,"closed":true,'
@@ -1023,10 +1040,13 @@ STRETCH = {
         "30%, coverage reached 78%), the final result, not the start or the target. Times as "
         "the SBs give them, not worked out further.\n"
         "6. from: when a stretch takes up again what an earlier stretch in EARLIER was about, "
-        "name it (T2); its cause says it carries that on.\n"
-        "7. settles: an SB here in which the person reports how something IN PROGRESS came out "
-        '(done, decided, called off): {{"s5": ["N2"]}}. Only the person\'s report counts, not '
-        "the assistant saying so.\n"
+        "from names it (T2); its cause says in words which matter it carries on. No T, N, s or "
+        "o number goes into a summary (its reader does not see them).\n"
+        "7. settles: an SB here in which the person says what became of something IN PROGRESS "
+        "that had not happened yet: done, decided, called off, or changed (another date, another "
+        "place, another way: the old arrangement replaced by a new one): "
+        '{{"s5": ["N2"]}}. Only the same thing counts, not a similar topic; only the person\'s '
+        "words count, not the assistant saying so, nor the person just asking again.\n"
         "\n"
         "Output only JSON:\n"
         '{{"stretches":[{{"sbs":"s1-s4","from":null,"closed":true,'
