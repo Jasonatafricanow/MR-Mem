@@ -1,5 +1,7 @@
 # WorkBench host/user-context adapter contract
 
+> Detailed rationale, state authority and full flow: [WORKBENCH_DESIGN_RATIONALE.md](WORKBENCH_DESIGN_RATIONALE.md).
+
 Status: draft integration adapter, **not connected to production Agent Host**.
 Aligns with MR-Mem ADR-0001 (source authority stays with the host).
 
