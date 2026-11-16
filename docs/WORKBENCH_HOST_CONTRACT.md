@@ -69,6 +69,8 @@ No live Agent Host, model or LCE integration is claimed.
 
 ## Progressive Delegation boundary
 
+Normative WorkBench business contract: [ADR-0003 — Progressive Delegation](https://github.com/Jasonatafricanow/Agent-WorkBench/blob/feat/modular-backend-20261116/docs/ADR-0003-PROGRESSIVE-DELEGATION.md).
+
 Agent-WorkBench owns **business responsibility transfer**: the accountable
 owner, current executor, work class, versioned autonomy ceiling, action
 allowlist, mandatory human decisions, promotion/demotion history and Human
