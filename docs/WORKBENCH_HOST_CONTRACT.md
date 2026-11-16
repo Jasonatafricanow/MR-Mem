@@ -65,3 +65,26 @@ preference, changed relationship or long-term user commitment.
 Offline tests include default-deny, read/write isolation, cross-workspace
 source checks, stale revision rejection and grant revocation after binding.
 No live Agent Host, model or LCE integration is claimed.
+
+
+## Progressive Delegation boundary
+
+Agent-WorkBench owns **business responsibility transfer**: the accountable
+owner, current executor, work class, versioned autonomy ceiling, action
+allowlist, mandatory human decisions, promotion/demotion history and Human
+Action Inbox. The human is a first-class participant in the WorkBench work
+loop, but is not required to be online for work already inside an approved
+execution envelope.
+
+MR-Mem may retrieve historical preferences and evidence that help the Host
+interpret a task or recommend a work-class policy. It MUST NOT infer, create,
+widen, approve or promote execution authority. Memory is contextual evidence,
+not a capability or consent token. An old semantic memory that says "the user
+usually lets the Agent do this" cannot substitute for a current WorkBench
+delegation profile or authenticated approval.
+
+The Agent Host remains responsible for actual tool permissions and must
+revalidate them at each tool call and deferred resume. Mind Runtime may
+influence cognitive attention or recommend a review, but cannot modify
+WorkBench delegation policy. WorkBench SQL is the authority for the current
+responsibility assignment and policy version.
