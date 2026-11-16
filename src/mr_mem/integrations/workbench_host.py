@@ -1,7 +1,7 @@
-"""Host-side WorkBench bindings; no business state or authentication lives in MR-Mem.
+"""Optional WorkBench host/source adapter; no business state or Agent Run ownership.
 
-The host authenticates the calling human and authorizes access before creating a
-context. Agent/LLM arguments never select a memory owner or workspace scope.
+The host authenticates principals and authorizes scopes. A cached BoundUserContext
+is not an irrevocable grant: every source read rechecks current permissions.
 """
 from __future__ import annotations
 
@@ -32,51 +32,75 @@ class BoundUserContext:
     workspace_id: str
     user_id: str
     scope: Scope
+    capability: str = "memory.read"
 
 
 class UserContextBinder:
-    """Fail closed unless the host approves this principal and target user."""
+    """Bind the authenticated principal to a specific USER scope, fail closed."""
 
     def __init__(self, authorizer: UserContextAuthorizer) -> None:
         self._authorizer = authorizer
 
     def bind(
-        self, *, authenticated_principal_id: str, workspace_id: str, target_user_id: str
+        self,
+        *,
+        authenticated_principal_id: str,
+        workspace_id: str,
+        target_user_id: str,
+        capability: str = "memory.read",
     ) -> BoundUserContext:
         principal = _nonblank(authenticated_principal_id, "authenticated_principal_id")
         workspace = _nonblank(workspace_id, "workspace_id")
         target = _nonblank(target_user_id, "target_user_id")
+        if capability not in ("memory.read", "memory.write"):
+            raise PermissionError("unsupported memory capability")
         self._authorizer.assert_allowed(
             principal_id=principal,
             workspace_id=workspace,
             user_id=target,
-            action="memory.read",
+            action=capability,
         )
         return BoundUserContext(
-            principal_id=principal, workspace_id=workspace,
-            user_id=target, scope=Scope(ScopeDomain.USER, user_id=target),
+            principal_id=principal,
+            workspace_id=workspace,
+            user_id=target,
+            scope=Scope(ScopeDomain.USER, user_id=target),
+            capability=capability,
         )
 
 
 class WorkbenchEventResolver(Protocol):
-    """Host-owned SQL source adapter. Never reconstruct from MR memory."""
+    """Host-owned SQL resolver; it MUST enforce task/event-level visibility.
 
-    def current_event_ref(self, *, workspace_id: str, event_id: str) -> SourceRef | None: ...
+    The context is a verified, immutable identity binding. Host SQL must
+    still check event ownership/visibility against it, including at hydration.
+    """
 
-    def render_event(self, *, workspace_id: str, event_id: str) -> str | None: ...
+    def current_event_ref(
+        self, *, context: BoundUserContext, event_id: str
+    ) -> SourceRef | None: ...
+
+    def render_event(self, *, context: BoundUserContext, event_id: str) -> str | None: ...
 
 
 class WorkbenchEventSourceReader(SourceRefReader):
-    """Scoped SourceRef verification and optional on-demand event hydration.
+    """Check exact provenance AND current host ACL before serving event evidence.
 
-    Only accepted, current WorkBench event metadata may be admitted. The
-    caller's user context is already authorized by UserContextBinder.
+    A previously authorized context becomes invalid immediately after grant
+    revocation. Permission errors fail closed, not as an empty source override.
     """
 
     NAMESPACE = "agent-workbench.task-event"
 
-    def __init__(self, context: BoundUserContext, resolver: WorkbenchEventResolver):
-        self._context, self._resolver = context, resolver
+    def __init__(
+        self,
+        context: BoundUserContext,
+        resolver: WorkbenchEventResolver,
+        authorizer: UserContextAuthorizer,
+    ) -> None:
+        self._context = context
+        self._resolver = resolver
+        self._authorizer = authorizer
 
     def _matches(self, scope: Scope, ref: SourceRef) -> bool:
         return (
@@ -89,14 +113,28 @@ class WorkbenchEventSourceReader(SourceRefReader):
     def current_ref(self, scope: Scope, ref: SourceRef) -> SourceRef | None:
         if not self._matches(scope, ref):
             return None
+        self._authorizer.assert_allowed(
+            principal_id=self._context.principal_id,
+            workspace_id=self._context.workspace_id,
+            user_id=self._context.user_id,
+            action=self._context.capability,
+        )
         current = self._resolver.current_event_ref(
-            workspace_id=self._context.workspace_id, event_id=ref.record_id
+            context=self._context, event_id=ref.record_id
         )
         return current if current == ref else None
 
     def render_source(self, scope: Scope, ref: SourceRef) -> str | None:
         if self.current_ref(scope, ref) is None:
             return None
+        # A second check prevents a grant revoked during ref resolution from
+        # allowing event hydration. SQL event visibility is checked by resolver.
+        self._authorizer.assert_allowed(
+            principal_id=self._context.principal_id,
+            workspace_id=self._context.workspace_id,
+            user_id=self._context.user_id,
+            action=self._context.capability,
+        )
         return self._resolver.render_event(
-            workspace_id=self._context.workspace_id, event_id=ref.record_id
+            context=self._context, event_id=ref.record_id
         )

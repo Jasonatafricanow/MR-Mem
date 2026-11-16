@@ -1,55 +1,65 @@
 # WorkBench host/user-context adapter contract
 
-Status: feature-branch integration preparation (not production-wired).
+Status: draft integration adapter, **not connected to production Agent Host**.
+Aligns with MR-Mem ADR-0001 (source authority stays with the host).
 
-The user profile and task records belong to **Agent-WorkBench** SQL. This module
-adds a narrow, optional adapter for existing MR-Mem host integrations. MR-Mem
-does not own WorkBench tasks, Telegram sessions, credentials, user ACLs, or a
-second raw-message ledger.
+## Three-state ownership
 
-## Authority and isolation
+- **Agent-WorkBench SQL** owns business tasks, durable business-event inbox,
+  timers, approvals, outgoing delivery intents and task history.
+- **Agent Host** owns Sessions/Runs, tool invocation/suspension/resumption and
+  execution credentials. MR's cognitive WakeSignal is not a host Run.
+- **Mind Runtime** owns cognition, state/intent/policy projections and
+  cognitive wake semantics; it does NOT become the transport or Run scheduler.
+- **MR-Mem** owns accepted semantic memory, retrieval, Thread/LCE and provenance;
+  neither business task state nor Agent Session can be restored from memory.
 
-- The host authenticates a principal (Telegram external ID is mapped server-side).
-- The host's authorizer decides whether that principal may query a target
-  user's memory inside a workspace. LLM text MUST NOT supply this identity.
-- `UserContextBinder` returns an immutable `Scope(USER, user_id=...)` only
-  after the authorizer grants `memory.read`. Default-deny.
-- Each WorkBench event uses a SourceRef with:
-  `source_namespace="agent-workbench.task-event"`,
-  `session_id=<workspace_id>`, `record_id=<event_id>`, an aware UTC event
-  time and durable source revision/fingerprint.
-- `WorkbenchEventSourceReader.current_ref` rejects mismatched scope,
-  namespace, workspace, deleted or revised events before admitting semantics.
-  `render_source` hydrates host-owned content on demand.
-- A public requester may create/read only permitted WorkBench tasks but has
-  **no implicit right to the owner's MR-Mem USER scope**.
-- If a host needs user-shared context, it must grant that access explicitly
-  under its own ACL and with auditable consent. No owner impersonation.
+Reference: Anthropic, *Building always-on agents*, 2026-11-13,
+https://claude.com/resources/articles/building-always-on-agents
 
-## Integration path
+## Scoped host adapter
 
-1. WorkBench saves the authorized mutation and event in its transaction.
-2. A durable outbox references the event and source revision.
-3. Host resolves the authenticated actor and binds authorized user scope.
-4. Host semantic authority compiles any eligible event using the already
-   configured model. The resulting candidate carries the precise SourceRef.
-5. Existing `SemanticAdmissionService.admit` validates the SourceRefReader
-   and writes semantic memory. Thread/LCE behavior is unchanged.
-6. Retry uses durable event ID, revision, compiler version and outbox receipt.
-   Task SQL remains query authority regardless of memory projection lag.
-7. For task-status questions, the host queries WorkBench SQL first; MR-Mem
-   contributes optional semantic context, never a replacement for current state.
+- Host must authenticate the principal from verified transport metadata;
+  an LLM-supplied ID/role/token is not an identity claim.
+- `UserContextBinder.bind` authorizes exactly one `Scope(USER, user_id)` and
+  one `memory.read` or `memory.write` capability. It does not grant a
+  permanent token.
+- `WorkbenchEventSourceReader` takes an explicit current `authorizer` and
+  rechecks its authorization on **every** `current_ref` and `render_source`.
+  Revocation after context creation must fail closed.
+- Its `WorkbenchEventResolver` receives the verified `BoundUserContext`
+  and MUST check task/event-level visibility, retention and deletion at SQL
+  access time; a shared workspace does not imply full visibility.
+- SourceRef namespace: `agent-workbench.task-event`, session ID is the
+  WorkBench workspace, record ID is the task event ID, revision/fingerprint
+  denotes the exact durable event. No second raw-transcript storage.
+- Eligible, host-accepted semantic candidates may use
+  `SemanticAdmissionService.admit` and existing Path A. Raw task updates
+  and operational receipts do **not** automatically become semantic memories.
+- Memory lag or failure does not block SQL task update, and a stale memory
+  result does not override SQL current status.
 
-## Out of scope
+## Event / Run handshake
 
-No new model, no automatic admission of every task update, no AML /add reliance,
-no change to frozen ADR-0001, no business database in MR-Mem, and no cross-user
-search via untrusted agent input.
+WorkBench may submit a stable `event_id` with an `origin` and optional
+`task_id`. The Agent Host returns an opaque `run_ref`/`session_ref`
+and a **Run outcome**. WorkBench stores only references and business-visible
+outcomes, never serialized Host Session or tool call internals.
 
-## Verification
+For an approval-deferred tool call: Host persists the Session and deferred
+tool token, WorkBench records an approval request and notification, and the
+authorized response creates a new event. Only the Host can resume the saved
+Session and re-check tool permission. A business `WAITING` state does not
+mean the Agent Host is itself in a suspended tool call.
 
-`python -m unittest tests.test_workbench_host` (repository environment).
+**Operational feedback is not experiential authority.** Successful tool
+delivery/acknowledgement alone must not be admitted as a user emotion,
+preference, changed relationship or long-term user commitment.
 
-Contract tests cover default-deny authorization, user scope, cross-workspace
-references, stale revisions and source hydration. Full live host wiring must be
-verified in the separate WorkBench repository before deployment.
+## Tests
+
+`python -m unittest tests.test_workbench_host`
+
+Offline tests include default-deny, read/write isolation, cross-workspace
+source checks, stale revision rejection and grant revocation after binding.
+No live Agent Host, model or LCE integration is claimed.
