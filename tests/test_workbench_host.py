@@ -1,12 +1,13 @@
 """Contract tests for the user/workspace host adapter. No SQL or LLM calls."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import unittest
+from datetime import UTC, datetime
 
 from mr_mem.contracts import Scope, ScopeDomain
 from mr_mem.integrations.workbench_host import (
-    UserContextBinder, WorkbenchEventSourceReader,
+    UserContextBinder,
+    WorkbenchEventSourceReader,
 )
 from mr_mem.memory.source import SourceRef
 
@@ -44,7 +45,7 @@ class HostContractTests(unittest.TestCase):
         self.ref = SourceRef(
             source_namespace="agent-workbench.task-event",
             session_id="personal", record_id="evt-1",
-            occurred_at=datetime(2026, 11, 16, tzinfo=timezone.utc),
+            occurred_at=datetime(2026, 11, 16, tzinfo=UTC),
             revision="1",
         )
         self.resolver = Resolver(self.ref)
