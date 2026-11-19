@@ -26,7 +26,7 @@ Line ──▶ stretches with cause → who → when → what → outcome   (LCE
 
 | | |
 |---|---|
-| **Where it was tested** | AML 2026 Round 2 (official run 2026-11-02, average **54.37**), then public BEAM, PersonaMem-v2 and CLBench sets locally |
+| **Where it was tested** | AML 2026 Round 2, Full track (official leaderboard 2026-11-19: overall **59.78**, rank 26; memory governance D1 and D2 both tied 4th; see [below](#aml-2026-results-and-cost)), then public BEAM, PersonaMem-v2 and CLBench sets locally |
 | **What is on `main`** | The submitted version plus the post-competition changes measured as gains: SBs carried with their linked steps, message times written into the readout, and precise readout (only the SBs the search found carry their words; dev set 37.1 → 43.1, stable over two answer passes) |
 | **How it got here** | [Research log](docs/DEVLOG.md) — what was built, what was dropped and why |
 | **Design** | [Frozen definitions](docs/LCE_FROZEN.md) · [LCE design](docs/LCE_DESIGN.md) · [technical report](docs/TECHNICAL_REPORT.md) · [configuration guide](docs/CONFIG_GUIDE.md) |
@@ -39,6 +39,80 @@ Line ──▶ stretches with cause → who → when → what → outcome   (LCE
 
 Scores are development measurements on public data and one official run, not independent
 validation.
+
+## AML 2026: results and cost
+
+AML compares memory systems only: the platform writes conversations through Add, calls
+Search per question, and answers and grades with a model and prompt it locks. Every entry
+answers with the same model; what differs is the material the memory hands over, and what
+it costs to produce it.
+
+**Official leaderboard (Full track, published 2026-11-19)**
+
+| | Score | Position |
+|---|---|---|
+| Overall | **59.78** | 26th; 5th place is 62.28, 2.50 ahead |
+| A Explicit fact recall | 61.93 | |
+| B Relations and multi-hop reasoning | 57.68 | |
+| C Time and event sequence | 56.59 | |
+| D1 New value overrides old | 77.6 | tied 4th |
+| D2 Contradiction resolution | 76.4 | tied 4th |
+
+The evaluation ended on 11-04 and the leaderboard came out on 11-19 after the platform
+re-graded. The preliminary average shown when our run finished on 11-02 was 54.37
+([technical report §4.1](docs/TECHNICAL_REPORT.md), in Chinese); the leaderboard is the
+final figure.
+
+**Cost**
+
+| | Submitted configuration |
+|---|---|
+| Suite size | Textual Memory track: 6,000+ evaluation instances, about 300M tokens ([official description](https://github.com/AML-memory/agent-memory-leaderboard)) |
+| Compiler | DeepSeek v4.1 flash (1017), 2 calls per window |
+| Embeddings | qwen3.7-text-embedding-flash, cached locally |
+| Spend | compiler about ¥130 + embeddings about ¥5 ≈ **¥135** (about ¥0.45 per million tokens of the suite) |
+| Run | a free cloud instance (7.8 GB RAM), 31 h 39 min |
+
+The estimate during development was ¥3,000–5,000. The saving comes from the structure,
+not from doing less:
+
+- **What was understood once is not understood again.** The understanding is kept at
+  compile time (SBs, stretch summaries); Search hands over those products instead of having
+  a model reread the raw text for every question.
+- **An SB carries the gist; details stay in the source.** An SB says who did what about
+  which matter; numbers, code and steps are not copied in but reached by index. Compiler
+  output stays short (BEAM held-out set: 660k input tokens produce 40k output tokens).
+- **Windows close at natural breakpoints, two calls each.** One call cuts SBs; one cuts
+  stretches and writes each closed stretch's summary once, never rewritten.
+- **Search calls no compiler model.** Readout is retrieval plus following the index;
+  embeddings are cached by text hash, so restarts and repeated text cost nothing.
+
+**What it cost, and the fix after the run**
+
+The cheap compiler left marks: stretch summaries sometimes carry an old plan's numbers,
+and knowledge-update questions pick the old value. But the post-mortem found the main loss
+on explicit recall was in the readout: nine in ten gold evidence items reached the readout,
+only four in ten as the original words; the rest arrived only as an SB's gist (the
+submitted readout gave only the raw hits, and SBs reached through Lines or stretches
+carried no source words, [technical report §5.2](docs/TECHNICAL_REPORT.md)). After the run,
+SBs return with the words they point to. The compilation is unchanged and the cost barely
+moves:
+
+| Local public data (no evaluation data used) | Submitted | After | P1, top 100 raw |
+|---|---|---|---|
+| BEAM 100K held-out: gold evidence present as original words | 51.8% | **89.4%** | 79.4% |
+| PersonaMem-v2 32K: same | 65.9% | **98.2%** | |
+
+This is evidence recall, not answer score. The answer-score gain is still being measured:
+precise readout moved the dev set 37.1 → 43.1 (stable over two answer passes); the other
+changes stayed within answer noise ([research log](docs/DEVLOG.md)).
+
+**Reading the result.** 59.78 is 2.5 points from the top five, and both governance
+sub-scores are among the leaders; the spend is a public, reproducible number. Most entries
+have not published their cost, so no cost-effectiveness optimum is claimed here — just one
+point others can compare against: the Full track for ¥135, with code and configuration on
+[`feat/aml-20261013`](https://github.com/Jasonatafricanow/MR-Mem/tree/feat/aml-20261013).
+Re-runs are welcome, and so are other teams' cost figures.
 
 
 ## Start here
