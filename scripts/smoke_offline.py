@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import secrets
 import tempfile
 import threading
@@ -15,24 +16,34 @@ from mr_mem_aml.config import RuntimeConfig
 from mr_mem_aml.runtime import MemoryRuntime
 from mr_mem_aml.server import RuntimeHost, build_server
 
+_NEW = re.compile(r"\nNEW[:：]\n")
+_SBS = re.compile(r"\nSBS[:：]\n")
+_MESSAGE = re.compile(r"^\[M(\d+)[^\]]*?\s(\S+)\] ?(.*)$")
+
 
 class DemoCompiler:
-    """Deterministic protocol fixture, not a semantic model or quality benchmark."""
+    """Deterministic protocol fixture, not a semantic model or quality benchmark: it speaks the
+    one compile path (docs/LCE_FROZEN.md 2) in the chat scene, step 1 one SB per message, the
+    stretch layer one open stretch over the window's SBs."""
 
     def complete(self, prompt: str) -> str:
-        material = json.loads(prompt.split("INPUT:\n", 1)[1])
-        return json.dumps({
-            "matters": [],
-            "blocks": [{"content": m["text"], "sources": [m["id"]], "in": []}
-                       for m in material["NEW"]],
-            "carry_from": None,
-        })
+        if _SBS.search(prompt):
+            body = _SBS.split(prompt, maxsplit=1)[1]
+            opened = len(re.findall(r"^o\d+\b", body, re.M))
+            sbs = len(re.findall(r"^s\d+\b", body, re.M))
+            return json.dumps({"stretches": [{"sbs": f"{'o1' if opened else 's1'}-s{sbs}",
+                                              "from": None, "closed": False}], "settles": {}})
+        messages = [m for line in _NEW.split(prompt, maxsplit=1)[1].split("\n")
+                    if (m := _MESSAGE.match(line))]
+        sbs = [{"turns": f"M{m.group(1)}", "text": m.group(3), "when": "before",
+                "status": "confirmed", "standing": False} for m in messages]
+        return "JSON:\n" + json.dumps(sbs) + f"\nSTOP: M{messages[-1].group(1)}"
 
 
 @contextmanager
 def running(config, token):
     host = RuntimeHost(lambda: MemoryRuntime(
-        config, compiler=SemanticCompiler(DemoCompiler(), schema="tree")))
+        config, compiler=SemanticCompiler(DemoCompiler())))
     server = build_server(config, host)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -69,8 +80,9 @@ def main() -> None:
         with tempfile.TemporaryDirectory(prefix="mrmem-smoke-") as tmp:
             config = RuntimeConfig(
                 data_dir=Path(tmp), compiler={"type": "command", "argv": ["unused"]},
-                host="127.0.0.1", port=0, path_a_engine="tree", placement="points",
+                host="127.0.0.1", port=0,
                 raw_base=True, line_read={"raw_fill": 0, "hit_anchors": True},
+                compile_before_search=True,  # Search compiles the open tail: the compile path runs
                 auth_token_env=env_name,
             )
             payload = {
