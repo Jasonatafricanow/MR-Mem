@@ -121,7 +121,8 @@ def test_retry_after_cannot_extend_the_total_deadline(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", limited)
     d = DecisionBypass({"base_url": "http://unused", "total_timeout": 0.1})
     assert d.note("q", HITS) is None
-    assert len(calls) == 1 and calls[0] <= 0.1
+    # Windows: monotonic() ticks at ~15.6 ms, so (t + 0.1) - t may round a hair above 0.1
+    assert len(calls) == 1 and calls[0] <= 0.1 + 1e-6
     assert d.health()["timeouts"] == 1
 
 
