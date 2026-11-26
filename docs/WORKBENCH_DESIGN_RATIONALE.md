@@ -15,23 +15,27 @@
 
 不将业务事实塞进 MR-Mem 的原因是：语义编译有延迟；检索结果可能召回旧版本；每次人类说话也不必产生永久记忆；对任务的“写入成功”需要真正的 SQL 原子性与可观察 receipt。反过来也不应该将长期语义重建成 WorkBench 的第二个知识库。
 
-因此采用 **Host-owned raw source → accepted semantic candidate → MR-Mem canonical → Thread/LCE projection** 单向路径；Task SQL 不与 Canonical 做双向事实同步。
+因此采用单向路径：**原文留在 Host/WorkBench → 干活的 Agent 当轮调用 MR-Mem `write` → MR-Mem 编译层（指针指回原文）→ Thread/LCE 投影**。Task SQL 不与 MR-Mem 做双向事实同步。
+
+**对 Agent 只有两个工具：`write` 和 `search`（2026-11-09 定）。**
+- `write`：正在处理任务的 Agent 已经理解了这一轮，借着已缓存的上下文顺带写下语义（推理过的不再推理），不另设事后的语义筛选或编译服务；
+- `search`：SB 和对应原文块一次返回，没有单独的 `read`；
+- 编译层只存指向原文的指针（SourceRef），原文不重复录入 MR-Mem。
 
 ## 2. 整体架构与模块接口
 
 ```mermaid
 flowchart TD
-  Msg["原始消息 / 任务事件 / 真实反馈"] --> Host["现有 Agent Host：真实来源存储和 Semantic Authority"]
+  Msg["原始消息 / 任务事件 / 真实反馈"] --> Host["现有 Agent Host：真实来源存储"]
   Host --> WB["WorkBench SQL：Task / TaskEvent / ACL"]
-  WB --> Outbox["memory_outbox（持久事件引用）"]
-  Outbox --> Compiler["Host 语义筛选 / 编译器"]
-  Compiler --> Binder["UserContextBinder：服务端主体与 Scope 绑定"]
-  Binder --> Ref["WorkbenchEventSourceReader：当前 ref/revision/ACL 校验"]
-  Ref --> Admit["SemanticAdmissionService.admit"]
-  Admit --> Canonical["MR-Mem Canonical Memory"]
+  WB --> Agent["干活的 Agent（当轮已理解）"]
+  Agent --> Binder["UserContextBinder：服务端主体与 Scope 绑定"]
+  Binder --> Write["MR-Mem write（SB + SourceRef 指针）"]
+  Write --> Canonical["MR-Mem 编译层"]
   Canonical --> Thread["Thread 在线暂存"]
   Canonical --> LCE["LCE Path A 长期投影"]
-  Canonical --> Retrieve["授权检索与按需原文回查"]
+  Canonical --> Retrieve["MR-Mem search：SB + 原文块一次返回"]
+  Retrieve --> Ref["WorkbenchEventSourceReader：取原文时重查 ref/revision/ACL"]
   Thread --> Retrieve
   LCE --> Retrieve
   Retrieve --> Host
@@ -46,8 +50,8 @@ flowchart TD
 | 账号映射、Workspace/Task ACL、记忆授权 grant | WorkBench Host | WorkBench `user_context.py` + SQL `memory_context_grants` |
 | scope 绑定与来源一致性核验 | MR-Mem 可选接入适配 | `src/mr_mem/integrations/workbench_host.py` |
 | Raw Event 解析、是否能查看当前行 | Host-owned WorkBench resolver | `WorkbenchEventResolver` Protocol（实现未接入） |
-| 语义提案的理解/裁决 | Body/Host 模型 | 现有 Semantic Authority；**不在此处新增模型** |
-| 语义权威、检索、Thread/LCE | MR-Mem | `SemanticAdmissionService` / `MemoryCore` / 既有投影 |
+| 语义的理解 | 干活的 Agent（当轮） | 随 `write` 一并给出；**不另设事后的语义筛选或二次编译** |
+| 语义存储、检索、Thread/LCE | MR-Mem | 对 Agent 只有 `write` / `search`；内部落到既有编译层与投影 |
 | 当前业务任务、Run、工具完成、到期提醒 | WorkBench / Agent Host | **禁止**交给 MR-Mem 存储和执行 |
 
 ## 3. SourceRef 为什么比复制全文更重要
@@ -105,14 +109,14 @@ verified transport actor
 
 ## 5. 读链、写链与故障场景
 
-**读链：** Host 身份认证 → WorkBench SQL 查任务当前态/version → 如确实需要历史背景，按精确 USER scope 检索 MR-Mem → 有权限才按 SourceRef 原文回查 → 合成答案时区分当前状态、历史解释与推断。若 MR-Mem 落后，不能据此撤回 SQL 中已经完成的事实。
+**读链：** Host 身份认证 → WorkBench SQL 查任务当前态/version → 如确实需要历史背景，按精确 USER scope 调 `search` → MR-Mem 一次返回 SB 和对应原文块（取原文时 adapter 重查授权，无权的原文不返回）→ 合成答案时区分当前状态、历史解释与推断。若 MR-Mem 落后，不能据此撤回 SQL 中已经完成的事实。
 
-**写链：** WorkBench 单事务写任务快照+TaskEvent+Outbox → Host 消费来源引用 → Semantic Authority 判断 KEEP/DEFER/DROP → 校验 SourceRef 当前版本和 scope → `SemanticAdmissionService.admit` → Canonical → Thread/LCE 按既有机制投影。
+**写链：** WorkBench 单事务写任务快照+TaskEvent → 正在处理这件事的 Agent 在同一轮里调用 `write`，带上它对这一轮的理解和指向 TaskEvent/原消息的 SourceRef → MR-Mem 校验 SourceRef 当前版本和 scope 后写入编译层 → Thread/LCE 按既有机制投影。不经 Outbox 再交给另一个模型重判一遍。
 
 | 故障 / 反例 | 预期处理 |
 |---|---|
-| MR-Mem 编译进程停机 | WorkBench 业务照常提交；Outbox 等待，重启再消费 |
-| 相同 task_event 被投递多次 | 按事件身份、当前来源版本与语义 ID 幂等 |
+| MR-Mem 不可用 | WorkBench 业务照常提交；`write` 进 Host 本地重试队列（WorkBench 工作 bot 已有 `memory-retry.jsonl`，重放前重查授权，被撤权的直接丢弃） |
+| 同一轮被 `write` 多次（重试） | 按 SourceRef 身份、当前来源版本与语义 ID 幂等 |
 | 用户撤权但已有 BoundUserContext | 再次 read/hydrate 时拒绝 |
 | Task 的当前状态变了，MR-Mem 仍召回旧状态 | SQL 当前态优先；旧语义是历史而非现在 |
 | 原文已删除 / 来源 revision 变化 | 校验失败，走 source invalidation/rebuild，不继续提供失效原文 |
@@ -128,13 +132,15 @@ verified transport actor
 | 把用户 profiles、私人任务放进每个 Agent 自身长期系统提示 | 无统一权限、易过期、无法审计版本 |
 | 扫描整个原始聊天并定时全量重建 | 浪费资源且可能制造过时结论；应使用增量 SourceRef + eligibility |
 | 外部用户共享同一个 USER Scope | 易出现私人信息泄漏；需要显式 grant 和受信映射 |
-| 使用 AML `/add`/`/search` 作为业务接入协议 | 评测接口并非通用生产 Host SourceRef API |
+| 另设 memory_outbox + 事后语义筛选/编译器 | 干活的 Agent 当轮已理解过；再交给另一个模型判一遍是第二次推理，费用翻倍，且会和当轮理解不一致 |
+| 单独的 `read` 工具 | 要调两次工具；`search` 已经把 SB 和原文块一起返回 |
+| 直接把 AML 评测服务的 `/add`/`/search` 暴露给生产 Agent | 形状与 `write`/`search` 相同，但评测服务没有 Host 鉴权；生产须经 `UserContextBinder` 和按次重查授权 |
 
 ## 7. 当前代码状态与后续验收
 
 本分支**已经有**：可选 `UserContextBinder`、`BoundUserContext`、`WorkbenchEventSourceReader`、`UserContextAuthorizer` 和 `WorkbenchEventResolver` 协议；权限撤销后重新验证的单元测试。没有改动 MemoryCore、Thread、LCE 路径。
 
-本分支**没有**：真实可用的 SQL Resolver、Host 原文存储对接、Event Outbox Worker、用户语义编译管线、生产 `SemanticAdmissionService` 接线或跨 Agent 回查的端到端测试。
+本分支**没有**：真实可用的 SQL Resolver、Host 原文存储对接、生产 `write`/`search` 接线（含 Agent 侧工具定义）或跨 Agent 回查的端到端测试。
 
 验收次序：
 
@@ -147,7 +153,7 @@ verified transport actor
 
 关联：
 - [Host 集成契约](WORKBENCH_HOST_CONTRACT.md)
-- [Workbench 项目蓝图](https://github.com/Jasonatafricanow/Agent-WorkBench/blob/feat/modular-backend-20261116/docs/PROJECT_BLUEPRINT.md)
+- [Workbench 项目蓝图](https://github.com/Jasonatafricanow/Agent-WorkBench/blob/main/docs/PROJECT_BLUEPRINT.md)
 - [Mind Runtime 设计推导](https://github.com/Jasonatafricanow/Mind-Runtime/blob/docs/always-on-workbench-boundary-20261116/docs/integrations/WORKBENCH_DESIGN_RATIONALE.md)
 
 **结论：** MR-Mem 在这三个项目中持续承担“经历和理解如何持久”的责任；不承担“任务是否完成”或“工具何时续跑”的权威。前者已经是成熟记忆内核能力，后两者属于其它系统，不能因 Always-on 话题而回流到 MemoryCore。

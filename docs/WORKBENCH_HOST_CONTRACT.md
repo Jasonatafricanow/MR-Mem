@@ -35,8 +35,13 @@ https://claude.com/resources/articles/building-always-on-agents
 - SourceRef namespace: `agent-workbench.task-event`, session ID is the
   WorkBench workspace, record ID is the task event ID, revision/fingerprint
   denotes the exact durable event. No second raw-transcript storage.
-- Eligible, host-accepted semantic candidates may use
-  `SemanticAdmissionService.admit` and existing Path A. Raw task updates
+- The Agent sees exactly two MR-Mem tools: `write` and `search` (decided
+  2026-11-09). The Agent that is doing the work writes what it understood in
+  that same turn, using the context it already has; there is no memory outbox
+  and no second model that re-judges the turn afterwards. `write` carries a
+  `SourceRef` pointer, never a copy of the raw text. `search` returns the SB
+  and its source passage together; there is no separate `read`, and the source
+  passage is served only through the rechecking reader above. Raw task updates
   and operational receipts do **not** automatically become semantic memories.
 - Memory lag or failure does not block SQL task update, and a stale memory
   result does not override SQL current status.
@@ -69,7 +74,7 @@ No live Agent Host, model or LCE integration is claimed.
 
 ## Progressive Delegation boundary
 
-Normative WorkBench business contract: [ADR-0003 — Progressive Delegation](https://github.com/Jasonatafricanow/Agent-WorkBench/blob/feat/modular-backend-20261116/docs/ADR-0003-PROGRESSIVE-DELEGATION.md).
+Normative WorkBench business contract: [ADR-0003 — Progressive Delegation](https://github.com/Jasonatafricanow/Agent-WorkBench/blob/main/docs/ADR-0003-PROGRESSIVE-DELEGATION.md).
 
 Agent-WorkBench owns **business responsibility transfer**: the accountable
 owner, current executor, work class, versioned autonomy ceiling, action
