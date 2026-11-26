@@ -169,6 +169,14 @@ how sources are admitted, how Thread and LCE consume the same semantic substrate
 [docs/PATH_A.md](docs/PATH_A.md), the AML adapter in [docs/AML.md](docs/AML.md), server
 deployment in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
+## WorkBench multi-agent integration (draft)
+
+- [设计推导与整体框架：为什么 Sidecar 不拥有任务或 Agent Run](docs/WORKBENCH_DESIGN_RATIONALE.md)
+- [Host 用户与 SourceRef 接入契约](docs/WORKBENCH_HOST_CONTRACT.md)
+- [WorkBench 总体业务蓝图](https://github.com/Jasonatafricanow/Agent-WorkBench/blob/main/docs/PROJECT_BLUEPRINT.md)
+
+上述文件是集成设计草案，尚未接通生产 Host；对 Agent 只有 `write`/`search` 两个工具；MemoryCore 的冻结架构未更改。
+
 ## Status
 
 Research code by one author, developed in the open. `main` holds the measured version;
